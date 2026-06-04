@@ -7,63 +7,58 @@ const SESSION_DURATION_MS = 8 * 60 * 60 * 1000; // 8 hours
 
 // ============================================================
 // Brute-force protection
-// 5 failed attempts within 5 min → lockout for 5 min per username
-// PERSISTED to localStorage so F5/new tab doesn't reset the counter (G1 fix)
-// GLOBAL cap: 30 failures across all usernames in 5 min → blocked
-// (defeats username-cycling: admin1, admin2, admin3... bypass)
+// 5 failed attempts within 5 min → lockout for 5 min per account
+// GLOBAL cap: 30 failures across all accounts in 5 min → blocked
+// (defeats account-cycling: admin1, admin2, admin3... bypass)
+//
+// Attempts live in the DB (table login_attempts), NOT localStorage: a
+// localStorage.clear() in DevTools no longer resets the counter, and the
+// lockout survives a page refresh because it is persisted with the database.
+// `account` namespaces staff usernames from patient-portal logins, which use
+// the key 'patient:<MRN>' (see loginPatient).
+// NOTE: this is still a client-only app — a determined user can edit the
+// IndexedDB SQLite blob directly — but the cheap localStorage reset is closed.
 // ============================================================
-const ATTEMPTS_KEY = 'his_login_attempts';
 const MAX_FAILED_ATTEMPTS = 5;
 const MAX_GLOBAL_ATTEMPTS = 30;
 const LOCKOUT_WINDOW_MS = 5 * 60 * 1000;
 const LOCKOUT_DURATION_MS = 5 * 60 * 1000;
 
-function _loadAttempts() {
-  try { return JSON.parse(localStorage.getItem(ATTEMPTS_KEY) || '{}'); } catch(e) { return {}; }
-}
-function _saveAttempts(obj) {
-  try { localStorage.setItem(ATTEMPTS_KEY, JSON.stringify(obj)); } catch(e) {}
+function _pruneOldAttempts(now) {
+  try { dbRun('DELETE FROM login_attempts WHERE attempt_ms < ?', [now - LOCKOUT_WINDOW_MS]); } catch (e) {}
 }
 
-function _isLockedOut(username) {
+// Returns seconds remaining on the lockout, or 0 if not locked.
+function _isLockedOut(account) {
   const now = Date.now();
-  const data = _loadAttempts();
-  const userAttempts = (data[username] || []).filter(t => now - t < LOCKOUT_WINDOW_MS);
-  data[username] = userAttempts;
+  _pruneOldAttempts(now);
 
-  // Per-username lockout
-  if (userAttempts.length >= MAX_FAILED_ATTEMPTS) {
-    const lastFail = userAttempts[userAttempts.length - 1];
+  // Per-account lockout
+  const rows = dbAll('SELECT attempt_ms FROM login_attempts WHERE account = ? ORDER BY attempt_ms', [account]);
+  if (rows.length >= MAX_FAILED_ATTEMPTS) {
+    const lastFail = rows[rows.length - 1].attempt_ms;
     if (now - lastFail < LOCKOUT_DURATION_MS) {
-      _saveAttempts(data);
       return Math.ceil((LOCKOUT_DURATION_MS - (now - lastFail)) / 1000);
     }
   }
 
-  // Global cap — prevents username-cycling (admin, admin1, admin2, ...)
-  let globalCount = 0;
-  for (const u of Object.keys(data)) {
-    data[u] = (data[u] || []).filter(t => now - t < LOCKOUT_WINDOW_MS);
-    globalCount += data[u].length;
-  }
-  _saveAttempts(data);
-  if (globalCount >= MAX_GLOBAL_ATTEMPTS) {
+  // Global cap — defeats account-cycling (admin, admin1, admin2, ...)
+  const g = dbGet('SELECT COUNT(*) AS c FROM login_attempts', []);
+  if (g && g.c >= MAX_GLOBAL_ATTEMPTS) {
     return Math.ceil(LOCKOUT_DURATION_MS / 1000);
   }
   return 0;
 }
 
-function _recordFailedLogin(username) {
-  const data = _loadAttempts();
-  if (!data[username]) data[username] = [];
-  data[username].push(Date.now());
-  _saveAttempts(data);
+// async: persists immediately so the counter can't be bypassed by refreshing
+// before the next autosave fires.
+async function _recordFailedLogin(account) {
+  try { dbRun('INSERT INTO login_attempts (account, attempt_ms) VALUES (?, ?)', [account, Date.now()]); } catch (e) {}
+  await saveDBToIndexedDB();
 }
 
-function _clearFailedAttempts(username) {
-  const data = _loadAttempts();
-  delete data[username];
-  _saveAttempts(data);
+function _clearFailedAttempts(account) {
+  try { dbRun('DELETE FROM login_attempts WHERE account = ?', [account]); } catch (e) {}
 }
 
 /**
@@ -82,14 +77,14 @@ async function login(username, password) {
   const user = dbGet('SELECT * FROM users WHERE username = ?', [username]);
 
   if (!user) {
-    _recordFailedLogin(username);
+    await _recordFailedLogin(username);
     return { success: false, errorKey: 'login_error_cred' };
   }
 
   // Check password
   const hash = await hashPassword(password, user.salt);
   if (hash !== user.password_hash) {
-    _recordFailedLogin(username);
+    await _recordFailedLogin(username);
     return { success: false, errorKey: 'login_error_cred' };
   }
 
@@ -330,13 +325,25 @@ async function loginPatient(mrn, dob) {
     return { success: false, errorKey: 'error_required' };
   }
 
+  // ---- Brute-force protection (same throttle as staff login) ----
+  // MRN + DOB are guessable (often printed on wristbands), so the portal must
+  // throttle guessing too. Account key is namespaced to avoid colliding with
+  // staff usernames.
+  const acct = 'patient:' + mrn;
+  const lockedSec = _isLockedOut(acct);
+  if (lockedSec > 0) {
+    return { success: false, errorKey: 'login_locked', lockedSec };
+  }
+
   const patient = dbGet('SELECT * FROM patients WHERE UPPER(mrn) = ?', [mrn]);
   if (!patient) {
+    await _recordFailedLogin(acct);
     return { success: false, errorKey: 'patient_login_error' };
   }
 
   // Verify DOB matches (defense against MRN-only enumeration)
   if (!patient.date_of_birth || patient.date_of_birth !== dob) {
+    await _recordFailedLogin(acct);
     return { success: false, errorKey: 'patient_login_error' };
   }
 
@@ -344,6 +351,9 @@ async function loginPatient(mrn, dob) {
   if (patient.portal_enabled === 0) {
     return { success: false, errorKey: 'patient_portal_disabled' };
   }
+
+  // Successful login — clear failed attempts
+  _clearFailedAttempts(acct);
 
   // Create patient "session" (uses same sessions table with role='patient' and dept_id=null)
   // user_id stores patient_id, role='patient' marks this as a portal session

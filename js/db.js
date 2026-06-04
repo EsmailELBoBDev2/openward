@@ -311,6 +311,16 @@ async function initDB() {
       next_due_date TEXT,
       notes         TEXT
     )`); } catch(e) {}
+
+    // Brute-force protection (see auth.js): stored in the DB instead of
+    // localStorage, so a localStorage.clear() no longer resets the counter
+    // and the lockout survives a page refresh.
+    try { db.run(`CREATE TABLE IF NOT EXISTS login_attempts (
+      attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account    TEXT NOT NULL,
+      attempt_ms INTEGER NOT NULL
+    )`); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_login_attempts_acct ON login_attempts(account, attempt_ms)'); } catch(e) {}
   } else {
     db = new SQL.Database();
     console.log('[DB] Created new database');
@@ -336,6 +346,17 @@ function createAllTables() {
       type       TEXT NOT NULL
     );
   `);
+
+  // Brute-force login throttling (see auth.js). Kept in the DB rather than
+  // localStorage so the counter is not reset by a localStorage.clear().
+  db.run(`
+    CREATE TABLE IF NOT EXISTS login_attempts (
+      attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account    TEXT NOT NULL,
+      attempt_ms INTEGER NOT NULL
+    );
+  `);
+  db.run('CREATE INDEX IF NOT EXISTS idx_login_attempts_acct ON login_attempts(account, attempt_ms)');
 
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
@@ -2109,16 +2130,43 @@ function openIDB() {
   });
 }
 
+// ------------------------------------------------------------
+// Persist coalescing (perf)
+// db.export() serializes the ENTIRE database, so calling it after every
+// mutation — on top of the 30s autosave — re-wrote the whole blob even when
+// nothing had changed. We now: (1) skip the write entirely when the in-memory
+// DB is unchanged since the last successful save, and (2) never run two
+// IndexedDB writes at once — a burst of mutations collapses into one write and
+// concurrent callers await the same in-flight promise. The while-loop re-flushes
+// if a mutation lands during the async write, so an awaited save always returns
+// only after the latest data is on disk.
+// ------------------------------------------------------------
+let _dbDirty = true;      // true at boot so the first save always persists
+let _savePromise = null;  // in-flight save shared by concurrent callers
+
 async function saveDBToIndexedDB() {
   if (!db) return;
-  const data = db.export();
-  const idb = await openIDB();
-  return new Promise((resolve, reject) => {
-    const tx = idb.transaction('databases', 'readwrite');
-    tx.objectStore('databases').put(data.buffer, 'main');
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  if (!_dbDirty) return;                  // nothing changed since the last save
+  if (_savePromise) return _savePromise;  // coalesce: wait on the in-flight write
+  _savePromise = (async () => {
+    try {
+      while (_dbDirty) {
+        _dbDirty = false;                 // snapshot point: db.export() below is synchronous
+        const data = db.export();
+        const idb = await openIDB();
+        await new Promise((resolve, reject) => {
+          const tx = idb.transaction('databases', 'readwrite');
+          tx.objectStore('databases').put(data.buffer, 'main');
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+        // if a mutation re-dirtied the DB during the await, loop and flush again
+      }
+    } finally {
+      _savePromise = null;
+    }
+  })();
+  return _savePromise;
 }
 
 async function loadDBFromIndexedDB() {
@@ -2161,6 +2209,7 @@ function restoreBackup(file) {
           locateFile: f => `vendor/${f}`
         });
         db = new SQL.Database(new Uint8Array(reader.result));
+        _dbDirty = true;   // brand-new db instance — force a persist
         await saveDBToIndexedDB();
         showSuccess(t('db_loaded'));
         resolve();
@@ -2212,6 +2261,7 @@ function dbGet(sql, params) {
  */
 function dbRun(sql, params) {
   db.run(sql, params);
+  _dbDirty = true;   // mark for the next persist (see saveDBToIndexedDB)
 }
 
 /**

@@ -24,7 +24,7 @@
 ### 2. It does NOT meet HIPAA, GDPR, or any healthcare data regulation
 - Browser sandbox ≠ encryption at rest
 - The "blackbox" audit log lives in the same IndexedDB any admin can wipe with one DevTools command
-- The brute-force protection lives in `localStorage` — an attacker opens DevTools, runs `localStorage.clear()`, the counter resets
+- Brute-force protection now lives in the DB, not `localStorage` (a `localStorage.clear()` no longer resets the counter, it survives a refresh, and the patient portal is throttled too) — but it's still client-side: a determined user can edit the IndexedDB SQLite blob directly, and there is still no MFA
 - No MFA, no row-level security, no patient consent flow, no right-to-be-forgotten, no data-residency controls
 - A real DPO / compliance officer / hospital security team would (correctly) reject this
 
@@ -118,7 +118,7 @@ The QR scanner and NFC features require HTTPS (not plain HTTP) — GitHub Pages 
 | Frontend | Vanilla HTML/CSS/JS | ✅ Same as any other webapp |
 | State | `sql.js` (SQLite in WebAssembly) | ✅ Works in browser ❌ Single-device only |
 | Persistence | IndexedDB | ✅ Survives reload ❌ Wiped by cache clear, no sync, no backup |
-| Auth | Salted SHA-256 + localStorage session | ✅ Better than nothing ❌ No MFA, brute-force counter is bypassable |
+| Auth | Salted SHA-256 + localStorage session | ✅ Better than nothing ✅ Brute-force counter in the DB (not reset by `localStorage.clear()`) ❌ No MFA, whole DB blob is client-editable |
 | Audit log | `audit_log` table with hash chaining | ✅ Tamper-evident in theory ❌ Same DB, same admin can wipe |
 | Charts | Chart.js | ✅ Real library |
 | QR | qrcode.js + native BarcodeDetector | ✅ Modern web API |

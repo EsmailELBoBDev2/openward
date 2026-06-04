@@ -8485,6 +8485,13 @@ async function activateCodeBlue() {
 
 async function logCBTimestamp(eventId, column, btn) {
   const lang = currentLanguage();
+  // `column` is interpolated into the SQL below, so whitelist it — never trust
+  // the identifier even though every caller currently passes a hardcoded literal.
+  const CB_TIMESTAMP_COLUMNS = ['cpr_started_at', 'first_epinephrine_at', 'defibrillation_at', 'intubation_at', 'rosc_at'];
+  if (!CB_TIMESTAMP_COLUMNS.includes(column)) {
+    console.error('[logCBTimestamp] rejected unknown column:', column);
+    return;
+  }
   // Check if already logged
   const existing = dbGet(`SELECT ${column} FROM code_blue_events WHERE event_id = ?`, [eventId]);
   if (existing && existing[column]) {

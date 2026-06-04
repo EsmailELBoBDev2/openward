@@ -292,7 +292,12 @@
             routeToDashboard();
             if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
           } else {
-            errorEl.textContent = t(result.errorKey || 'patient_login_error');
+            let msg = t(result.errorKey || 'patient_login_error');
+            if (result.errorKey === 'login_locked' && result.lockedSec) {
+              const mins = Math.ceil(result.lockedSec / 60);
+              msg += ' (' + mins + (lang === 'ar' ? ' دقيقة' : ' min') + ')';
+            }
+            errorEl.textContent = msg;
             errorEl.classList.add('show');
           }
         } else {
