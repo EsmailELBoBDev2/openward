@@ -709,7 +709,7 @@ function showAddUserForm() {
   const depts = dbAll('SELECT * FROM departments ORDER BY dept_id');
   const container = document.getElementById('user-form-container');
 
-  const deptOptions = depts.map(d => `<option value="${d.dept_id}">${lang === 'ar' ? d.name_ar : d.name_en}</option>`).join('');
+  const deptOptions = depts.map(d => `<option value="${d.dept_id}">${lang === 'ar' ? escapeHtml(d.name_ar) : escapeHtml(d.name_en)}</option>`).join('');
   const roleOptions = Object.entries(ROLES).map(([k, v]) => `<option value="${k}">${v[lang]}</option>`).join('');
 
   container.innerHTML = `
@@ -772,7 +772,7 @@ function showEditUserForm(userId) {
   const depts = dbAll('SELECT * FROM departments ORDER BY dept_id');
   const container = document.getElementById('user-form-container');
 
-  const deptOptions = depts.map(d => `<option value="${d.dept_id}" ${d.dept_id === user.department_id ? 'selected' : ''}>${lang === 'ar' ? d.name_ar : d.name_en}</option>`).join('');
+  const deptOptions = depts.map(d => `<option value="${d.dept_id}" ${d.dept_id === user.department_id ? 'selected' : ''}>${lang === 'ar' ? escapeHtml(d.name_ar) : escapeHtml(d.name_en)}</option>`).join('');
   const roleOptions = Object.entries(ROLES).map(([k, v]) => `<option value="${k}" ${k === user.role ? 'selected' : ''}>${v[lang]}</option>`).join('');
 
   container.innerHTML = `
@@ -951,8 +951,8 @@ function renderHMBlackbox(main, lang) {
       <div class="form-row">
         <div class="form-group"><label>${t('filter_by_date')} (${lang === 'ar' ? 'من' : 'From'})</label><input type="date" id="bb-date-from"></div>
         <div class="form-group"><label>${t('filter_by_date')} (${lang === 'ar' ? 'إلى' : 'To'})</label><input type="date" id="bb-date-to"></div>
-        <div class="form-group"><label>${t('filter_by_user')}</label><select id="bb-user"><option value="">—</option>${users.map(u => `<option value="${u.user_id}">${lang === 'ar' ? u.user_name_ar : u.user_name_en}</option>`).join('')}</select></div>
-        <div class="form-group"><label>${t('filter_by_dept')}</label><select id="bb-dept"><option value="">—</option>${depts.map(d => `<option value="${d.dept_id}">${lang === 'ar' ? d.name_ar : d.name_en}</option>`).join('')}</select></div>
+        <div class="form-group"><label>${t('filter_by_user')}</label><select id="bb-user"><option value="">—</option>${users.map(u => `<option value="${u.user_id}">${lang === 'ar' ? escapeHtml(u.user_name_ar) : escapeHtml(u.user_name_en)}</option>`).join('')}</select></div>
+        <div class="form-group"><label>${t('filter_by_dept')}</label><select id="bb-dept"><option value="">—</option>${depts.map(d => `<option value="${d.dept_id}">${lang === 'ar' ? escapeHtml(d.name_ar) : escapeHtml(d.name_en)}</option>`).join('')}</select></div>
         <div class="form-group"><label>${t('filter_by_action')}</label><select id="bb-action"><option value="">—</option>${actionTypes.map(a => `<option value="${a.action_type}">${a.action_type}</option>`).join('')}</select></div>
       </div>
       <div class="form-row">
@@ -1138,7 +1138,7 @@ function renderHMReports(main, lang) {
 
 function renderERRegister(main, lang) {
   const depts = dbAll("SELECT * FROM departments WHERE type = 'clinical' ORDER BY dept_id");
-  const deptOptions = depts.map(d => `<option value="${d.dept_id}">${lang === 'ar' ? d.name_ar : d.name_en}</option>`).join('');
+  const deptOptions = depts.map(d => `<option value="${d.dept_id}">${lang === 'ar' ? escapeHtml(d.name_ar) : escapeHtml(d.name_en)}</option>`).join('');
   const condOptions = Object.entries(CONDITIONS).map(([k, v]) => `<label><input type="checkbox" name="conditions" value="${k}"> ${v[lang]}</label>`).join('');
   const bloodOptions = ['unknown', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map(b => `<option value="${b}">${b === 'unknown' ? t('blood_unknown') : b}</option>`).join('');
 
@@ -1813,7 +1813,7 @@ function renderConAssign(main, lang) {
     WHERE a.dept_id = ? AND a.status = 'active' AND ca.id IS NULL ORDER BY a.admitted_at`, [session.dept_id]);
 
   const doctors = dbAll("SELECT * FROM users WHERE role = 'doctor' AND department_id = ? AND is_active = 1", [session.dept_id]);
-  const docOptions = doctors.map(d => `<option value="${d.user_id}">${lang === 'ar' ? d.full_name_ar : d.full_name_en}</option>`).join('');
+  const docOptions = doctors.map(d => `<option value="${d.user_id}">${lang === 'ar' ? escapeHtml(d.full_name_ar) : escapeHtml(d.full_name_en)}</option>`).join('');
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('case_assignment')}</h1></div>
@@ -2071,7 +2071,7 @@ function showPatientDetail(patientId, admissionId) {
         <div class="critical-lab-item" id="critical-item-${lab.order_id}">
           <div class="critical-lab-info">
             <strong>${escapeHtml(lab.test_name)}</strong>
-            <span class="flag-critical_high" style="margin:0 8px">${lab.result_value || '—'} ${lab.result_unit || ''}</span>
+            <span class="flag-critical_high" style="margin:0 8px">${escapeHtml(lab.result_value || '—')} ${escapeHtml(lab.result_unit || '')}</span>
             <span class="text-muted" style="font-size:0.8rem">${formatDateTime(lab.resulted_at)}</span>
           </div>
           <button class="btn btn-sm btn-danger" onclick="showCriticalAckModal(${lab.order_id}, '${escapeHtml(lab.test_name).replace(/'/g,'')}', ${patientId}, ${admissionId})">
@@ -2202,7 +2202,7 @@ function renderDocRx(main, lang) {
 
   const drugs = dbAll('SELECT * FROM drugs ORDER BY name_generic');
   const drugOptions = drugs.map(d => `<option value="${d.drug_id}" data-name="${escapeHtml(d.name_generic)}">${d.name_generic}${d.name_brand ? ' (' + d.name_brand + ')' : ''} — ${d.name_ar || ''}</option>`).join('');
-  const patientOptions = patients.map(p => `<option value="${p.admission_id}" data-pid="${p.patient_id}">${p.mrn} — ${lang === 'ar' ? p.full_name_ar : (p.full_name_en || p.full_name_ar)}</option>`).join('');
+  const patientOptions = patients.map(p => `<option value="${p.admission_id}" data-pid="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
   const routeOptions = ['oral','iv','im','sc','sublingual','topical','inhaled','pr','ng_tube'].map(r => `<option value="${r}">${LANG['route_' + r] ? LANG['route_' + r][lang] : r}</option>`).join('');
   const freqOptions = ['once_daily','twice_daily','three_times_daily','four_times_daily','every_6h','every_8h','every_12h','as_needed','stat','once'].map(f => `<option value="${f}">${LANG['freq_' + f] ? LANG['freq_' + f][lang] : f}</option>`).join('');
   const durOptions = ['3_days','5_days','7_days','14_days','until_review','ongoing','custom'].map(d => `<option value="${d}">${LANG['dur_' + d] ? LANG['dur_' + d][lang] : d}</option>`).join('');
@@ -2322,8 +2322,8 @@ async function handlePrescribe(e) {
     const sev = (allergyMatch.severity || '').toLowerCase();
     const isLifeThreatening = sev === 'life_threatening' || sev === 'severe' || sev === 'anaphylaxis';
     const msg = lang === 'ar'
-      ? `&#9888; تنبيه حساسية! المريض لديه حساسية من: ${allergyMatch.allergen} (${allergyMatch.severity || '—'}). التفاعل: ${allergyMatch.reaction || '—'}`
-      : `&#9888; ALLERGY ALERT! Patient has documented allergy to: ${allergyMatch.allergen} (${allergyMatch.severity || '—'}). Reaction: ${allergyMatch.reaction || '—'}`;
+      ? `&#9888; تنبيه حساسية! المريض لديه حساسية من: ${escapeHtml(allergyMatch.allergen)} (${escapeHtml(allergyMatch.severity || '—')}). التفاعل: ${escapeHtml(allergyMatch.reaction || '—')}`
+      : `&#9888; ALLERGY ALERT! Patient has documented allergy to: ${escapeHtml(allergyMatch.allergen)} (${escapeHtml(allergyMatch.severity || '—')}). Reaction: ${escapeHtml(allergyMatch.reaction || '—')}`;
     if (isLifeThreatening) {
       // Hard stop with override-with-reason
       showRedAlert(msg, async (reason) => {
@@ -2408,7 +2408,7 @@ function renderDocLabs(main, lang) {
 
   if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('order_labs')}</h1></div><div class="empty-state"><p>${t('no_data')}</p></div>`; return; }
 
-  const patientOptions = patients.map(p => `<option value="${p.admission_id}" data-pid="${p.patient_id}">${p.mrn} — ${lang === 'ar' ? p.full_name_ar : (p.full_name_en || p.full_name_ar)}</option>`).join('');
+  const patientOptions = patients.map(p => `<option value="${p.admission_id}" data-pid="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
 
   // Get unique categories from catalog
   const categories = [...new Set(LAB_TEST_CATALOG.map(t => t.cat))];
@@ -2651,7 +2651,7 @@ function renderDocConsult(main, lang) {
 
   if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('my_consultations')}</h1></div><div class="empty-state"><p>${t('no_data')}</p></div>`; return; }
 
-  const patientOptions = patients.map(p => `<option value="${p.admission_id}" data-pid="${p.patient_id}">${p.mrn} — ${lang === 'ar' ? p.full_name_ar : (p.full_name_en || p.full_name_ar)}</option>`).join('');
+  const patientOptions = patients.map(p => `<option value="${p.admission_id}" data-pid="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('new_consultation')}</h1></div>
@@ -3252,8 +3252,8 @@ async function handleInlineRx(e, patientId, admissionId) {
     const sev = (allergyMatch.severity || '').toLowerCase();
     const isLifeThreatening = sev === 'life_threatening' || sev === 'severe' || sev === 'anaphylaxis';
     const msg = lang === 'ar'
-      ? `تنبيه حساسية! المريض لديه حساسية من: ${allergyMatch.allergen} (${allergyMatch.severity || '—'})`
-      : `ALLERGY ALERT! Patient allergic to: ${allergyMatch.allergen} (${allergyMatch.severity || '—'})`;
+      ? `تنبيه حساسية! المريض لديه حساسية من: ${escapeHtml(allergyMatch.allergen)} (${escapeHtml(allergyMatch.severity || '—')})`
+      : `ALLERGY ALERT! Patient allergic to: ${escapeHtml(allergyMatch.allergen)} (${escapeHtml(allergyMatch.severity || '—')})`;
     if (isLifeThreatening) {
       showRedAlert(msg, async (reason) => {
         await logAction('ALLERGY_OVERRIDE', `${user.full_name_en} overrode allergy alert (${allergyMatch.allergen} → ${drugName}). Reason: ${reason}`, null, patientId, '', '');
@@ -3391,7 +3391,7 @@ function renderSNAssign(main, lang) {
     WHERE a.dept_id = ? AND a.status = 'active' AND na.assignment_id IS NULL`, [session.dept_id]);
 
   const nurses = dbAll("SELECT * FROM users WHERE role = 'nurse' AND department_id = ? AND is_active = 1", [session.dept_id]);
-  const nurseOptions = nurses.map(n => `<option value="${n.user_id}">${lang === 'ar' ? n.full_name_ar : n.full_name_en}</option>`).join('');
+  const nurseOptions = nurses.map(n => `<option value="${n.user_id}">${lang === 'ar' ? escapeHtml(n.full_name_ar) : escapeHtml(n.full_name_en)}</option>`).join('');
   const shiftOptions = `<option value="morning">${t('shift_morning')}</option><option value="afternoon">${t('shift_afternoon')}</option><option value="night">${t('shift_night')}</option>`;
 
   // Workload dashboard (Sara persona): show each nurse's load today
@@ -4542,8 +4542,8 @@ async function handleVerifyRx(rxId) {
     const match = checkDrugAllergy(rx.drug_name, allergies);
     if (match) {
       const msg = lang === 'ar'
-        ? `&#9888; تنبيه! المريض ${patient.full_name_ar} لديه حساسية من <strong>${match.allergen}</strong> — والدواء الموصوف <strong>${rx.drug_name}</strong>. هل أنت متأكد من التحقق؟`
-        : `&#9888; ALLERT: Patient ${patient.full_name_en || patient.full_name_ar} has documented allergy to <strong>${match.allergen}</strong> — but prescribed drug is <strong>${rx.drug_name}</strong>. Verify anyway?`;
+        ? `&#9888; تنبيه! المريض ${escapeHtml(patient.full_name_ar)} لديه حساسية من <strong>${escapeHtml(match.allergen)}</strong> — والدواء الموصوف <strong>${escapeHtml(rx.drug_name)}</strong>. هل أنت متأكد من التحقق؟`
+        : `&#9888; ALERT: Patient ${escapeHtml(patient.full_name_en || patient.full_name_ar)} has documented allergy to <strong>${escapeHtml(match.allergen)}</strong> — but prescribed drug is <strong>${escapeHtml(rx.drug_name)}</strong>. Verify anyway?`;
       requireReasonToDecline(msg, `Pharmacist verify of Rx ${rxId} despite ${match.allergen} allergy`,
         async () => { /* Accepted = pharmacist confirmed safe (e.g. desensitization protocol) */ await _doVerifyRx(rxId, rx, patient, user, lang); },
         async (reason) => { /* Declined = pharmacist refuses */ await _doRefuseRx(rxId, rx, patient, user, lang, `Allergy cross-check: ${reason}`); }
@@ -6480,7 +6480,7 @@ function showSurgicalForm() {
         <div class="form-row">
           <div class="form-group"><label>${t('patient_name')}</label>
             <select name="admission_id" required>${patients.map(p =>
-              `<option value="${p.admission_id}">${lang==='ar'?p.full_name_ar:p.full_name_en} (${p.mrn}) - ${p.bed_number}</option>`).join('')}
+              `<option value="${p.admission_id}">${lang==='ar'?escapeHtml(p.full_name_ar):escapeHtml(p.full_name_en)} (${escapeHtml(p.mrn)}) - ${escapeHtml(p.bed_number)}</option>`).join('')}
             </select></div>
           <div class="form-group"><label>${t('procedure_name')}</label><input name="procedure_name" id="surg-procedure" required autocomplete="off"></div>
         </div>
@@ -6505,7 +6505,7 @@ function showSurgicalForm() {
         <div class="form-group"><label>${t('pre_op_diagnosis')}</label><textarea name="pre_op_diagnosis" rows="2"></textarea></div>
         ${surgeons.length > 1 ? `<div class="form-group"><label>${lang==='ar'?'الجراح':'Surgeon'}</label>
           <select name="surgeon_id">${surgeons.map(s =>
-            `<option value="${s.user_id}">${lang==='ar'?s.full_name_ar:s.full_name_en}</option>`).join('')}
+            `<option value="${s.user_id}">${lang==='ar'?escapeHtml(s.full_name_ar):escapeHtml(s.full_name_en)}</option>`).join('')}
           </select></div>` : `<input type="hidden" name="surgeon_id" value="${surgeons[0]?.user_id || ''}">`}
         <div class="form-section"><h4>${t('pre_op_checklist')}</h4>
           <div class="pre-op-checklist">
@@ -6758,7 +6758,7 @@ function renderDTAssessments(main, lang) {
         <div class="form-row">
           <div class="form-group"><label>${t('patient_name')}</label>
             <select name="admission_id" required>${patients.map(p =>
-              `<option value="${p.admission_id}">${lang==='ar'?p.full_name_ar:p.full_name_en} (${p.mrn}) - ${p.bed_number}</option>`).join('')}
+              `<option value="${p.admission_id}">${lang==='ar'?escapeHtml(p.full_name_ar):escapeHtml(p.full_name_en)} (${escapeHtml(p.mrn)}) - ${escapeHtml(p.bed_number)}</option>`).join('')}
             </select></div>
         </div>
         <div class="form-row">
@@ -7007,7 +7007,7 @@ function renderSWNew(main, lang) {
       <form onsubmit="handleCreateSWCase(event)">
         <div class="form-group"><label>${t('patient_name')}</label>
           <select name="admission_id" required>${patients.map(p =>
-            `<option value="${p.admission_id}" data-pid="${p.patient_id}">${lang==='ar'?p.full_name_ar:p.full_name_en} (${p.mrn}) - ${p.bed_number}</option>`).join('')}
+            `<option value="${p.admission_id}" data-pid="${p.patient_id}">${lang==='ar'?escapeHtml(p.full_name_ar):escapeHtml(p.full_name_en)} (${escapeHtml(p.mrn)}) - ${escapeHtml(p.bed_number)}</option>`).join('')}
           </select></div>
         <div class="form-group"><label>${t('psychosocial_assessment')}</label>
           <textarea name="psychosocial_assessment" rows="5" required placeholder="${lang==='ar'?'وصف شامل للوضع النفسي والاجتماعي للمريض...':'Comprehensive description of patient psychosocial status...'}"></textarea></div>
@@ -8421,7 +8421,7 @@ function showCodeBlueForm() {
         <label>${lang==='ar'?'المريض (اختياري)':'Patient (optional)'}</label>
         <select id="cb-patient">
           <option value="">${lang==='ar'?'— تحديد لاحقاً —':'— Identify Later —'}</option>
-          ${admissions.map(a => `<option value="${a.admission_id}|${a.mrn}">${a.bed_number||'?'} — ${lang==='ar'?a.full_name_ar:a.full_name_en||a.full_name_ar} (${a.mrn})</option>`).join('')}
+          ${admissions.map(a => `<option value="${a.admission_id}|${a.mrn}">${escapeHtml(a.bed_number||'?')} — ${lang==='ar'?escapeHtml(a.full_name_ar):escapeHtml(a.full_name_en||a.full_name_ar)} (${escapeHtml(a.mrn)})</option>`).join('')}
         </select>
       </div>
       <div class="form-group" style="text-align:${lang==='ar'?'right':'left'};">

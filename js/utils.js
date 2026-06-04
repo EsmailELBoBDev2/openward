@@ -173,7 +173,9 @@ function escapeHtml(str) {
   if (str === null || str === undefined) return '';
   const div = document.createElement('div');
   div.appendChild(document.createTextNode(String(str)));
-  return div.innerHTML;
+  // textContent→innerHTML escapes < > & but NOT quotes; also escape " so the
+  // output is safe inside double-quoted attributes, e.g. value="${escapeHtml(x)}".
+  return div.innerHTML.replace(/"/g, '&quot;');
 }
 
 // ============================================================
@@ -1028,3 +1030,58 @@ function showModal(innerHtml, opts) {
 function closeModal() {
   document.querySelectorAll('.alert-overlay.generic-modal').forEach(m => m.remove());
 }
+
+// ============================================================
+// Modal accessibility (a11y): focus trap + focus restore
+// Covers BOTH showModal() generic modals and the ad-hoc `.alert-overlay`
+// modals (they are all appended as direct children of <body>). When a modal
+// opens, focus moves into it; Tab / Shift+Tab cycle within the topmost overlay
+// so a keyboard user can't reach the page behind it; when the last modal
+// closes, focus returns to whatever had it before the modal opened.
+// ============================================================
+(function installModalFocusTrap() {
+  const MODAL_SEL = '.alert-overlay, .generic-modal';
+  let lastFocused = null;
+
+  function topOverlay() {
+    const all = document.querySelectorAll(MODAL_SEL);
+    return all.length ? all[all.length - 1] : null;
+  }
+  function focusables(container) {
+    return Array.from(container.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter(el => el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement);
+  }
+
+  function start() {
+    // Move focus into a modal when it appears; restore it when the last closes.
+    const obs = new MutationObserver(() => {
+      const top = topOverlay();
+      if (top && !top.contains(document.activeElement)) {
+        if (!lastFocused) lastFocused = document.activeElement;
+        const f = focusables(top);
+        if (f[0]) f[0].focus();
+      } else if (!top && lastFocused) {
+        try { lastFocused.focus(); } catch (e) {}
+        lastFocused = null;
+      }
+    });
+    obs.observe(document.body, { childList: true });
+
+    // Trap Tab within the topmost overlay (capture phase, before app handlers).
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab') return;
+      const overlay = topOverlay();
+      if (!overlay) return;
+      const f = focusables(overlay);
+      if (!f.length) { e.preventDefault(); return; }
+      const first = f[0], last = f[f.length - 1];
+      if (!overlay.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }, true);
+  }
+
+  if (document.body) start();
+  else document.addEventListener('DOMContentLoaded', start);
+})();

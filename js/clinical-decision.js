@@ -608,6 +608,11 @@ const DRUG_DOSING = {
  * @param {number} weightKg - patient weight in kg
  * @param {number} egfr - estimated GFR (mL/min/1.73m²); null = unknown (assume normal)
  * @returns {object|null} { single_dose_mg, daily_dose_mg, frequency, warnings, raw_dose, factor }
+ *
+ * NOTE: uses TOTAL body weight for mg/kg drugs. It does NOT adjust for ideal /
+ * adjusted body weight (obesity), pediatric weight bands, or non-renal organ
+ * function — so it can over-estimate for some agents (e.g. vancomycin, heparin)
+ * in obese patients. Estimate only; needs clinician verification (see README).
  */
 function calcRecommendedDose(drugKey, weightKg, egfr) {
   const drug = DRUG_DOSING[drugKey.toLowerCase()];
@@ -740,6 +745,11 @@ function renderAutoDoseWidget(containerId, opts) {
           ${result.renal_factor < 1 ? ` • <span style="color:#dc2626">${lang==='ar'?'مع تعديل كلوي':'with renal adjustment'}</span>` : ''}
         </div>
         ${warnHtml}
+        <div style="font-size:0.75rem;color:#92400e;background:#fffbeb;border-radius:6px;padding:6px 8px;margin-top:6px">
+          ${lang==='ar'
+            ? '⚠️ تقدير مبدئي بحسب وزن الجسم الكلي. تحقّق من الجرعة حسب الوزن المثالي/المعدّل في حالات السمنة، وجرعات الأطفال، ووظيفة الكلى، ودليل المستشفى قبل الوصف.'
+            : '⚠️ Rough estimate using total body weight. Verify against ideal/adjusted body weight (obesity), pediatric dosing, renal function, and your formulary before prescribing.'}
+        </div>
         ${!result.contraindicated && opts.doseInputId ? `
           <button type="button" class="btn btn-sm btn-primary" style="margin-top:8px"
                   onclick="document.getElementById('${opts.doseInputId}').value='${result.single_dose_mg}mg'; ${opts.freqInputId?`document.getElementById('${opts.freqInputId}').value='${result.frequency}';`:''}">
@@ -769,12 +779,17 @@ function autoDoseAvailableDrugs() {
 }
 
 // ============================================================
-// SEPSIS AUTO-ALERT
+// SEPSIS AUTO-ALERT  (SCREENING ONLY — not a diagnosis)
 // ============================================================
-// Triggered when vitals are recorded.
-// Sepsis criteria (Sepsis-3):
-//   - qSOFA ≥ 2 (resp_rate ≥ 22, SBP ≤ 100, AVPU not "alert")
-//   - OR temp ≥ 38°C or ≤ 36°C with HR ≥ 90 and RR ≥ 20
+// Triggered when vitals are recorded. This is a bedside *screen* that prompts
+// review; it does NOT diagnose sepsis.
+//   - qSOFA ≥ 2 (resp_rate ≥ 22, SBP ≤ 100, AVPU not "alert") — Sepsis-3 screen
+//   - SIRS (temp; HR ≥ 90; RR ≥ 20) is shown as a legacy adjunct signal only.
+//     SIRS was REMOVED from the Sepsis-3 definition (Singer et al., JAMA 2016);
+//     qSOFA is a screening prompt, NOT a diagnostic criterion. True Sepsis-3 =
+//     suspected infection + an acute rise in the full SOFA score ≥ 2.
+// TODO(clinical): full SOFA + infection-suspicion gating needs MD / clinical
+//   informaticist sign-off before any real use (see README "Read this first").
 // ============================================================
 
 /**

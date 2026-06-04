@@ -177,9 +177,10 @@ PRs welcome. The codebase has a table-of-contents comment at the top of `js/rout
 Patterns to follow when contributing:
 - **All clinical alerts use `requireReasonToDecline()`** — gives users an out but logs the reason
 - **All SQL is parameterized** — never string-concat user input
-- **All patient names rendered via `escapeHtml()`** — XSS-safe
+- **All user-rendered fields (names, allergens, lab values, free text) go through `escapeHtml()`** — which escapes `< > & "`, so it is safe in both text and double-quoted attribute (`value="…"`) contexts
+- **Custom dropdowns expose ARIA** (`role="listbox/option"`, `aria-activedescendant`) and **modals trap focus** (`installModalFocusTrap` in `utils.js`) — keyboard- and screen-reader-friendly
 - **All schema changes go in `js/db.js` migration block** (the `if (saved) {...}` section) — auto-applies to existing installs
-- **If you add a clinical decision rule**, cite the guideline source in a comment AND note that it needs MD review
+- **If you add a clinical decision rule**, cite the guideline source in a comment AND note that it needs MD review (the dose calculator and sepsis screen carry explicit "estimate / screening only — verify" caveats)
 
 ---
 
