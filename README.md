@@ -117,9 +117,9 @@ The QR scanner and NFC features require HTTPS (not plain HTTP) — GitHub Pages 
 |---|---|---|
 | Frontend | Vanilla HTML/CSS/JS | ✅ Same as any other webapp |
 | State | `sql.js` (SQLite in WebAssembly) | ✅ Works in browser ❌ Single-device only |
-| Persistence | IndexedDB (+ optional AES-GCM at rest, 3-version backup rotation) | ✅ Survives reload ✅ Opt-in passphrase encryption ✅ Auto-recovers from a corrupt newest copy ❌ Wiped by a full cache clear, no cross-device sync, no off-device backup |
+| Persistence | IndexedDB (+ optional AES-GCM at rest, generational backups) | ✅ Survives reload ✅ Opt-in passphrase encryption ✅ Auto-recovers from a corrupt copy; minute/hour/day snapshots survive a burst of bad saves ❌ Wiped by a full cache clear or a console-capable insider, no cross-device sync, no off-device backup |
 | Auth | Salted SHA-256 + localStorage session | ✅ Better than nothing ✅ Brute-force counter in the DB (not reset by `localStorage.clear()`) ❌ No MFA, whole DB blob is client-editable |
-| Audit log | `audit_log` table with hash chaining | ✅ Tamper-evident in theory ✅ Backward-clock (backdating) attempts get flagged inside the signed chain ❌ Same DB an admin can wipe; the device clock still isn't authoritative without a server |
+| Audit log | `audit_log` table with hash chaining | ✅ Backdating flagged in the signed chain (backward-vs-last + monotonic in-session drift) ✅ Exportable integrity receipt detects a full recompute internal verification can't ❌ Keyless chain (not a signature); a console-capable insider can still rewrite+recompute or wipe — real tamper-proofing needs off-device append-only storage |
 | Charts | Chart.js | ✅ Real library |
 | QR | qrcode.js + native BarcodeDetector | ✅ Modern web API |
 | NFC | Web NFC (Chrome Android only) | ✅ Cool demo ❌ Not portable across browsers |

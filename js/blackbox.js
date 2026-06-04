@@ -25,11 +25,15 @@
  * @param {string} entry.action_detail  — full English sentence
  * @param {string} [entry.action_detail_ar]
  */
-// Clock-tamper detection. This is a client-only app, so the device clock cannot
-// be trusted; but a clock moved BACKWARD past the most recent record is the
-// signature of a backdating attempt. We can't prevent it without a server — we
-// flag it (tolerance below absorbs normal NTP/drift corrections).
-const CLOCK_ANOMALY_TOLERANCE_MS = 120000; // 2 minutes
+// Clock-tamper detection. A client-only app can't trust the device clock, but
+// two signals expose backdating without a server:
+//   (1) a record whose time is BEHIND the most recent record, and
+//   (2) the wall clock disagreeing with a MONOTONIC clock (performance.now(),
+//       which the user can't move) since the session started — this catches a
+//       clock change DURING the session in either direction, including the
+//       "set the clock to just after the last record" trick that (1) alone misses.
+// Neither is preventable in-sandbox; we make the attempt visible & tamper-evident.
+const CLOCK_ANOMALY_TOLERANCE_MS = 120000; // 2 minutes (absorbs NTP/drift/suspend)
 
 function _humanizeDuration(ms) {
   const s = Math.round(ms / 1000);
@@ -40,12 +44,31 @@ function _humanizeDuration(ms) {
   return rem ? `${h}h ${rem}m` : `${h}h`;
 }
 
-// Returns a human duration string if the device clock moved meaningfully BEHIND
-// the last record (a backdating signal), or '' otherwise. Pure — exposed for tests.
-function _clockAnomalyNote(timestamp, lastTimestamp) {
-  if (!lastTimestamp) return '';
-  const backMs = Date.parse(lastTimestamp) - Date.parse(timestamp);
-  return backMs > CLOCK_ANOMALY_TOLERANCE_MS ? _humanizeDuration(backMs) : '';
+// Monotonic session anchor (performance.now() is immune to system-clock changes).
+let _clockAnchorWall = null;
+let _clockAnchorMono = null;
+function _monoNow() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
+function _computeDrift(anchorWall, anchorMono, nowWall, nowMono) {
+  return nowWall - (anchorWall + (nowMono - anchorMono));  // ~0 if the clock only advanced normally
+}
+function _sessionClockDrift() {
+  const nowWall = Date.now(), nowMono = _monoNow();
+  if (_clockAnchorWall === null) { _clockAnchorWall = nowWall; _clockAnchorMono = nowMono; return 0; }
+  return _computeDrift(_clockAnchorWall, _clockAnchorMono, nowWall, nowMono);
+}
+
+// Returns a human description of any clock anomaly, or '' if none. Pure: the
+// in-session monotonic drift (ms) is passed in.
+function _clockAnomalyNote(timestamp, lastTimestamp, drift) {
+  const notes = [];
+  if (lastTimestamp) {
+    const backMs = Date.parse(lastTimestamp) - Date.parse(timestamp);
+    if (backMs > CLOCK_ANOMALY_TOLERANCE_MS) notes.push(`${_humanizeDuration(backMs)} behind the previous record at ${lastTimestamp}`);
+  }
+  if (typeof drift === 'number' && Math.abs(drift) > CLOCK_ANOMALY_TOLERANCE_MS) {
+    notes.push(`clock jumped ${drift < 0 ? 'back' : 'forward'} ${_humanizeDuration(Math.abs(drift))} during this session`);
+  }
+  return notes.join('; ');
 }
 
 async function logToBlackbox(entry) {
@@ -61,12 +84,10 @@ async function logToBlackbox(entry) {
   // entry can't be made to look clean without breaking hash verification.
   let action_detail = entry.action_detail;
   let action_detail_ar = entry.action_detail_ar || null;
-  if (lastRow && lastRow.timestamp) {
-    const h = _clockAnomalyNote(timestamp, lastRow.timestamp);
-    if (h) {
-      action_detail += ` [⚠ CLOCK ANOMALY: device clock ${h} BEHIND the previous record at ${lastRow.timestamp}]`;
-      if (action_detail_ar) action_detail_ar += ` [⚠ خلل بالساعة: ساعة الجهاز متأخرة ${h} عن آخر سجل في ${lastRow.timestamp}]`;
-    }
+  const anomaly = _clockAnomalyNote(timestamp, lastRow ? lastRow.timestamp : null, _sessionClockDrift());
+  if (anomaly) {
+    action_detail += ` [⚠ CLOCK ANOMALY: ${anomaly}]`;
+    if (action_detail_ar) action_detail_ar += ` [⚠ خلل بالساعة: ${anomaly}]`;
   }
 
   // Insert with placeholder hash first to get log_id
@@ -139,6 +160,46 @@ async function verifyBlackboxIntegrity() {
   }
 
   return { valid: true, brokenAt: null, totalRows: rows.length };
+}
+
+// ---- External-anchor integrity receipt --------------------------------------
+// A keyless SHA-256 hash chain is tamper-EVIDENT only against PARTIAL edits: an
+// insider with DB write access can rewrite a row AND recompute every downstream
+// hash, after which verifyBlackboxIntegrity() passes (there is no secret key to
+// forge). The only client-side defense is to record this receipt OUT OF BAND
+// (print it, email compliance, write it down). verifyAgainstReceipt() later
+// detects a recompute — the head hash at the receipt's log_id will have changed —
+// or a truncation (the row count dropped).
+function getIntegrityReceipt() {
+  const head = dbGet('SELECT log_id, row_hash FROM audit_log ORDER BY log_id DESC LIMIT 1');
+  const c = dbGet('SELECT COUNT(*) AS c FROM audit_log');
+  return {
+    head_log_id: head ? head.log_id : 0,
+    head_hash: head ? head.row_hash : 'GENESIS',
+    log_count: c ? c.c : 0,
+    generated_at: nowISO()
+  };
+}
+
+// Internal chain check PLUS comparison against a previously-recorded receipt —
+// the only way to catch a full recompute. Returns the internal result extended
+// with { matchesReceipt, receiptReason }.
+async function verifyAgainstReceipt(receipt) {
+  const internal = await verifyBlackboxIntegrity();
+  let matchesReceipt = null, receiptReason = null;
+  if (receipt && typeof receipt.head_log_id === 'number') {
+    matchesReceipt = true;
+    const c = dbGet('SELECT COUNT(*) AS c FROM audit_log');
+    const count = c ? c.c : 0;
+    if (count < receipt.log_count) {
+      matchesReceipt = false; receiptReason = 'rows removed since the receipt (truncation)';
+    } else {
+      const at = dbGet('SELECT row_hash FROM audit_log WHERE log_id = ?', [receipt.head_log_id]);
+      if (!at) { matchesReceipt = false; receiptReason = 'the receipt head row is missing'; }
+      else if (at.row_hash !== receipt.head_hash) { matchesReceipt = false; receiptReason = 'history at/before the receipt was rewritten'; }
+    }
+  }
+  return Object.assign({}, internal, { matchesReceipt, receiptReason });
 }
 
 /**
@@ -257,5 +318,8 @@ async function logAction(actionType, actionDetail, actionDetailAr, patientId, pa
 
 // Node test harness only (the browser has no `module`):
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { _clockAnomalyNote, _humanizeDuration, CLOCK_ANOMALY_TOLERANCE_MS };
+  module.exports = {
+    _clockAnomalyNote, _humanizeDuration, _computeDrift, CLOCK_ANOMALY_TOLERANCE_MS,
+    logToBlackbox, verifyBlackboxIntegrity, getIntegrityReceipt, verifyAgainstReceipt
+  };
 }

@@ -2140,19 +2140,27 @@ function openIDB() {
 // await the same in-flight promise; the while-loop re-flushes if a mutation
 // lands mid-write, so an awaited save returns only after the latest data is on disk.
 //
-// Rotation: instead of overwriting one key, each save writes to the NEXT of N
-// ring slots and advances a pointer (meta.current) in the SAME transaction, so
-// the previous good version is never touched. On load we try the newest slot and
-// fall back to older ones if it is unreadable (corrupt/undecryptable), instead of
-// bricking the app or forcing a wipe. Cost: up to N copies of the DB in IndexedDB.
-// (IndexedDB writes are already transactional, so this guards mainly against a
-// logically-bad version — a bad export, a corrupt blob — not just a torn write.)
+// Rotation: "current" is rewritten every save (crash safety + latest). A few
+// GENERATIONAL snapshots (minute/hour/day) are refreshed only once their cadence
+// has elapsed, all in ONE atomic transaction — so a burst of bad saves (e.g. an
+// accidental mass-delete that then autosaves repeatedly) can only clobber
+// "current", while the older snapshots preserve good states for a recovery
+// window. On load we try the newest readable copy and fall back to older ones.
+// Cost: a few DB copies in IndexedDB. (A console-capable insider can still wipe
+// everything; this defends against accidental / burst / torn-write corruption,
+// not deliberate sabotage — that is unsolvable in a client-only sandbox.)
 // ------------------------------------------------------------
-const DB_BACKUP_SLOTS = 3;     // keep current + 2 prior versions for recovery
 const DB_META_KEY = 'meta';
+const DB_CURRENT_KEY = 'db_current';
+const DB_SNAPSHOT_TIERS = [
+  { key: 'db_snap_min',  spacingMs: 60 * 1000 },          // refreshed at most ~1 min old
+  { key: 'db_snap_hour', spacingMs: 60 * 60 * 1000 },     // ~1 hour old
+  { key: 'db_snap_day',  spacingMs: 24 * 60 * 60 * 1000 } // ~1 day old
+];
+const DB_LEGACY_KEYS = ['main', 'db_0', 'db_1', 'db_2']; // pre-v2 keys cleaned up on migrate
 let _dbDirty = true;           // true at boot so the first save always persists
 let _savePromise = null;       // in-flight save shared by concurrent callers
-let _dbActiveSlot = -1;        // ring slot the live DB was loaded from / last saved to
+let _dbSaved = {};             // meta.saved map: storage key -> last-write epoch ms
 
 // Force the next save to persist even when no dbRun happened — e.g. after
 // toggling encryption, which changes how the blob is written, not its contents.
@@ -2193,15 +2201,24 @@ const idbStore = {
   }
 };
 
-// Write the blob to the next ring slot + advance the pointer atomically, and drop
-// any legacy single-key blob. Returns the new active slot.
-async function _persistBlobRotating(store, toStore, currentSlot, encrypted) {
-  const next = (currentSlot + 1) % DB_BACKUP_SLOTS;
-  await store.batch(
-    [['db_' + next, toStore], [DB_META_KEY, { v: 1, current: next, ring: DB_BACKUP_SLOTS, savedAt: Date.now(), encrypted: !!encrypted }]],
-    ['main']
-  );
-  return next;
+// Persist the blob: always (over)write "current", and refresh each generational
+// snapshot whose cadence has elapsed — all in ONE atomic transaction, dropping
+// any pre-v2 keys. Returns the updated saved-timestamps map.
+async function _persistBlobTiered(store, toStore, prevSaved, now, tiers) {
+  if (now == null) now = Date.now();          // 0 is a valid epoch — don't treat it as missing
+  if (tiers == null) tiers = DB_SNAPSHOT_TIERS;
+  const saved = Object.assign({}, prevSaved);
+  const puts = [[DB_CURRENT_KEY, toStore]];
+  saved[DB_CURRENT_KEY] = now;
+  for (const tier of tiers) {
+    if (saved[tier.key] == null || (now - saved[tier.key]) >= tier.spacingMs) {
+      puts.push([tier.key, toStore]);
+      saved[tier.key] = now;
+    }
+  }
+  puts.push([DB_META_KEY, { v: 2, saved }]);
+  await store.batch(puts, DB_LEGACY_KEYS);
+  return saved;
 }
 
 async function saveDBToIndexedDB() {
@@ -2217,7 +2234,7 @@ async function saveDBToIndexedDB() {
         // Only the persisted blob is encrypted; the in-memory DB stays plaintext.
         const encrypted = (typeof encIsActive === 'function' && encIsActive());
         const toStore = encrypted ? await encEncrypt(data) : data.buffer;
-        _dbActiveSlot = await _persistBlobRotating(idbStore, toStore, _dbActiveSlot, encrypted);
+        _dbSaved = await _persistBlobTiered(idbStore, toStore, _dbSaved);
         // if a mutation re-dirtied the DB during the await, loop and flush again
       }
     } finally {
@@ -2227,20 +2244,28 @@ async function saveDBToIndexedDB() {
   return _savePromise;
 }
 
-// Collect saved versions newest-first: ring slots (per meta) then any legacy blob.
-async function _collectDbCandidates(store) {
+// Collect saved versions newest-first, across v2 generational snapshots, the
+// legacy v1 ring, and the pre-rotation single key.
+async function _collectDbCandidates(store, meta) {
+  if (meta === undefined) meta = await store.get(DB_META_KEY);
   const out = [];
-  const meta = await store.get(DB_META_KEY);
-  if (meta && typeof meta.current === 'number') {
-    const N = meta.ring || DB_BACKUP_SLOTS;
+  if (meta && meta.v === 2 && meta.saved) {
+    const keys = Object.keys(meta.saved).filter(k => meta.saved[k] != null);
+    keys.sort((a, b) => meta.saved[b] - meta.saved[a]);   // newest first
+    for (const k of keys) {
+      const value = await store.get(k);
+      if (value != null) out.push({ key: k, value });
+    }
+  } else if (meta && typeof meta.current === 'number') {  // legacy v1 ring
+    const N = meta.ring || 3;
     for (let i = 0; i < N; i++) {
       const slot = (meta.current - i + N) % N;
       const value = await store.get('db_' + slot);
-      if (value != null) out.push({ key: 'db_' + slot, slot, value });
+      if (value != null) out.push({ key: 'db_' + slot, value });
     }
   }
-  const legacy = await store.get('main');   // pre-rotation single-key installs
-  if (legacy != null) out.push({ key: 'main', slot: -1, value: legacy });
+  const legacy = await store.get('main');                 // pre-rotation single key
+  if (legacy != null) out.push({ key: 'main', value: legacy });
   return out;
 }
 
@@ -2249,10 +2274,15 @@ async function _collectDbCandidates(store) {
 // Returns an opened SQL.Database, or null (caller then seeds a fresh DB).
 async function loadDatabaseWithRecovery(SQL, store) {
   store = store || idbStore;
-  let candidates;
-  try { candidates = await _collectDbCandidates(store); }
-  catch (e) { return null; }
+  let meta, candidates;
+  try {
+    meta = await store.get(DB_META_KEY);
+    candidates = await _collectDbCandidates(store, meta);
+  } catch (e) { return null; }
   if (!candidates.length) return null;
+  // Resume the generational cadence; {} for legacy installs forces a full
+  // snapshot set on the next save (which also drops the old keys).
+  _dbSaved = (meta && meta.v === 2 && meta.saved) ? meta.saved : {};
 
   const anyEncrypted = (typeof encIsEnvelope === 'function') && candidates.some(c => encIsEnvelope(c.value));
   if (anyEncrypted) {
@@ -2271,8 +2301,6 @@ async function loadDatabaseWithRecovery(SQL, store) {
       }
       const opened = new SQL.Database(bytes);  // may not validate until first real read
       opened.exec('SELECT count(*) FROM sqlite_master');  // force a header/schema read so a corrupt-but-openable blob is rejected here
-      // Resume the ring from the slot we loaded (legacy 'main' -> next save = slot 0)
-      _dbActiveSlot = (c.slot >= 0) ? c.slot : (DB_BACKUP_SLOTS - 1);
       if (i > 0) {
         console.warn('[DB] newest copy unreadable; recovered from backup', c.key);
         if (typeof showError === 'function') {
@@ -2392,5 +2420,5 @@ function dbLastId() {
 
 // Node test harness only (the browser has no `module`):
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { loadDatabaseWithRecovery, _persistBlobRotating, _collectDbCandidates, wipeLocalDatabase, DB_BACKUP_SLOTS, DB_META_KEY };
+  module.exports = { loadDatabaseWithRecovery, _persistBlobTiered, _collectDbCandidates, wipeLocalDatabase, DB_SNAPSHOT_TIERS, DB_CURRENT_KEY, DB_META_KEY };
 }

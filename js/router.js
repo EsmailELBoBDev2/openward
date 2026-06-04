@@ -962,6 +962,8 @@ function renderHMBlackbox(main, lang) {
         <button class="btn btn-primary" onclick="applyBlackboxFilter()">${t('filter_btn')}</button>
         <button class="btn btn-secondary" onclick="clearBlackboxFilter()">${t('clear_btn')}</button>
         <button class="btn btn-info" onclick="verifyBlackbox()">${lang === 'ar' ? 'تحقق من السلامة' : 'Verify Integrity'}</button>
+        <button class="btn btn-secondary" onclick="exportIntegrityReceipt()">${lang === 'ar' ? 'تصدير إيصال السلامة' : 'Export receipt'}</button>
+        <button class="btn btn-secondary" onclick="verifyReceiptPrompt()">${lang === 'ar' ? 'تحقق مقابل إيصال' : 'Verify vs receipt'}</button>
       </div>
     </div>
     <div id="bb-integrity-result"></div>
@@ -1037,12 +1039,70 @@ async function verifyBlackbox() {
   if (result.valid) {
     el.innerHTML = `<div class="card mb-2" style="background:var(--success-light);border-left:4px solid var(--success);padding:16px;">
       <strong>${lang === 'ar' ? 'سلامة السجل: سليم' : 'Integrity Check: PASSED'}</strong> — ${result.totalRows} ${lang === 'ar' ? 'سجل تم التحقق منه' : 'records verified'}
+      <div style="font-size:0.8rem;color:#92400e;margin-top:8px;line-height:1.5">
+        ${lang === 'ar'
+          ? '⚠ هذا يثبت فقط أن السلسلة متسقة داخلياً. لا يمكنه كشف إعادة كتابة كاملة وإعادة حساب من شخص لديه صلاحية الكتابة على قاعدة البيانات (لا يوجد مفتاح سري). للحماية الحقيقية: صدّر «إيصال السلامة» واحفظه خارج الجهاز، ثم استخدم «تحقق مقابل إيصال».'
+          : '⚠ This only proves the chain is internally self-consistent. It CANNOT detect a full rewrite-and-recompute by someone with database write access (there is no secret key). For real tamper-evidence: export an integrity receipt, store it out of band, and later use "Verify vs receipt".'}
+      </div>
     </div>`;
   } else {
     el.innerHTML = `<div class="card mb-2" style="background:var(--danger-light);border-left:4px solid var(--danger);padding:16px;">
-      <strong>${lang === 'ar' ? 'سلامة السجل: فشل' : 'Integrity Check: FAILED'}</strong> — ${lang === 'ar' ? 'خلل في السجل رقم' : 'Broken at log_id'} ${result.brokenAt} (${result.reason})
+      <strong>${lang === 'ar' ? 'سلامة السجل: فشل' : 'Integrity Check: FAILED'}</strong> — ${lang === 'ar' ? 'خلل في السجل رقم' : 'Broken at log_id'} ${result.brokenAt} (${escapeHtml(result.reason)})
     </div>`;
   }
+}
+
+// Export the chain head + count as a receipt to be recorded OUT OF BAND. A keyless
+// hash chain can be fully recomputed by anyone with DB access; an externally-held
+// receipt is the only client-side way to later detect that recompute.
+function exportIntegrityReceipt() {
+  const lang = currentLanguage();
+  const receipt = getIntegrityReceipt();
+  const json = JSON.stringify(receipt, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `openward_integrity_receipt_${receipt.generated_at.slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showModal(`
+    <h2 style="margin-top:0">🧾 ${lang === 'ar' ? 'إيصال سلامة السجل' : 'Audit-log integrity receipt'}</h2>
+    <p style="color:#555">${lang === 'ar'
+      ? 'احفظ هذا الإيصال خارج الجهاز (اطبعه أو أرسله للجهة المختصة). لاحقاً، إذا أُعيدت كتابة السجل، فلن يتطابق عبر «تحقق مقابل إيصال».'
+      : 'Keep this receipt OFF the device (print it, or email compliance). Later, if the log is rewritten, it will not match under "Verify vs receipt".'}</p>
+    <textarea readonly rows="7" style="width:100%;font-family:monospace;font-size:0.85rem">${escapeHtml(json)}</textarea>
+    <div class="flex gap-1" style="justify-content:flex-end;margin-top:8px"><button class="btn btn-primary" onclick="closeModal()">${t('close_btn')}</button></div>
+  `, { maxWidth: 540 });
+}
+
+// Check the chain against a previously-saved receipt — the only way to catch a
+// full recompute that internal verification would pass.
+function verifyReceiptPrompt() {
+  const lang = currentLanguage();
+  const overlay = showModal(`
+    <h2 style="margin-top:0">🧾 ${lang === 'ar' ? 'تحقق مقابل إيصال محفوظ' : 'Verify against a saved receipt'}</h2>
+    <p style="color:#555">${lang === 'ar' ? 'الصق محتوى إيصال السلامة الذي حفظته سابقاً.' : 'Paste the integrity receipt you saved earlier.'}</p>
+    <textarea id="receipt-input" rows="7" style="width:100%;font-family:monospace;font-size:0.85rem" placeholder='{ "head_log_id": ..., "head_hash": "...", "log_count": ... }'></textarea>
+    <div id="receipt-verify-result" style="margin-top:8px"></div>
+    <div class="flex gap-1" style="justify-content:flex-end;margin-top:8px">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('cancel_btn')}</button>
+      <button class="btn btn-primary" id="receipt-verify-btn">${lang === 'ar' ? 'تحقق' : 'Verify'}</button>
+    </div>
+  `, { maxWidth: 540 });
+  overlay.querySelector('#receipt-verify-btn').addEventListener('click', async () => {
+    const out = overlay.querySelector('#receipt-verify-result');
+    let receipt;
+    try { receipt = JSON.parse(overlay.querySelector('#receipt-input').value.trim()); }
+    catch (e) { out.innerHTML = `<span style="color:var(--danger)">${lang === 'ar' ? 'إيصال غير صالح' : 'Invalid receipt JSON'}</span>`; return; }
+    const r = await verifyAgainstReceipt(receipt);
+    if (r.valid && r.matchesReceipt) {
+      out.innerHTML = `<div style="color:var(--success);font-weight:600">✓ ${lang === 'ar' ? 'مطابق: لم تتغيّر السلسلة منذ الإيصال.' : 'Match — the chain is unchanged since the receipt.'}</div>`;
+    } else {
+      const reason = r.receiptReason || r.reason || (lang === 'ar' ? 'فشل التحقق الداخلي' : 'internal verification failed');
+      out.innerHTML = `<div style="color:var(--danger);font-weight:700">✗ ${lang === 'ar' ? 'تحذير: تم العبث بالسجل' : 'TAMPERING DETECTED'} — ${escapeHtml(reason)}</div>`;
+    }
+  });
 }
 
 function renderHMReports(main, lang) {
