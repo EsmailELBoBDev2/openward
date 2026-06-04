@@ -71,17 +71,41 @@ function _clockAnomalyNote(timestamp, lastTimestamp, drift) {
   return notes.join('; ');
 }
 
-async function logToBlackbox(entry) {
+// ---- Canonical hash input (delimiter-injection-proof) -----------------------
+// The old format joined fields with '|', so moving a '|' between fields (e.g.
+// action_type "LOGIN" + detail "SUCCESS"  ->  "LOGIN|S" + "UCCESS") produced an
+// identical string and an identical hash — letting an attacker shift data
+// between columns while keeping every row_hash (and thus an integrity receipt)
+// intact. JSON-encoding the field array escapes any delimiter inside a field, so
+// distinct field-tuples can never collide. 'v2' is a domain separator; log_id is
+// deliberately NOT in the input so the hash can be computed BEFORE the insert.
+function _canonicalHashInput(timestamp, userId, actionType, actionDetail, prevHash) {
+  return JSON.stringify(['v2', timestamp, userId, actionType, actionDetail, prevHash]);
+}
+// Pre-v2 rows were hashed with this ambiguous '|' join (incl. log_id). Kept ONLY
+// so existing chains still verify after the upgrade; never used for new writes.
+function _legacyHashInput(logId, timestamp, userId, actionType, actionDetail, prevHash) {
+  return `${logId}|${timestamp}|${userId}|${actionType}|${actionDetail}|${prevHash}`;
+}
+
+// Audit writes form a hash chain, so they MUST be serialized: if two writes
+// interleaved at the `await sha256` below, both would read the same prev_hash and
+// fork the chain. This promise chain runs them strictly one at a time.
+let _bbLock = Promise.resolve();
+function logToBlackbox(entry) {
+  const run = _bbLock.then(() => _logToBlackboxInner(entry));
+  _bbLock = run.then(() => {}, () => {});   // keep the lock alive even if a write throws
+  return run;
+}
+
+async function _logToBlackboxInner(entry) {
   const timestamp = nowISO();
 
-  // Get previous hash + timestamp (timestamp is also used for clock-tamper check)
   const lastRow = dbGet('SELECT row_hash, timestamp FROM audit_log ORDER BY log_id DESC LIMIT 1');
   const prevHash = lastRow ? lastRow.row_hash : 'GENESIS';
 
-  // If the device clock has moved backward vs. the last record, fold a note into
-  // action_detail. Because action_detail is part of the signed row_hash, the
-  // anomaly becomes permanent and tamper-evident in the chain — a backdated
-  // entry can't be made to look clean without breaking hash verification.
+  // Fold any clock anomaly into action_detail — it is part of the signed row_hash,
+  // so a backdated entry can't be made to look clean without breaking verification.
   let action_detail = entry.action_detail;
   let action_detail_ar = entry.action_detail_ar || null;
   const anomaly = _clockAnomalyNote(timestamp, lastRow ? lastRow.timestamp : null, _sessionClockDrift());
@@ -90,7 +114,11 @@ async function logToBlackbox(entry) {
     if (action_detail_ar) action_detail_ar += ` [⚠ خلل بالساعة: ${anomaly}]`;
   }
 
-  // Insert with placeholder hash first to get log_id
+  // Compute the hash BEFORE writing, so a half-hashed row ('COMPUTING') can never
+  // be persisted by a concurrent save during the await. Single INSERT with the
+  // final hash — no placeholder, no follow-up UPDATE.
+  const rowHash = await sha256(_canonicalHashInput(timestamp, entry.user_id, entry.action_type, action_detail, prevHash));
+
   dbRun(`INSERT INTO audit_log (
     timestamp, user_id, user_name_en, user_name_ar, user_role,
     dept_id, dept_name_en, dept_name_ar,
@@ -114,21 +142,11 @@ async function logToBlackbox(entry) {
     action_detail_ar,
     null, // ip_address not available in browser
     prevHash,
-    'COMPUTING'
+    rowHash
   ]);
 
   const logId = dbLastId();
-
-  // Compute row_hash = SHA256(log_id|timestamp|user_id|action_type|action_detail|prev_hash)
-  const hashInput = `${logId}|${timestamp}|${entry.user_id}|${entry.action_type}|${action_detail}|${prevHash}`;
-  const rowHash = await sha256(hashInput);
-
-  // Update ONLY the row_hash field of this specific row
-  dbRun('UPDATE audit_log SET row_hash = ? WHERE log_id = ?', [rowHash, logId]);
-
-  // Save DB after every blackbox write
   saveDBToIndexedDB();
-
   return logId;
 }
 
@@ -148,11 +166,15 @@ async function verifyBlackboxIntegrity() {
       return { valid: false, brokenAt: row.log_id, totalRows: rows.length, reason: 'prev_hash mismatch' };
     }
 
-    // Recompute hash
-    const hashInput = `${row.log_id}|${row.timestamp}|${row.user_id}|${row.action_type}|${row.action_detail}|${row.prev_hash}`;
-    const expected = await sha256(hashInput);
-
-    if (row.row_hash !== expected) {
+    // Accept the canonical (v2) hash; fall back to the legacy '|' format so chains
+    // written before the canonicalization upgrade still verify.
+    const canonical = await sha256(_canonicalHashInput(row.timestamp, row.user_id, row.action_type, row.action_detail, row.prev_hash));
+    let ok = (row.row_hash === canonical);
+    if (!ok) {
+      const legacy = await sha256(_legacyHashInput(row.log_id, row.timestamp, row.user_id, row.action_type, row.action_detail, row.prev_hash));
+      ok = (row.row_hash === legacy);
+    }
+    if (!ok) {
       return { valid: false, brokenAt: row.log_id, totalRows: rows.length, reason: 'row_hash mismatch' };
     }
 
@@ -320,6 +342,7 @@ async function logAction(actionType, actionDetail, actionDetailAr, patientId, pa
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     _clockAnomalyNote, _humanizeDuration, _computeDrift, CLOCK_ANOMALY_TOLERANCE_MS,
+    _canonicalHashInput, _legacyHashInput,
     logToBlackbox, verifyBlackboxIntegrity, getIntegrityReceipt, verifyAgainstReceipt
   };
 }
