@@ -854,16 +854,40 @@ function renderITDepts(main, lang) {
 }
 
 function renderITSettings(main, lang) {
+  const ar = lang === 'ar';
+  const encOn = (typeof encIsActive === 'function') && encIsActive();
   main.innerHTML = `
     <div class="page-header"><h1>${t('system_settings')}</h1></div>
     <div class="card">
       <div class="form-section">
-        <h3>${lang === 'ar' ? 'النسخ الاحتياطي' : 'Database Backup'}</h3>
-        <p class="mb-2">${lang === 'ar' ? 'تحميل نسخة احتياطية من قاعدة البيانات أو استعادة واحدة سابقة.' : 'Download a backup of the database or restore a previous one.'}</p>
+        <h3>${ar ? 'النسخ الاحتياطي' : 'Database Backup'}</h3>
+        <p class="mb-2">${ar ? 'تحميل نسخة احتياطية من قاعدة البيانات أو استعادة واحدة سابقة.' : 'Download a backup of the database or restore a previous one.'}</p>
         <div class="flex gap-1 flex-wrap">
           <button class="btn btn-primary" onclick="downloadBackup()">${t('download_backup')}</button>
           <label class="btn btn-secondary" style="cursor:pointer">${t('restore_backup')} <input type="file" accept=".sqlite,.db" style="display:none" onchange="handleRestore(this.files[0])"></label>
         </div>
+        <p style="font-size:0.8rem;color:#888;margin-top:8px">${ar ? 'ملاحظة: ملف النسخة الاحتياطية المُنزّل غير مشفّر.' : 'Note: the downloaded backup file itself is not encrypted.'}</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="form-section">
+        <h3>🔒 ${ar ? 'تشفير بيانات هذا الجهاز' : 'Encryption at rest'}</h3>
+        <p class="mb-2">${ar
+          ? 'تشفير قاعدة البيانات المحفوظة في هذا المتصفّح بكلمة مرور، فلا تُقرأ إذا سُرق الجهاز أو نُسخ الملف.'
+          : 'Encrypt the database stored in this browser with a passphrase, so it is unreadable if the device is stolen or the file is copied.'}</p>
+        <div style="display:inline-block;padding:8px 14px;border-radius:8px;font-weight:700;margin-bottom:12px;background:${encOn ? '#e7f7ed' : '#fdecec'};color:${encOn ? '#137333' : '#a50e0e'}">
+          ${encOn ? (ar ? 'الحالة: مُفعّل ✓' : 'Status: ON ✓') : (ar ? 'الحالة: غير مُفعّل' : 'Status: OFF')}
+        </div>
+        <div>
+          <button class="btn ${encOn ? 'btn-secondary' : 'btn-primary'}" onclick="toggleDeviceEncryption()">
+            ${encOn ? (ar ? 'إيقاف التشفير' : 'Disable encryption') : (ar ? 'تفعيل التشفير' : 'Enable encryption')}
+          </button>
+        </div>
+        <p style="font-size:0.8rem;color:#888;margin-top:12px;line-height:1.5">
+          ${ar
+            ? '⚠️ يحمي البيانات عند التخزين فقط، لا يحمي جلسة مفتوحة بالفعل (DevTools). لا يمكن استعادة كلمة المرور إذا نُسيت — ستحتاج إلى مسح بيانات الجهاز.'
+            : '⚠️ Protects data at rest only — not an already-unlocked session (DevTools). A forgotten passphrase cannot be recovered; you would have to erase this device\'s data.'}
+        </p>
       </div>
     </div>
   `;

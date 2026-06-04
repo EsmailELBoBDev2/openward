@@ -22,7 +22,7 @@
 **To make this production-ready you would need:** a central server (Postgres + REST or GraphQL API), per-row encryption, sync to the browser as offline cache only, conflict resolution for concurrent edits.
 
 ### 2. It does NOT meet HIPAA, GDPR, or any healthcare data regulation
-- Browser sandbox ≠ encryption at rest
+- Optional AES-GCM encryption at rest now exists (key derived from a device passphrase via PBKDF2-SHA256) — but it's opt-in, guards only data **at rest** (a live unlocked tab is still readable in DevTools), a forgotten passphrase is unrecoverable, and there's still no managed key storage (KMS/HSM)
 - The "blackbox" audit log lives in the same IndexedDB any admin can wipe with one DevTools command
 - Brute-force protection now lives in the DB, not `localStorage` (a `localStorage.clear()` no longer resets the counter, it survives a refresh, and the patient portal is throttled too) — but it's still client-side: a determined user can edit the IndexedDB SQLite blob directly, and there is still no MFA
 - No MFA, no row-level security, no patient consent flow, no right-to-be-forgotten, no data-residency controls
@@ -117,7 +117,7 @@ The QR scanner and NFC features require HTTPS (not plain HTTP) — GitHub Pages 
 |---|---|---|
 | Frontend | Vanilla HTML/CSS/JS | ✅ Same as any other webapp |
 | State | `sql.js` (SQLite in WebAssembly) | ✅ Works in browser ❌ Single-device only |
-| Persistence | IndexedDB | ✅ Survives reload ❌ Wiped by cache clear, no sync, no backup |
+| Persistence | IndexedDB (+ optional AES-GCM at rest) | ✅ Survives reload ✅ Opt-in passphrase encryption ❌ Wiped by cache clear, no sync, no backup |
 | Auth | Salted SHA-256 + localStorage session | ✅ Better than nothing ✅ Brute-force counter in the DB (not reset by `localStorage.clear()`) ❌ No MFA, whole DB blob is client-editable |
 | Audit log | `audit_log` table with hash chaining | ✅ Tamper-evident in theory ❌ Same DB, same admin can wipe |
 | Charts | Chart.js | ✅ Real library |

@@ -13,7 +13,13 @@ async function initDB() {
   });
 
   // Try to restore from IndexedDB
-  const saved = await loadDBFromIndexedDB();
+  let saved = await loadDBFromIndexedDB();
+  // If the stored blob is encrypted at rest, unlock it before SQLite can open it.
+  if (saved && typeof encIsEnvelope === 'function' && encIsEnvelope(saved)) {
+    const decrypted = await encBootUnlock(saved);   // Uint8Array, or null if user chose reset
+    if (decrypted === null) { await wipeLocalDatabase(); saved = null; }
+    else { saved = decrypted; }
+  }
   if (saved) {
     db = new SQL.Database(new Uint8Array(saved));
     console.log('[DB] Restored database from IndexedDB');
@@ -2144,6 +2150,10 @@ function openIDB() {
 let _dbDirty = true;      // true at boot so the first save always persists
 let _savePromise = null;  // in-flight save shared by concurrent callers
 
+// Force the next save to persist even when no dbRun happened — e.g. after
+// toggling encryption, which changes how the blob is written, not its contents.
+function markDbDirty() { _dbDirty = true; }
+
 async function saveDBToIndexedDB() {
   if (!db) return;
   if (!_dbDirty) return;                  // nothing changed since the last save
@@ -2153,10 +2163,15 @@ async function saveDBToIndexedDB() {
       while (_dbDirty) {
         _dbDirty = false;                 // snapshot point: db.export() below is synchronous
         const data = db.export();
+        // Encrypt at rest when a device passphrase is active (see crypto-store.js).
+        // Only the persisted blob is encrypted; the in-memory DB stays plaintext.
+        const toStore = (typeof encIsActive === 'function' && encIsActive())
+          ? await encEncrypt(data)        // envelope object { enc, salt, iv, data }
+          : data.buffer;                  // raw bytes (unencrypted, legacy-compatible)
         const idb = await openIDB();
         await new Promise((resolve, reject) => {
           const tx = idb.transaction('databases', 'readwrite');
-          tx.objectStore('databases').put(data.buffer, 'main');
+          tx.objectStore('databases').put(toStore, 'main');
           tx.oncomplete = () => resolve();
           tx.onerror = () => reject(tx.error);
         });
@@ -2181,6 +2196,20 @@ async function loadDBFromIndexedDB() {
   } catch {
     return null;
   }
+}
+
+// Drop the persisted database (used by the encryption "reset" escape hatch when
+// a passphrase is forgotten). The caller then seeds a fresh DB.
+async function wipeLocalDatabase() {
+  try {
+    const idb = await openIDB();
+    await new Promise((resolve, reject) => {
+      const tx = idb.transaction('databases', 'readwrite');
+      tx.objectStore('databases').delete('main');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) {}
 }
 
 // ============================================================
