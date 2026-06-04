@@ -115,7 +115,7 @@ The QR scanner and NFC features require HTTPS (not plain HTTP) — GitHub Pages 
 
 | Layer | What | Why it's fine for a demo / not OK for production |
 |---|---|---|
-| Frontend | Vanilla HTML/CSS/JS (+ CSP) | ✅ Same as any other webapp ✅ CSP `connect-src 'self'` blocks data/passphrase exfiltration even if a script is injected ❌ inline handlers still need `'unsafe-inline'`; airtight XSS would need a nonce refactor |
+| Frontend | Vanilla HTML/CSS/JS (+ CSP) | ✅ Same as any other webapp ✅ CSP `connect-src 'self'` blocks network-request exfiltration (fetch/beacon/image) even if a script is injected ❌ navigation exfil (`window.location`) and the injection itself still get through — closing both needs dropping `'unsafe-inline'` via a nonce refactor |
 | State | `sql.js` (SQLite in WebAssembly) | ✅ Works in browser ❌ Single-device only |
 | Persistence | IndexedDB (+ optional AES-GCM at rest, generational backups) | ✅ Survives reload ✅ Opt-in passphrase encryption ✅ Auto-recovers from a corrupt copy; minute/hour/day snapshots survive a burst of bad saves ❌ Wiped by a full cache clear or a console-capable insider, no cross-device sync, no off-device backup |
 | Auth | Salted SHA-256 + localStorage session | ✅ Better than nothing ✅ Brute-force counter in the DB (not reset by `localStorage.clear()`) ❌ No MFA, whole DB blob is client-editable |

