@@ -1,0 +1,73 @@
+/* ============================================================
+   HIS — RTL (Arabic) Overrides
+   ============================================================ */
+
+[dir="rtl"] body {
+  font-family: 'Segoe UI', 'Tahoma', 'Arial', sans-serif;
+}
+
+/* Flip sidebar to right */
+[dir="rtl"] .app-sidebar {
+  left: auto;
+  right: 0;
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+[dir="rtl"] .app-main {
+  margin-left: 0;
+  margin-right: var(--sidebar-width);
+}
+
+/* Sidebar nav alignment */
+[dir="rtl"] .sidebar-nav a,
+[dir="rtl"] .sidebar-nav button {
+  text-align: right;
+}
+
+/* Header */
+[dir="rtl"] .app-header .user-info {
+  text-align: left;
+}
+
+[dir="rtl"] .lang-toggle {
+  right: auto;
+  left: 20px;
+}
+
+/* Tables */
+[dir="rtl"] thead th { text-align: right; }
+[dir="rtl"] tbody td { text-align: right; }
+
+/* Form */
+[dir="rtl"] .form-group label { text-align: right; }
+[dir="rtl"] input, [dir="rtl"] select, [dir="rtl"] textarea { text-align: right; }
+
+/* Password toggle */
+[dir="rtl"] .password-wrapper input { padding-right: 14px; padding-left: 70px; }
+[dir="rtl"] .password-toggle { right: auto; left: 8px; }
+
+/* Buttons */
+[dir="rtl"] .alert-buttons { flex-direction: row-reverse; }
+
+/* Blue alert sidebar */
+[dir="rtl"] #alerts-sidebar { right: auto; left: 16px; }
+[dir="rtl"] .alert-blue-card { border-left: none; border-right: 4px solid var(--info); }
+
+/* Toast */
+[dir="rtl"] #toast-container { right: auto; left: 20px; }
+[dir="rtl"] .toast { transform: translateX(-120%); }
+[dir="rtl"] .toast.show { transform: translateX(0); }
+
+/* Responsive */
+@media (max-width: 768px) {
+  [dir="rtl"] .app-sidebar {
+    transform: translateX(100%);
+  }
+  [dir="rtl"] .app-sidebar.open {
+    transform: translateX(0);
+  }
+  [dir="rtl"] .app-main {
+    margin-right: 0;
+  }
+}

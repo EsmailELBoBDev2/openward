@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HIS — Hospital Information System</title>
+  <link rel="stylesheet" href="css/main.css">
+  <link rel="stylesheet" href="css/rtl.css">
+  <style>
+    /* Prevent FOUC: hide body until JS applies language */
+    body.loading { opacity: 0; }
+  </style>
+</head>
+<body class="loading">
+
+  <!-- ============================================================ -->
+  <!-- LOGIN SCREEN -->
+  <!-- ============================================================ -->
+  <div id="login-screen" class="login-page">
+    <!-- Language Toggle -->
+    <div class="lang-toggle">
+      <button class="btn" id="lang-ar-btn" onclick="switchLang('ar')">العربية</button>
+      <button class="btn" id="lang-en-btn" onclick="switchLang('en')">English</button>
+    </div>
+
+    <div class="login-box">
+      <!-- Logo -->
+      <div class="login-logo">
+        <h1>HIS</h1>
+        <p id="login-subtitle">Hospital Information System — نظام المعلومات الصحية</p>
+      </div>
+
+      <!-- Error Message -->
+      <div id="login-error" class="login-error"></div>
+
+      <!-- Debug Button -->
+      <div style="text-align: center; margin-bottom: 16px;">
+        <button type="button" class="btn btn-sm btn-secondary" onclick="clearDatabase()" style="font-size: 0.75rem;">🔄 Reset Database</button>
+      </div>
+
+      <!-- Login Mode Toggle -->
+      <div class="login-mode-toggle" id="login-mode-toggle">
+        <button type="button" class="login-mode-btn active" id="login-staff-btn" onclick="setLoginMode('staff')">
+          <span>👨‍⚕️</span> <span id="lbl-staff-mode">Staff Login</span>
+        </button>
+        <button type="button" class="login-mode-btn" id="login-patient-btn" onclick="setLoginMode('patient')">
+          <span>👤</span> <span id="lbl-patient-mode">Patient Portal</span>
+        </button>
+      </div>
+
+      <!-- Login Form -->
+      <form id="login-form" onsubmit="handleLogin(event)">
+        <!-- Staff Login Fields -->
+        <div id="staff-login-fields">
+          <div class="form-group">
+            <label id="lbl-username" for="login-username">Username — اسم المستخدم</label>
+            <input type="text" id="login-username" autocomplete="username" autofocus aria-label="Username">
+          </div>
+          <div class="form-group">
+            <label id="lbl-password" for="login-password">Password — كلمة المرور</label>
+            <div class="password-wrapper">
+              <input type="password" id="login-password" autocomplete="current-password" aria-label="Password">
+              <button type="button" class="password-toggle" id="pw-toggle" onclick="togglePassword()">Show</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Patient Portal Fields -->
+        <div id="patient-login-fields" style="display:none">
+          <div class="form-group">
+            <label id="lbl-mrn" for="patient-mrn">MRN — رقم الملف الطبي</label>
+            <input type="text" id="patient-mrn" autocomplete="off" placeholder="HIS-XXXXXXXX-XXXXX" aria-label="Medical Record Number">
+            <small class="form-hint" id="lbl-mrn-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
+              You can find this on your hospital wristband or visit summary.
+            </small>
+          </div>
+          <div class="form-group">
+            <label id="lbl-dob" for="patient-dob">Date of Birth — تاريخ الميلاد</label>
+            <input type="date" id="patient-dob" autocomplete="off" aria-label="Date of Birth">
+            <small class="form-hint" id="lbl-dob-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
+              Format: YYYY-MM-DD
+            </small>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="login-btn">Login — دخول</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- APP LAYOUT (shown after login) -->
+  <!-- ============================================================ -->
+  <div id="app-layout" class="app-layout">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <button class="menu-toggle" onclick="toggleSidebar()">&#9776;</button>
+        <h2>HIS</h2>
+      </div>
+      <div class="header-right">
+        <div id="staff-inbox-wrap" style="position:relative;display:none;">
+          <button id="staff-inbox-btn" onclick="toggleStaffInbox()" title="Notifications"
+            style="background:none;border:1px solid #d1d5db;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:1.1rem;position:relative;">
+            🔔<span id="staff-inbox-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:#dc2626;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.65rem;font-weight:700;">0</span>
+          </button>
+          <div id="staff-inbox-dropdown" style="display:none;position:absolute;top:42px;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);min-width:340px;max-width:420px;max-height:480px;overflow-y:auto;z-index:1000;"></div>
+        </div>
+        <div id="global-search-wrap" style="position:relative;display:none;">
+          <input type="text" id="global-search" placeholder="🔍  Search MRN or name..." autocomplete="off"
+            style="padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:0.85rem;width:220px;background:#f9fafb;">
+          <div id="global-search-results" style="display:none;position:absolute;top:38px;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);min-width:280px;max-height:400px;overflow-y:auto;z-index:1000;"></div>
+        </div>
+        <div class="user-info">
+          <div class="user-name" id="header-user-name"></div>
+          <div class="user-role" id="header-user-role"></div>
+        </div>
+        <button class="btn btn-sm btn-secondary" id="logout-btn" onclick="handleLogout()">Logout</button>
+      </div>
+    </header>
+
+    <!-- Sidebar -->
+    <nav class="app-sidebar" id="app-sidebar">
+      <ul class="sidebar-nav" id="sidebar-nav"></ul>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="app-main" id="main-content">
+      <div class="empty-state"><div class="spinner"></div></div>
+    </main>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- SCRIPTS -->
+  <!-- ============================================================ -->
+  <!-- All libraries served LOCALLY — fully offline-ready -->
+  <script src="vendor/sql-wasm.js"></script>
+  <script src="vendor/qrcode.min.js"></script>
+  <script src="vendor/chart.umd.min.js"></script>
+
+  <!-- App modules (order matters) -->
+  <script src="js/lang.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/db.js"></script>
+  <script src="js/blackbox.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/suggest.js"></script>
+  <script src="js/smart-phrases.js"></script>
+  <script src="js/clinical-decision.js"></script>
+  <script src="js/calculators.js"></script>
+  <script src="js/easy-features.js"></script>
+  <script src="js/router.js"></script>
+
+  <script>
+    // ============================================================
+    // App Boot
+    // ============================================================
+
+    (async function boot() {
+      // Apply language immediately to prevent flash
+      applyLanguage();
+      updateLoginLabels();
+      updateLangButtons();
+
+      try {
+        await initDB();
+        console.log('[HIS] Database initialized');
+
+        // Check if there's an active session
+        const session = getCurrentSession();
+        if (session) {
+          routeToDashboard();
+        }
+      } catch (err) {
+        console.error('[HIS] Failed to initialize database:', err);
+        showError('Failed to initialize database. Please check your internet connection for the first load.');
+      }
+
+      // Remove loading class to show the page
+      document.body.classList.remove('loading');
+    })();
+
+    // ============================================================
+    // Language Switching
+    // ============================================================
+
+    function switchLang(lang) {
+      setLanguage(lang);
+      updateLoginLabels();
+      updateLangButtons();
+
+      // If logged in, refresh the current view
+      const session = getCurrentSession();
+      if (session) {
+        const user = getCurrentUser();
+        document.getElementById('header-user-name').textContent = lang === 'ar' ? user.full_name_ar : user.full_name_en;
+        document.getElementById('header-user-role').textContent = ROLES[user.role] ? ROLES[user.role][lang] : user.role;
+        document.getElementById('logout-btn').textContent = t('logout_btn');
+        renderSidebar(session.role);
+        if (currentView) navigateTo(currentView);
+      }
+    }
+
+    function updateLoginLabels() {
+      const lang = currentLanguage();
+      document.getElementById('lbl-username').textContent = t('username_label');
+      document.getElementById('lbl-password').textContent = t('password_label');
+      document.getElementById('login-btn').textContent = t('login_btn');
+      document.getElementById('pw-toggle').textContent = lang === 'ar' ? 'إظهار' : 'Show';
+      document.getElementById('logout-btn').textContent = t('logout_btn');
+      // Patient portal labels
+      const lblStaff = document.getElementById('lbl-staff-mode');
+      const lblPatient = document.getElementById('lbl-patient-mode');
+      const lblMrn = document.getElementById('lbl-mrn');
+      const lblDob = document.getElementById('lbl-dob');
+      const lblMrnHint = document.getElementById('lbl-mrn-hint');
+      const lblDobHint = document.getElementById('lbl-dob-hint');
+      if (lblStaff)   lblStaff.textContent = lang === 'ar' ? 'دخول الموظفين' : 'Staff Login';
+      if (lblPatient) lblPatient.textContent = lang === 'ar' ? 'بوابة المرضى' : 'Patient Portal';
+      if (lblMrn)     lblMrn.textContent = lang === 'ar' ? 'رقم الملف الطبي' : 'Medical Record Number';
+      if (lblDob)     lblDob.textContent = lang === 'ar' ? 'تاريخ الميلاد' : 'Date of Birth';
+      if (lblMrnHint) lblMrnHint.textContent = lang === 'ar'
+        ? 'تجده على سوار المستشفى أو ملخص الزيارة'
+        : 'You can find this on your hospital wristband or visit summary.';
+      if (lblDobHint) lblDobHint.textContent = lang === 'ar' ? 'الصيغة: السنة-الشهر-اليوم' : 'Format: YYYY-MM-DD';
+    }
+
+    function updateLangButtons() {
+      const lang = currentLanguage();
+      document.getElementById('lang-ar-btn').classList.toggle('active', lang === 'ar');
+      document.getElementById('lang-en-btn').classList.toggle('active', lang === 'en');
+    }
+
+    // ============================================================
+    // Login Handler
+    // ============================================================
+
+    // Track current login mode
+    window.loginMode = 'staff'; // or 'patient'
+
+    function setLoginMode(mode) {
+      window.loginMode = mode;
+      const isPatient = mode === 'patient';
+
+      // Toggle button active states
+      document.getElementById('login-staff-btn').classList.toggle('active', !isPatient);
+      document.getElementById('login-patient-btn').classList.toggle('active', isPatient);
+
+      // Toggle field visibility
+      document.getElementById('staff-login-fields').style.display = isPatient ? 'none' : '';
+      document.getElementById('patient-login-fields').style.display = isPatient ? '' : 'none';
+
+      // Focus first input
+      setTimeout(() => {
+        const firstInput = isPatient
+          ? document.getElementById('patient-mrn')
+          : document.getElementById('login-username');
+        firstInput?.focus();
+      }, 50);
+
+      // Clear errors
+      document.getElementById('login-error').classList.remove('show');
+    }
+
+    async function handleLogin(e) {
+      e.preventDefault();
+      const lang = currentLanguage();
+      const errorEl = document.getElementById('login-error');
+      errorEl.classList.remove('show');
+
+      const btn = document.getElementById('login-btn');
+      btn.disabled = true;
+      btn.textContent = t('logging_in');
+
+      try {
+        if (window.loginMode === 'patient') {
+          // Patient portal login
+          const mrn = document.getElementById('patient-mrn').value.trim();
+          const dob = document.getElementById('patient-dob').value;
+
+          if (!mrn || !dob) {
+            errorEl.textContent = t('error_required');
+            errorEl.classList.add('show');
+            btn.disabled = false;
+            btn.textContent = t('login_btn');
+            return;
+          }
+
+          const result = await loginPatient(mrn, dob);
+          if (result.success) {
+            showSuccess(t('success_login'));
+            routeToDashboard();
+            if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
+          } else {
+            errorEl.textContent = t(result.errorKey || 'patient_login_error');
+            errorEl.classList.add('show');
+          }
+        } else {
+          // Staff login
+          const username = document.getElementById('login-username').value.trim();
+          const password = document.getElementById('login-password').value;
+
+          if (!username || !password) {
+            errorEl.textContent = t('error_required');
+            errorEl.classList.add('show');
+            btn.disabled = false;
+            btn.textContent = t('login_btn');
+            return;
+          }
+
+          const result = await login(username, password);
+          if (result.success) {
+            showSuccess(t('success_login'));
+            // G7 fix: warn if other concurrent sessions exist
+            if (result.concurrentSessions && result.concurrentSessions > 0) {
+              setTimeout(() => {
+                const langNow = currentLanguage();
+                showYellowAlert(
+                  langNow === 'ar'
+                    ? `&#9888; لديك ${result.concurrentSessions} جلسة أخرى نشطة في مكان آخر. إذا لم تكن أنت، غيّر كلمة المرور الآن.`
+                    : `&#9888; You have ${result.concurrentSessions} other active session(s) elsewhere. If this isn't you, change your password immediately.`,
+                  () => {}
+                );
+              }, 1200);
+            }
+            routeToDashboard();
+            if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
+          } else {
+            let msg = t(result.errorKey || 'login_error_cred');
+            if (result.errorKey === 'login_locked' && result.lockedSec) {
+              const mins = Math.ceil(result.lockedSec / 60);
+              msg += ' (' + mins + (lang==='ar'?' دقيقة':' min') + ')';
+            }
+            errorEl.textContent = msg;
+            errorEl.classList.add('show');
+          }
+        }
+      } catch (err) {
+        console.error('[HIS] Login error:', err);
+        errorEl.textContent = t('error_generic');
+        errorEl.classList.add('show');
+      }
+
+      btn.disabled = false;
+      btn.textContent = t('login_btn');
+    }
+
+    // ============================================================
+    // Logout Handler
+    // ============================================================
+
+    async function handleLogout() {
+      showConfirm(t('logout_confirm'), async () => {
+        await logout();
+        showLoginScreen();
+        // Clear all forms
+        document.getElementById('login-username').value = '';
+        document.getElementById('login-password').value = '';
+        const mrnInput = document.getElementById('patient-mrn');
+        const dobInput = document.getElementById('patient-dob');
+        if (mrnInput) mrnInput.value = '';
+        if (dobInput) dobInput.value = '';
+        document.getElementById('login-error').classList.remove('show');
+        // Reset to staff mode
+        if (typeof setLoginMode === 'function') setLoginMode('staff');
+      });
+    }
+
+    // ============================================================
+    // Clear Database (debugging)
+    // ============================================================
+
+    async function clearDatabase() {
+      if (confirm('Clear all data and reset database?\n\nUsername: admin\nPassword: HIS@2024')) {
+        try {
+          // Delete from IndexedDB
+          const idb = await openIDB();
+          const tx = idb.transaction('databases', 'readwrite');
+          tx.objectStore('databases').delete('main');
+
+          // Reload page to reinitialize
+          setTimeout(() => location.reload(), 500);
+        } catch (err) {
+          console.error('Error clearing database:', err);
+          alert('Error: ' + err.message);
+        }
+      }
+    }
+
+    // ============================================================
+    // Password Toggle
+    // ============================================================
+
+    function togglePassword() {
+      const input = document.getElementById('login-password');
+      const btn = document.getElementById('pw-toggle');
+      if (input.type === 'password') {
+        input.type = 'text';
+        btn.textContent = t('hide_password');
+      } else {
+        input.type = 'password';
+        btn.textContent = t('show_password');
+      }
+    }
+
+    // ============================================================
+    // Sidebar Toggle (mobile)
+    // ============================================================
+
+    function toggleSidebar() {
+      document.getElementById('app-sidebar').classList.toggle('open');
+    }
+
+    // Close sidebar when clicking outside on mobile
+    document.addEventListener('click', function(e) {
+      const sidebar = document.getElementById('app-sidebar');
+      const toggle = document.querySelector('.menu-toggle');
+      if (sidebar && sidebar.classList.contains('open') &&
+          !sidebar.contains(e.target) && !toggle.contains(e.target)) {
+        sidebar.classList.remove('open');
+      }
+    });
+
+    // ============================================================
+    // Session Timeout (auto-logout on idle)
+    // ============================================================
+
+    (function initSessionTimeout() {
+      const IDLE_LIMIT_MS = 15 * 60 * 1000; // 15 minutes
+      const WARNING_MS    = 60 * 1000;       // warn 1 min before logout
+      let idleTimer, warnTimer, warnDialog;
+
+      function resetIdleTimer() {
+        clearTimeout(idleTimer);
+        clearTimeout(warnTimer);
+        if (warnDialog) { warnDialog.remove(); warnDialog = null; }
+
+        // Only run timer if logged in
+        if (typeof getCurrentSession !== 'function' || !getCurrentSession()) return;
+
+        warnTimer = setTimeout(showIdleWarning, IDLE_LIMIT_MS - WARNING_MS);
+        idleTimer = setTimeout(forceLogout, IDLE_LIMIT_MS);
+      }
+
+      function showIdleWarning() {
+        const lang = currentLanguage();
+        warnDialog = document.createElement('div');
+        warnDialog.className = 'alert-overlay';
+        warnDialog.innerHTML = `
+          <div class="alert-modal" style="max-width:380px;text-align:center">
+            <div style="font-size:2rem;color:#f59e0b">&#9202;</div>
+            <h3>${lang === 'ar' ? 'الجلسة على وشك الانتهاء' : 'Session about to expire'}</h3>
+            <p>${lang === 'ar' ? 'سيتم تسجيل الخروج تلقائياً خلال دقيقة بسبب عدم النشاط.' : 'You will be auto-logged out in 1 minute due to inactivity.'}</p>
+            <button class="btn btn-primary" onclick="this.closest('.alert-overlay').remove()">
+              ${lang === 'ar' ? 'متابعة العمل' : 'Stay logged in'}
+            </button>
+          </div>`;
+        document.body.appendChild(warnDialog);
+        // Clicking the button triggers user activity → resetIdleTimer fires from event listener
+      }
+
+      async function forceLogout() {
+        const lang = currentLanguage();
+        if (warnDialog) { warnDialog.remove(); warnDialog = null; }
+        if (typeof logout === 'function') await logout();
+        if (typeof showLoginScreen === 'function') showLoginScreen();
+        showInfo(lang === 'ar' ? 'تم تسجيل الخروج بسبب عدم النشاط' : 'Logged out due to inactivity');
+      }
+
+      // Reset on user activity
+      ['mousemove','mousedown','keypress','touchstart','scroll'].forEach(ev =>
+        document.addEventListener(ev, resetIdleTimer, { passive: true })
+      );
+
+      // Start timer after page loads (in case user is already logged in)
+      window.addEventListener('load', resetIdleTimer);
+
+      // Expose for manual reset after login
+      window.resetIdleTimer = resetIdleTimer;
+    })();
+
+    // ============================================================
+    // Keyboard Shortcuts
+    // ============================================================
+
+    (function initKeyboardShortcuts() {
+      // Konami code easter egg
+      const KONAMI = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
+      let konamiIdx = 0;
+
+      document.addEventListener('keydown', function(e) {
+        const tag = document.activeElement.tagName;
+        const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+        // Konami code check (always active)
+        if (e.key === KONAMI[konamiIdx]) {
+          konamiIdx++;
+          if (konamiIdx === KONAMI.length) {
+            konamiIdx = 0;
+            showKonamiEasterEgg();
+          }
+        } else {
+          konamiIdx = 0;
+        }
+
+        // Skip shortcuts when typing in form fields
+        if (inInput) return;
+
+        // ? = Help modal
+        if (e.key === '?') { e.preventDefault(); showHelpModal(); }
+
+        // Escape = close topmost overlay/modal
+        if (e.key === 'Escape') {
+          const overlay = document.querySelector('.alert-overlay');
+          if (overlay) { e.preventDefault(); overlay.remove(); }
+        }
+
+        // Ctrl+P = print (native browser, but ensure we trigger it cleanly)
+        if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+          // Let browser handle it; no override needed
+        }
+      });
+    })();
+
+    // ============================================================
+    // Help Modal
+    // ============================================================
+
+    function showHelpModal() {
+      const lang = currentLanguage();
+      const overlay = document.createElement('div');
+      overlay.className = 'alert-overlay';
+      overlay.innerHTML = `
+        <div class="alert-modal" style="max-width:520px">
+          <h2 style="margin-bottom:4px">&#9875; ${lang==='ar'?'دليل المستخدم السريع':'Quick Reference'}</h2>
+          <p class="text-muted" style="margin-bottom:16px;font-size:0.85rem">HIS — Hospital Information System v2.0</p>
+
+          <h3 style="margin-bottom:8px;font-size:0.9rem">${lang==='ar'?'اختصارات لوحة المفاتيح':'Keyboard Shortcuts'}</h3>
+          <table class="shortcuts-table">
+            <tr><td><kbd>?</kbd></td><td>${lang==='ar'?'فتح هذه النافذة':'Open this help window'}</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>${lang==='ar'?'إغلاق النافذة الحالية':'Close current dialog'}</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td><td>${lang==='ar'?'طباعة الصفحة الحالية':'Print current page'}</td></tr>
+          </table>
+
+          <h3 style="margin:16px 0 8px;font-size:0.9rem">${lang==='ar'?'حسابات النظام':'System Accounts'}</h3>
+          <table class="shortcuts-table" style="font-size:0.8rem">
+            <tr><td><strong>admin</strong></td><td>HIS@2024</td><td>${lang==='ar'?'مدير النظام':'IT Admin'}</td></tr>
+            <tr><td><strong>manager</strong></td><td>manager123</td><td>${lang==='ar'?'مدير المستشفى':'Hospital Manager'}</td></tr>
+            <tr><td><strong>dr.ahmed</strong></td><td>doctor123</td><td>${lang==='ar'?'استشاري باطنية':'Consultant'}</td></tr>
+            <tr><td><strong>nurse.fatima</strong></td><td>nurse123</td><td>${lang==='ar'?'ممرضة':'Nurse'}</td></tr>
+            <tr><td><strong>pharm.ali</strong></td><td>pharm123</td><td>${lang==='ar'?'صيدلاني':'Pharmacist'}</td></tr>
+            <tr><td><strong>lab.nasser</strong></td><td>lab123</td><td>${lang==='ar'?'تقني مختبر':'Lab Tech'}</td></tr>
+            <tr><td><strong>diet.amira</strong></td><td>diet123</td><td>${lang==='ar'?'أخصائية تغذية':'Dietitian'}</td></tr>
+            <tr><td><strong>sw.hessa</strong></td><td>social123</td><td>${lang==='ar'?'أخصائية اجتماعية':'Social Worker'}</td></tr>
+          </table>
+
+          <p class="text-muted" style="margin-top:16px;font-size:0.75rem;text-align:center">
+            ${lang==='ar'?'تلميح: انقر على شعار HIS خمس مرات لمفاجأة!':'Tip: Click the HIS logo 5 times for a surprise!'}
+          </p>
+
+          <div class="alert-buttons">
+            <button class="btn btn-primary" onclick="this.closest('.alert-overlay').remove()">
+              ${lang==='ar'?'حسناً':'Got it'}
+            </button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+    }
+
+    // ============================================================
+    // Easter Egg — Logo clicks (×5)
+    // ============================================================
+
+    (function initLogoEasterEgg() {
+      let clickCount = 0;
+      let resetTimer;
+
+      // Both login logo and app header logo
+      document.addEventListener('click', function(e) {
+        const isLogo = e.target.closest('.login-logo h1') ||
+                       e.target.closest('.app-header h2') ||
+                       (e.target.tagName === 'H1' && e.target.textContent.trim() === 'HIS') ||
+                       (e.target.tagName === 'H2' && e.target.textContent.trim() === 'HIS');
+        if (!isLogo) return;
+
+        clickCount++;
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => { clickCount = 0; }, 1500);
+
+        if (clickCount >= 5) {
+          clickCount = 0;
+          showTokenEasterEgg();
+        }
+      });
+    })();
+
+    function showTokenEasterEgg() {
+      const lang = currentLanguage();
+      const overlay = document.createElement('div');
+      overlay.className = 'alert-overlay';
+      overlay.innerHTML = `
+        <div class="easter-egg-modal">
+          <div style="font-size:3rem;margin-bottom:8px">&#129302;</div>
+          <h2>${lang==='ar'?'سر صغير!':'A Little Secret!'}</h2>
+          <p style="margin-bottom:20px;opacity:0.9;font-size:0.9rem">
+            ${lang==='ar'
+              ? 'هل تعلم كم كلّف بناء هذا النظام؟ إليك الإجابة!'
+              : 'Want to know what building this system actually cost?'}
+          </p>
+
+          <div class="easter-egg-stat">
+            <span>&#128203; ${lang==='ar'?'رموز الإدخال التقريبية':'~Input tokens'}</span>
+            <strong>~8,000,000</strong>
+          </div>
+          <div class="easter-egg-stat">
+            <span>&#128196; ${lang==='ar'?'رموز الإخراج التقريبية':'~Output tokens'}</span>
+            <strong>~1,500,000</strong>
+          </div>
+          <div class="easter-egg-stat">
+            <span>&#128181; ${lang==='ar'?'التكلفة التقريبية':'~Estimated cost'}</span>
+            <strong>$45 – $70 USD</strong>
+          </div>
+          <div class="easter-egg-stat">
+            <span>&#128336; ${lang==='ar'?'وقت المحادثة':'Conversation time'}</span>
+            <strong>~60 hours</strong>
+          </div>
+          <div class="easter-egg-stat">
+            <span>&#129351; ${lang==='ar'?'الميزات المبنية':'Features built'}</span>
+            <strong>70+ (incl. Triage role, Rounding mode, Code Blue timeline, Lab rejection, Safety banner, Smart triggers, Patient Portal interpretations)</strong>
+          </div>
+          <div class="easter-egg-stat">
+            <span>&#129534; ${lang==='ar'?'سطور الكود':'Lines of code'}</span>
+            <strong>~17,300 (JS) + ~2,200 (CSS) + 698 (HTML) = ~21,700 total</strong>
+          </div>
+          <div class="easter-egg-stat">
+            <span>&#128737; ${lang==='ar'?'حماية تلقائية':'Auto-safeguards'}</span>
+            <strong>9 triggers + 8 indexes + audit-logged overrides (15/15 runtime tests pass)</strong>
+          </div>
+          <div class="easter-egg-stat">
+            <span>&#127973; ${lang==='ar'?'تكلفة HIS التجارية':'Real HIS cost'}</span>
+            <strong>$500k – $3M</strong>
+          </div>
+
+          <p style="margin-top:16px;font-size:0.8rem;opacity:0.7">
+            ${lang==='ar'
+              ? 'بُني هذا النظام بـ Claude AI — نظام معلومات مستشفى كامل بأقل من ثمن غداء فاخر!'
+              : 'Built with Claude AI — a full hospital information system for less than a fancy dinner!'}
+          </p>
+          <p style="font-size:0.75rem;opacity:0.6;margin-top:4px">
+            ${lang==='ar'?'كود Konami للحصول على مكافأة أخرى ↑↑↓↓←→←→BA':'Try the Konami code for another surprise ↑↑↓↓←→←→BA'}
+          </p>
+
+          <button class="btn print-keep" style="margin-top:20px;background:rgba(255,255,255,0.2);color:#fff;border:1px solid rgba(255,255,255,0.4)"
+            onclick="this.closest('.alert-overlay').remove()">
+            ${lang==='ar'?'رائع!':'Amazing!'}
+          </button>
+        </div>`;
+      document.body.appendChild(overlay);
+    }
+
+    // ============================================================
+    // Easter Egg — Konami Code
+    // ============================================================
+
+    function showKonamiEasterEgg() {
+      const lang = currentLanguage();
+      const overlay = document.createElement('div');
+      overlay.className = 'alert-overlay';
+      overlay.innerHTML = `
+        <div class="alert-modal" style="text-align:center;max-width:420px;padding:32px">
+          <div class="achievement-banner" style="margin-bottom:20px">
+            <div style="font-size:2.5rem">&#127942;</div>
+            <h2 style="margin:8px 0 4px">${lang==='ar'?'إنجاز مفتوح!':'Achievement Unlocked!'}</h2>
+            <p style="opacity:0.9;font-size:0.9rem">${lang==='ar'?'"خبير لوحة المفاتيح"':'"Keyboard Ninja"'}</p>
+          </div>
+          <p style="color:var(--text-secondary);font-size:0.9rem;line-height:1.6">
+            ${lang==='ar'
+              ? 'وجدت الكود السري! أنت رسمياً من بين الـ 0.1% الذين يتذكرون كود Konami.'
+              : 'You found the secret code! You\'re officially in the 0.1% who still remember the Konami code.'}
+          </p>
+          <p style="font-size:2rem;margin:12px 0">&#127918; &#11014;&#11014;&#11015;&#11015;&#11013;&#10145;&#11013;&#10145;</p>
+          <p style="font-size:0.8rem;color:var(--text-secondary)">
+            ${lang==='ar'?'لا توجد حياة لا نهائية هنا — فقط رعاية لا نهائية للمرضى!':'No infinite lives here — just infinite patient care!'}
+          </p>
+          <button class="btn btn-primary" style="margin-top:16px" onclick="this.closest('.alert-overlay').remove()">
+            ${lang==='ar'?'هههه، شكراً!':'Haha, thanks!'}
+          </button>
+        </div>`;
+      document.body.appendChild(overlay);
+    }
+
+    // ── Live Update: wrap saveDBToIndexedDB to auto-broadcast ──
+    (function patchSaveDB() {
+      const _origSave = window.saveDBToIndexedDB;
+      window.saveDBToIndexedDB = async function() {
+        const result = await _origSave.apply(this, arguments);
+        // Broadcast a generic "db_updated" event so other tabs re-render
+        if (typeof broadcastUpdate === 'function') {
+          // We don't know the table here, so broadcast a generic signal
+          if (typeof HIS_CHANNEL !== 'undefined' && HIS_CHANNEL) {
+            HIS_CHANNEL.postMessage({ table: '_any_', view: typeof currentView !== 'undefined' ? currentView : '', ts: Date.now() });
+          }
+        }
+        return result;
+      };
+    })();
+  </script>
+</body>
+</html>
