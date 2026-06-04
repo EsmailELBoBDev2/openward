@@ -25,12 +25,49 @@
  * @param {string} entry.action_detail  — full English sentence
  * @param {string} [entry.action_detail_ar]
  */
+// Clock-tamper detection. This is a client-only app, so the device clock cannot
+// be trusted; but a clock moved BACKWARD past the most recent record is the
+// signature of a backdating attempt. We can't prevent it without a server — we
+// flag it (tolerance below absorbs normal NTP/drift corrections).
+const CLOCK_ANOMALY_TOLERANCE_MS = 120000; // 2 minutes
+
+function _humanizeDuration(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 90) return s + 's';
+  const m = Math.round(s / 60);
+  if (m < 90) return m + 'm';
+  const h = Math.floor(m / 60), rem = m % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
+}
+
+// Returns a human duration string if the device clock moved meaningfully BEHIND
+// the last record (a backdating signal), or '' otherwise. Pure — exposed for tests.
+function _clockAnomalyNote(timestamp, lastTimestamp) {
+  if (!lastTimestamp) return '';
+  const backMs = Date.parse(lastTimestamp) - Date.parse(timestamp);
+  return backMs > CLOCK_ANOMALY_TOLERANCE_MS ? _humanizeDuration(backMs) : '';
+}
+
 async function logToBlackbox(entry) {
   const timestamp = nowISO();
 
-  // Get previous hash
-  const lastRow = dbGet('SELECT row_hash FROM audit_log ORDER BY log_id DESC LIMIT 1');
+  // Get previous hash + timestamp (timestamp is also used for clock-tamper check)
+  const lastRow = dbGet('SELECT row_hash, timestamp FROM audit_log ORDER BY log_id DESC LIMIT 1');
   const prevHash = lastRow ? lastRow.row_hash : 'GENESIS';
+
+  // If the device clock has moved backward vs. the last record, fold a note into
+  // action_detail. Because action_detail is part of the signed row_hash, the
+  // anomaly becomes permanent and tamper-evident in the chain — a backdated
+  // entry can't be made to look clean without breaking hash verification.
+  let action_detail = entry.action_detail;
+  let action_detail_ar = entry.action_detail_ar || null;
+  if (lastRow && lastRow.timestamp) {
+    const h = _clockAnomalyNote(timestamp, lastRow.timestamp);
+    if (h) {
+      action_detail += ` [⚠ CLOCK ANOMALY: device clock ${h} BEHIND the previous record at ${lastRow.timestamp}]`;
+      if (action_detail_ar) action_detail_ar += ` [⚠ خلل بالساعة: ساعة الجهاز متأخرة ${h} عن آخر سجل في ${lastRow.timestamp}]`;
+    }
+  }
 
   // Insert with placeholder hash first to get log_id
   dbRun(`INSERT INTO audit_log (
@@ -52,8 +89,8 @@ async function logToBlackbox(entry) {
     entry.patient_name || null,
     entry.patient_mrn || null,
     entry.action_type,
-    entry.action_detail,
-    entry.action_detail_ar || null,
+    action_detail,
+    action_detail_ar,
     null, // ip_address not available in browser
     prevHash,
     'COMPUTING'
@@ -62,7 +99,7 @@ async function logToBlackbox(entry) {
   const logId = dbLastId();
 
   // Compute row_hash = SHA256(log_id|timestamp|user_id|action_type|action_detail|prev_hash)
-  const hashInput = `${logId}|${timestamp}|${entry.user_id}|${entry.action_type}|${entry.action_detail}|${prevHash}`;
+  const hashInput = `${logId}|${timestamp}|${entry.user_id}|${entry.action_type}|${action_detail}|${prevHash}`;
   const rowHash = await sha256(hashInput);
 
   // Update ONLY the row_hash field of this specific row
@@ -216,4 +253,9 @@ async function logAction(actionType, actionDetail, actionDetailAr, patientId, pa
   if (entry) {
     return await logToBlackbox(entry);
   }
+}
+
+// Node test harness only (the browser has no `module`):
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { _clockAnomalyNote, _humanizeDuration, CLOCK_ANOMALY_TOLERANCE_MS };
 }

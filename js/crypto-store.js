@@ -133,29 +133,43 @@ function _encPromptPassphrase(opts) {
   });
 }
 
-// Called from initDB when the stored blob is encrypted. Loops until the right
-// passphrase decrypts it (key stays set for subsequent saves), or the user
-// chooses to wipe. Returns the decrypted Uint8Array, or null to reset.
-async function encBootUnlock(envelope) {
+// Called from initDB (loadDatabaseWithRecovery) with the candidate saved
+// versions, newest-first. Prompts once and sets the session key as soon as the
+// passphrase decrypts ANY candidate — so a corrupt newest slot can't lock the
+// user out of a recoverable older one. The key stays set for subsequent saves.
+// Returns true on success, false if the user chose to reset (wipe). Skips the
+// prompt if the session is already unlocked with a key that still works.
+async function encBootUnlockMulti(candidates) {
   // The boot flow hides the page (body.loading -> opacity:0); reveal it so the
   // unlock modal is visible, and stop the loading spinner.
-  document.body.classList.remove('loading');
-  const spinner = document.getElementById('loading-overlay');
-  if (spinner) spinner.style.display = 'none';
-  const salt = envelope.salt instanceof Uint8Array ? envelope.salt : new Uint8Array(envelope.salt);
+  if (typeof document !== 'undefined' && document.body) {
+    document.body.classList.remove('loading');
+    const spinner = document.getElementById('loading-overlay');
+    if (spinner) spinner.style.display = 'none';
+  }
+  const envs = (candidates || []).filter(c => encIsEnvelope(c.value)).map(c => c.value);
+  if (!envs.length) return true;  // nothing encrypted
+
+  // Already unlocked this session with a key that still works? Skip the prompt.
+  if (_encKey) {
+    for (const env of envs) { try { await encDecrypt(env); return true; } catch (e) {} }
+  }
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const pass = await _encPromptPassphrase({ mode: 'unlock' });
-    if (pass === ENC_RESET) { encDisable(); return null; }
-    try {
-      await encUnlock(pass, salt);
-      const bytes = await encDecrypt(envelope);  // throws if wrong passphrase
-      return bytes;
-    } catch (e) {
-      encDisable();
-      const ar = (typeof currentLanguage === 'function' ? currentLanguage() : 'en') === 'ar';
-      if (typeof showError === 'function') showError(ar ? 'كلمة المرور غير صحيحة' : 'Incorrect passphrase');
+    if (pass === ENC_RESET) { encDisable(); return false; }
+    for (const env of envs) {
+      const salt = env.salt instanceof Uint8Array ? env.salt : new Uint8Array(env.salt);
+      try {
+        await encUnlock(pass, salt);
+        await encDecrypt(env);   // throws if passphrase wrong / this version corrupt
+        return true;             // key set; at least one version decrypts
+      } catch (e) { /* try the next candidate */ }
     }
+    encDisable();
+    const ar = (typeof currentLanguage === 'function' ? currentLanguage() : 'en') === 'ar';
+    if (typeof showError === 'function') showError(ar ? 'كلمة المرور غير صحيحة' : 'Incorrect passphrase');
   }
 }
 
@@ -187,5 +201,5 @@ async function toggleDeviceEncryption() {
 
 // Node test harness only (the browser has no `module`):
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { encEnable, encUnlock, encDisable, encEncrypt, encDecrypt, encIsEnvelope, encIsActive };
+  module.exports = { encEnable, encUnlock, encDisable, encEncrypt, encDecrypt, encIsEnvelope, encIsActive, encBootUnlockMulti };
 }

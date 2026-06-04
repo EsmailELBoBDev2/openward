@@ -12,16 +12,11 @@ async function initDB() {
     locateFile: file => `vendor/${file}`
   });
 
-  // Try to restore from IndexedDB
-  let saved = await loadDBFromIndexedDB();
-  // If the stored blob is encrypted at rest, unlock it before SQLite can open it.
-  if (saved && typeof encIsEnvelope === 'function' && encIsEnvelope(saved)) {
-    const decrypted = await encBootUnlock(saved);   // Uint8Array, or null if user chose reset
-    if (decrypted === null) { await wipeLocalDatabase(); saved = null; }
-    else { saved = decrypted; }
-  }
-  if (saved) {
-    db = new SQL.Database(new Uint8Array(saved));
+  // Restore from IndexedDB with backup-rotation recovery: tries the newest saved
+  // version (transparently unlocking it if encrypted) and falls back to an older
+  // backup if the newest copy is unreadable. See loadDatabaseWithRecovery.
+  db = await loadDatabaseWithRecovery(SQL);
+  if (db) {
     console.log('[DB] Restored database from IndexedDB');
     // Schema migrations for existing databases
     try { db.run('ALTER TABLE prescriptions ADD COLUMN verified_by INTEGER'); } catch(e) {}
@@ -2137,22 +2132,77 @@ function openIDB() {
 }
 
 // ------------------------------------------------------------
-// Persist coalescing (perf)
-// db.export() serializes the ENTIRE database, so calling it after every
-// mutation — on top of the 30s autosave — re-wrote the whole blob even when
-// nothing had changed. We now: (1) skip the write entirely when the in-memory
-// DB is unchanged since the last successful save, and (2) never run two
-// IndexedDB writes at once — a burst of mutations collapses into one write and
-// concurrent callers await the same in-flight promise. The while-loop re-flushes
-// if a mutation lands during the async write, so an awaited save always returns
-// only after the latest data is on disk.
+// Persist coalescing (perf) + backup rotation (durability)
+//
+// Coalescing: db.export() serializes the ENTIRE database, so we (1) skip the
+// write when nothing changed since the last save, and (2) never run two writes
+// at once — a burst of mutations collapses into one write and concurrent callers
+// await the same in-flight promise; the while-loop re-flushes if a mutation
+// lands mid-write, so an awaited save returns only after the latest data is on disk.
+//
+// Rotation: instead of overwriting one key, each save writes to the NEXT of N
+// ring slots and advances a pointer (meta.current) in the SAME transaction, so
+// the previous good version is never touched. On load we try the newest slot and
+// fall back to older ones if it is unreadable (corrupt/undecryptable), instead of
+// bricking the app or forcing a wipe. Cost: up to N copies of the DB in IndexedDB.
+// (IndexedDB writes are already transactional, so this guards mainly against a
+// logically-bad version — a bad export, a corrupt blob — not just a torn write.)
 // ------------------------------------------------------------
-let _dbDirty = true;      // true at boot so the first save always persists
-let _savePromise = null;  // in-flight save shared by concurrent callers
+const DB_BACKUP_SLOTS = 3;     // keep current + 2 prior versions for recovery
+const DB_META_KEY = 'meta';
+let _dbDirty = true;           // true at boot so the first save always persists
+let _savePromise = null;       // in-flight save shared by concurrent callers
+let _dbActiveSlot = -1;        // ring slot the live DB was loaded from / last saved to
 
 // Force the next save to persist even when no dbRun happened — e.g. after
 // toggling encryption, which changes how the blob is written, not its contents.
 function markDbDirty() { _dbDirty = true; }
+
+// Storage adapter over the 'databases' object store. Extracted so the rotation
+// and recovery logic can be unit-tested against an in-memory mock.
+const idbStore = {
+  async get(key) {
+    const idb = await openIDB();
+    return new Promise((resolve) => {
+      const tx = idb.transaction('databases', 'readonly');
+      const req = tx.objectStore('databases').get(key);
+      req.onsuccess = () => resolve(req.result === undefined ? null : req.result);
+      req.onerror = () => resolve(null);
+    });
+  },
+  // Atomically apply puts ([key,val]) and deletes (key) in ONE transaction.
+  async batch(puts, deletes) {
+    const idb = await openIDB();
+    return new Promise((resolve, reject) => {
+      const tx = idb.transaction('databases', 'readwrite');
+      const store = tx.objectStore('databases');
+      (puts || []).forEach(([k, v]) => store.put(v, k));
+      (deletes || []).forEach((k) => store.delete(k));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+  async clear() {
+    const idb = await openIDB();
+    return new Promise((resolve, reject) => {
+      const tx = idb.transaction('databases', 'readwrite');
+      tx.objectStore('databases').clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+};
+
+// Write the blob to the next ring slot + advance the pointer atomically, and drop
+// any legacy single-key blob. Returns the new active slot.
+async function _persistBlobRotating(store, toStore, currentSlot, encrypted) {
+  const next = (currentSlot + 1) % DB_BACKUP_SLOTS;
+  await store.batch(
+    [['db_' + next, toStore], [DB_META_KEY, { v: 1, current: next, ring: DB_BACKUP_SLOTS, savedAt: Date.now(), encrypted: !!encrypted }]],
+    ['main']
+  );
+  return next;
+}
 
 async function saveDBToIndexedDB() {
   if (!db) return;
@@ -2165,16 +2215,9 @@ async function saveDBToIndexedDB() {
         const data = db.export();
         // Encrypt at rest when a device passphrase is active (see crypto-store.js).
         // Only the persisted blob is encrypted; the in-memory DB stays plaintext.
-        const toStore = (typeof encIsActive === 'function' && encIsActive())
-          ? await encEncrypt(data)        // envelope object { enc, salt, iv, data }
-          : data.buffer;                  // raw bytes (unencrypted, legacy-compatible)
-        const idb = await openIDB();
-        await new Promise((resolve, reject) => {
-          const tx = idb.transaction('databases', 'readwrite');
-          tx.objectStore('databases').put(toStore, 'main');
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error);
-        });
+        const encrypted = (typeof encIsActive === 'function' && encIsActive());
+        const toStore = encrypted ? await encEncrypt(data) : data.buffer;
+        _dbActiveSlot = await _persistBlobRotating(idbStore, toStore, _dbActiveSlot, encrypted);
         // if a mutation re-dirtied the DB during the await, loop and flush again
       }
     } finally {
@@ -2184,32 +2227,77 @@ async function saveDBToIndexedDB() {
   return _savePromise;
 }
 
-async function loadDBFromIndexedDB() {
-  try {
-    const idb = await openIDB();
-    return new Promise((resolve, reject) => {
-      const tx = idb.transaction('databases', 'readonly');
-      const req = tx.objectStore('databases').get('main');
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => resolve(null);
-    });
-  } catch {
-    return null;
+// Collect saved versions newest-first: ring slots (per meta) then any legacy blob.
+async function _collectDbCandidates(store) {
+  const out = [];
+  const meta = await store.get(DB_META_KEY);
+  if (meta && typeof meta.current === 'number') {
+    const N = meta.ring || DB_BACKUP_SLOTS;
+    for (let i = 0; i < N; i++) {
+      const slot = (meta.current - i + N) % N;
+      const value = await store.get('db_' + slot);
+      if (value != null) out.push({ key: 'db_' + slot, slot, value });
+    }
   }
+  const legacy = await store.get('main');   // pre-rotation single-key installs
+  if (legacy != null) out.push({ key: 'main', slot: -1, value: legacy });
+  return out;
 }
 
-// Drop the persisted database (used by the encryption "reset" escape hatch when
-// a passphrase is forgotten). The caller then seeds a fresh DB.
-async function wipeLocalDatabase() {
-  try {
-    const idb = await openIDB();
-    await new Promise((resolve, reject) => {
-      const tx = idb.transaction('databases', 'readwrite');
-      tx.objectStore('databases').delete('main');
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (e) {}
+// Load the newest readable database version, transparently unlocking encryption
+// and falling back to an older backup if the newest copy is unreadable.
+// Returns an opened SQL.Database, or null (caller then seeds a fresh DB).
+async function loadDatabaseWithRecovery(SQL, store) {
+  store = store || idbStore;
+  let candidates;
+  try { candidates = await _collectDbCandidates(store); }
+  catch (e) { return null; }
+  if (!candidates.length) return null;
+
+  const anyEncrypted = (typeof encIsEnvelope === 'function') && candidates.some(c => encIsEnvelope(c.value));
+  if (anyEncrypted) {
+    const ok = (typeof encBootUnlockMulti === 'function') ? await encBootUnlockMulti(candidates) : false;
+    if (!ok) { await wipeLocalDatabase(store); return null; }   // user chose reset
+  }
+
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    try {
+      let bytes;
+      if ((typeof encIsEnvelope === 'function') && encIsEnvelope(c.value)) {
+        bytes = await encDecrypt(c.value);     // throws if key wrong / bytes corrupt
+      } else {
+        bytes = new Uint8Array(c.value);
+      }
+      const opened = new SQL.Database(bytes);  // may not validate until first real read
+      opened.exec('SELECT count(*) FROM sqlite_master');  // force a header/schema read so a corrupt-but-openable blob is rejected here
+      // Resume the ring from the slot we loaded (legacy 'main' -> next save = slot 0)
+      _dbActiveSlot = (c.slot >= 0) ? c.slot : (DB_BACKUP_SLOTS - 1);
+      if (i > 0) {
+        console.warn('[DB] newest copy unreadable; recovered from backup', c.key);
+        if (typeof showError === 'function') {
+          const ar = (typeof currentLanguage === 'function' && currentLanguage() === 'ar');
+          showError(ar ? 'تم استرجاع نسخة احتياطية سابقة (تعذّر قراءة أحدث نسخة).'
+                       : 'Recovered an earlier backup — the most recent copy was unreadable.');
+        }
+      }
+      return opened;
+    } catch (e) {
+      console.warn('[DB] version failed, trying older backup:', c.key, e && e.message);
+    }
+  }
+  console.error('[DB] all local database copies are unreadable');
+  if (typeof showError === 'function') {
+    const ar = (typeof currentLanguage === 'function' && currentLanguage() === 'ar');
+    showError(ar ? 'تعذّر قراءة جميع نسخ قاعدة البيانات المحلية.' : 'All local database copies are unreadable.');
+  }
+  return null;
+}
+
+// Drop ALL persisted versions (encryption "reset" escape hatch / forgotten
+// passphrase). The caller then seeds a fresh DB.
+async function wipeLocalDatabase(store) {
+  try { await (store || idbStore).clear(); } catch (e) {}
 }
 
 // ============================================================
@@ -2300,4 +2388,9 @@ function dbRun(sql, params) {
 function dbLastId() {
   const r = db.exec('SELECT last_insert_rowid() as id');
   return r[0].values[0][0];
+}
+
+// Node test harness only (the browser has no `module`):
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { loadDatabaseWithRecovery, _persistBlobRotating, _collectDbCandidates, wipeLocalDatabase, DB_BACKUP_SLOTS, DB_META_KEY };
 }

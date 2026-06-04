@@ -117,9 +117,9 @@ The QR scanner and NFC features require HTTPS (not plain HTTP) — GitHub Pages 
 |---|---|---|
 | Frontend | Vanilla HTML/CSS/JS | ✅ Same as any other webapp |
 | State | `sql.js` (SQLite in WebAssembly) | ✅ Works in browser ❌ Single-device only |
-| Persistence | IndexedDB (+ optional AES-GCM at rest) | ✅ Survives reload ✅ Opt-in passphrase encryption ❌ Wiped by cache clear, no sync, no backup |
+| Persistence | IndexedDB (+ optional AES-GCM at rest, 3-version backup rotation) | ✅ Survives reload ✅ Opt-in passphrase encryption ✅ Auto-recovers from a corrupt newest copy ❌ Wiped by a full cache clear, no cross-device sync, no off-device backup |
 | Auth | Salted SHA-256 + localStorage session | ✅ Better than nothing ✅ Brute-force counter in the DB (not reset by `localStorage.clear()`) ❌ No MFA, whole DB blob is client-editable |
-| Audit log | `audit_log` table with hash chaining | ✅ Tamper-evident in theory ❌ Same DB, same admin can wipe |
+| Audit log | `audit_log` table with hash chaining | ✅ Tamper-evident in theory ✅ Backward-clock (backdating) attempts get flagged inside the signed chain ❌ Same DB an admin can wipe; the device clock still isn't authoritative without a server |
 | Charts | Chart.js | ✅ Real library |
 | QR | qrcode.js + native BarcodeDetector | ✅ Modern web API |
 | NFC | Web NFC (Chrome Android only) | ✅ Cool demo ❌ Not portable across browsers |
