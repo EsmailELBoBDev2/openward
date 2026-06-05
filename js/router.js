@@ -486,7 +486,17 @@ function navigateTo(viewId) {
   document.getElementById('app-sidebar').classList.remove('open');
 
   // Render view
-  setTimeout(() => renderView(viewId), 50);
+  setTimeout(() => {
+    renderView(viewId);
+    // a11y: move focus to the freshly-rendered view so screen-reader and
+    // keyboard users land on the new content — unless the view already focused
+    // something specific (e.g. a search box).
+    const m = document.getElementById('main-content');
+    if (m && !m.contains(document.activeElement)) {
+      m.setAttribute('tabindex', '-1');
+      m.focus({ preventScroll: true });
+    }
+  }, 50);
 }
 
 function renderView(viewId) {
