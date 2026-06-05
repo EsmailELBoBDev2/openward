@@ -331,6 +331,17 @@ async function initDB() {
     await seedData();
   }
 
+  // Data remanence: SQLite leaves deleted-row bytes in free pages, which
+  // db.export() then encrypts and persists — so "deleted" PHI lingers on disk.
+  // secure_delete zeroes freed content on every future DELETE; a one-time VACUUM
+  // (gated by user_version so it runs once) purges any pre-existing remnants.
+  try { db.run('PRAGMA secure_delete = ON'); } catch (e) {}
+  try {
+    const uv = db.exec('PRAGMA user_version');
+    const ver = (uv && uv[0]) ? uv[0].values[0][0] : 0;
+    if (ver < 1) { db.run('VACUUM'); db.run('PRAGMA user_version = 1'); }
+  } catch (e) {}
+
   // Auto-save every 30 seconds
   setInterval(() => saveDBToIndexedDB(), 30000);
 }
