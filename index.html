@@ -116,12 +116,12 @@
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <button class="menu-toggle" onclick="toggleSidebar()">&#9776;</button>
+        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Toggle navigation menu">&#9776;</button>
         <h2>HIS</h2>
       </div>
       <div class="header-right">
         <div id="staff-inbox-wrap" style="position:relative;display:none;">
-          <button id="staff-inbox-btn" onclick="toggleStaffInbox()" title="Notifications"
+          <button id="staff-inbox-btn" onclick="toggleStaffInbox()" title="Notifications" aria-label="Notifications"
             style="background:none;border:1px solid #d1d5db;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:1.1rem;position:relative;">
             🔔<span id="staff-inbox-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:#dc2626;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.65rem;font-weight:700;">0</span>
           </button>

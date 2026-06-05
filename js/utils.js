@@ -216,6 +216,10 @@ function showToast(message, type) {
   if (!container) {
     container = document.createElement('div');
     container.id = 'toast-container';
+    // a11y: announce toasts to screen readers via a live region
+    container.setAttribute('role', 'status');
+    container.setAttribute('aria-live', 'polite');
+    container.setAttribute('aria-atomic', 'true');
     document.body.appendChild(container);
   }
   const toast = document.createElement('div');

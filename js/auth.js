@@ -405,7 +405,7 @@ async function loginPatient(mrn, dob, password) {
  * on top of the MRN+DOB identity check. Salted SHA-256 (same as staff accounts).
  */
 async function setPatientPortalPassword(patientId, newPassword) {
-  if (!newPassword || newPassword.length < 6) {
+  if (!newPassword || newPassword.length < 8) {
     return { success: false, errorKey: 'password_too_short' };
   }
   const salt = generateSalt();

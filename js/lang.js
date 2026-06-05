@@ -174,7 +174,7 @@ const LANG = {
   password_new:      { ar: 'كلمة المرور', en: 'Password' },
   password_confirm:  { ar: 'تأكيد كلمة المرور', en: 'Confirm Password' },
   password_mismatch: { ar: 'كلمتا المرور غير متطابقتين', en: 'Passwords do not match' },
-  password_min:      { ar: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل', en: 'Password must be at least 6 characters' },
+  password_min:      { ar: 'كلمة المرور يجب أن تكون 8 أحرف على الأقل', en: 'Password must be at least 8 characters' },
   confirm_disable_user: { ar: 'هل أنت متأكد من تعطيل حساب {name}؟ لن يتمكن من تسجيل الدخول.', en: 'Are you sure you want to disable {name}\'s account? They will not be able to log in.' },
   confirm_enable_user:  { ar: 'هل أنت متأكد من تفعيل حساب {name}؟', en: 'Are you sure you want to enable {name}\'s account?' },
   user_created_success: { ar: 'تم إنشاء حساب {name} بنجاح', en: 'Account for {name} created successfully' },

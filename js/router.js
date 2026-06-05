@@ -754,7 +754,7 @@ async function handleAddUser(e) {
   const pw = document.getElementById('new-password').value;
   const pwc = document.getElementById('new-password-confirm').value;
   if (pw !== pwc) { showError(t('password_mismatch')); return; }
-  if (pw.length < 6) { showError(t('password_min')); return; }
+  if (pw.length < 8) { showError(t('password_min')); return; }
 
   const result = await createUser({
     username: document.getElementById('new-username').value.trim(),
@@ -4140,7 +4140,7 @@ function showSetPatientPasswordModal(force) {
     <p style="color:#555">${ar
       ? 'رقم الملف وتاريخ الميلاد مطبوعان على سوار معصمك — أي شخص يراهما يمكنه الدخول. عيّن كلمة مرور لحماية سجلّك.'
       : 'Your MRN and date of birth are printed on your wristband — anyone who sees them can get in. Set a password to protect your records.'}</p>
-    <input type="password" id="spp-pw" autocomplete="new-password" placeholder="${ar ? 'كلمة مرور جديدة (6+ أحرف)' : 'New password (6+ characters)'}" style="${inputStyle}">
+    <input type="password" id="spp-pw" autocomplete="new-password" placeholder="${ar ? 'كلمة مرور جديدة (8+ أحرف)' : 'New password (8+ characters)'}" style="${inputStyle}">
     <input type="password" id="spp-pw2" autocomplete="new-password" placeholder="${ar ? 'تأكيد كلمة المرور' : 'Confirm password'}" style="${inputStyle}">
     <div id="spp-err" style="color:var(--danger);min-height:1.2em;font-size:0.9rem"></div>
     <div class="flex gap-1" style="justify-content:flex-end;margin-top:8px">
@@ -4152,7 +4152,7 @@ function showSetPatientPasswordModal(force) {
     const pw = overlay.querySelector('#spp-pw').value;
     const pw2 = overlay.querySelector('#spp-pw2').value;
     const err = overlay.querySelector('#spp-err');
-    if (!pw || pw.length < 6) { err.textContent = ar ? '٦ أحرف على الأقل' : 'At least 6 characters'; return; }
+    if (!pw || pw.length < 8) { err.textContent = ar ? '٨ أحرف على الأقل' : 'At least 8 characters'; return; }
     if (pw !== pw2) { err.textContent = ar ? 'كلمتا المرور غير متطابقتين' : 'Passwords do not match'; return; }
     const r = await setPatientPortalPassword(patient.patient_id, pw);
     if (r.success) { closeModal(); if (typeof showSuccess === 'function') showSuccess(ar ? 'تم تعيين كلمة المرور' : 'Password set'); }
