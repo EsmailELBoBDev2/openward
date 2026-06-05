@@ -35,7 +35,7 @@ All of the following were drafted with the help of an AI (Claude) drawing on its
 
 - The drug class → cross-reactivity map (penicillin → amoxicillin/augmentin/etc.)
 - The ACS protocol order set (aspirin 325 mg, troponin ×3, ECG within 10 min, etc.)
-- NEWS2 thresholds (warn ≥5, escalate ≥7)
+- NEWS2 thresholds (warn ≥5, escalate ≥7) and the SpO₂ Scale 1 / Scale 2 tables (Scale 2 is clinician-selected per admission for COPD/chronic hypercapnia, target 88–92%, to avoid alarm fatigue)
 - qSOFA criteria
 - Isolation precaution mappings (TB → airborne, MRSA → contact, etc.)
 - High-alert medication list (insulin, opioids, heparin, warfarin, KCl, digoxin, methotrexate)
@@ -93,7 +93,7 @@ Demo logins (all fictional, no real PHI):
 | Nurse | `nurse.mona` | `nurse123` |
 | Pharmacist | `pharm.ali` | `pharm123` |
 
-**Patient portal:** MRN `HIS-20260518-00028`, DOB `1981-03-15`
+**Patient portal:** MRN `HIS-20260518-00028`, DOB `1981-03-15` (no portal password set yet, so MRN+DOB works — but a patient can now set a password, and it's **required once set**. MRN+DOB alone is wristband-printed *identity*, not authentication, so the portal prompts to set one on first login.)
 
 ---
 

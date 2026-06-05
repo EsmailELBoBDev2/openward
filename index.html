@@ -95,6 +95,13 @@
               Format: YYYY-MM-DD
             </small>
           </div>
+          <div class="form-group">
+            <label id="lbl-pt-pw" for="patient-password">Password — كلمة المرور</label>
+            <input type="password" id="patient-password" autocomplete="current-password" aria-label="Patient portal password">
+            <small class="form-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
+              Only if you've set one. MRN + Date of Birth are identity, not a password.
+            </small>
+          </div>
         </div>
 
         <button type="submit" class="btn btn-primary" id="login-btn">Login — دخول</button>
@@ -292,6 +299,7 @@
           // Patient portal login
           const mrn = document.getElementById('patient-mrn').value.trim();
           const dob = document.getElementById('patient-dob').value;
+          const ptPassword = (document.getElementById('patient-password') || {}).value || '';
 
           if (!mrn || !dob) {
             errorEl.textContent = t('error_required');
@@ -301,16 +309,23 @@
             return;
           }
 
-          const result = await loginPatient(mrn, dob);
+          const result = await loginPatient(mrn, dob, ptPassword);
           if (result.success) {
             showSuccess(t('success_login'));
             routeToDashboard();
             if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
+            if (result.mustSetPassword && typeof showSetPatientPasswordModal === 'function') {
+              setTimeout(() => showSetPatientPasswordModal(false), 800);
+            }
           } else {
             let msg = t(result.errorKey || 'patient_login_error');
             if (result.errorKey === 'login_locked' && result.lockedSec) {
               const mins = Math.ceil(result.lockedSec / 60);
               msg += ' (' + mins + (lang === 'ar' ? ' دقيقة' : ' min') + ')';
+            }
+            if (result.errorKey === 'patient_password_required') {
+              msg = lang === 'ar' ? 'هذا الحساب محمي بكلمة مرور. أدخل كلمة المرور.' : 'This account is password-protected — enter your password.';
+              const pf = document.getElementById('patient-password'); if (pf) pf.focus();
             }
             errorEl.textContent = msg;
             errorEl.classList.add('show');

@@ -316,7 +316,7 @@ async function updateUser(userId, userData) {
  * @param {string} dob  - Date of birth in YYYY-MM-DD format
  * @returns {Promise<{success: boolean, errorKey?: string}>}
  */
-async function loginPatient(mrn, dob) {
+async function loginPatient(mrn, dob, password) {
   // Normalize MRN (uppercase, trim)
   mrn = (mrn || '').trim().toUpperCase();
   dob = (dob || '').trim();
@@ -352,6 +352,20 @@ async function loginPatient(mrn, dob) {
     return { success: false, errorKey: 'patient_portal_disabled' };
   }
 
+  // MRN + DOB are IDENTITY (printed on the wristband), NOT authentication. If the
+  // patient has set a portal password, REQUIRE it. If none is set, MRN+DOB grants
+  // access but the caller is told to prompt for setup (mustSetPassword).
+  if (patient.portal_password_hash) {
+    if (!password) {
+      return { success: false, errorKey: 'patient_password_required', needsPassword: true };
+    }
+    const ph = await hashPassword(password, patient.portal_salt || '');
+    if (ph !== patient.portal_password_hash) {
+      await _recordFailedLogin(acct);
+      return { success: false, errorKey: 'patient_login_error', needsPassword: true };
+    }
+  }
+
   // Successful login — clear failed attempts
   _clearFailedAttempts(acct);
 
@@ -383,7 +397,30 @@ async function loginPatient(mrn, dob) {
   });
 
   saveDBToIndexedDB();
-  return { success: true, patient, sessionId };
+  return { success: true, patient, sessionId, mustSetPassword: !patient.portal_password_hash };
+}
+
+/**
+ * Set/change the current patient's portal password — real authentication layered
+ * on top of the MRN+DOB identity check. Salted SHA-256 (same as staff accounts).
+ */
+async function setPatientPortalPassword(patientId, newPassword) {
+  if (!newPassword || newPassword.length < 6) {
+    return { success: false, errorKey: 'password_too_short' };
+  }
+  const salt = generateSalt();
+  const hash = await hashPassword(newPassword, salt);
+  dbRun('UPDATE patients SET portal_password_hash = ?, portal_salt = ? WHERE patient_id = ?', [hash, salt, patientId]);
+  await logToBlackbox({
+    user_id: patientId, user_role: 'patient',
+    user_name_en: 'Patient', user_name_ar: 'مريض',
+    dept_name_en: 'Patient Portal', dept_name_ar: 'بوابة المرضى',
+    action_type: 'PORTAL_PASSWORD_SET',
+    action_detail: 'Patient set or updated their portal password',
+    action_detail_ar: 'قام المريض بتعيين أو تحديث كلمة مرور البوابة'
+  });
+  saveDBToIndexedDB();
+  return { success: true };
 }
 
 /**

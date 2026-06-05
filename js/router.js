@@ -3907,6 +3907,12 @@ function showNurseActions(admissionId, patientId) {
               <span>${t('on_o2_supplement')}</span>
             </label>
           </div>
+          <div class="form-group" style="align-self:flex-end;padding-bottom:8px;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;" title="${lang==='ar'?'للفشل التنفسي المزمن المصحوب بفرط ثاني أكسيد الكربون (مثل الانسداد الرئوي المزمن) — الهدف 88-92%. يتطلب قرار طبيب.':'For chronic hypercapnic respiratory failure (e.g. COPD) — target SpO₂ 88-92%. Clinician decision.'}">
+              <input type="checkbox" id="nv-scale2" style="width:20px;height:20px;" ${(dbGet('SELECT news2_scale FROM admissions WHERE admission_id = ?', [admissionId]) || {}).news2_scale === 2 ? 'checked' : ''}>
+              <span>${lang==='ar'?'مقياس SpO₂ رقم 2 (انسداد رئوي/فرط CO₂)':'SpO₂ Scale 2 (COPD / chronic hypercapnia)'}</span>
+            </label>
+          </div>
           <div class="form-group"><label>${t('consciousness_level')}</label>
             <select id="nv-consciousness">
               <option value="alert">${t('consciousness_alert')}</option>
@@ -4030,9 +4036,18 @@ async function completeProcedure(code, admissionId) {
   saveDBToIndexedDB();
 }
 
-function calcNEWS2(sys, hr, temp, o2, rr, onO2, consciousness) {
+// NEWS2 (Royal College of Physicians, 2017). `scale` selects the SpO2 table:
+//   Scale 1 (default) — most patients.
+//   Scale 2 — chronic hypercapnic respiratory failure (e.g. COPD), target SpO2
+//             88-92%: on AIR, >=88% scores 0, and high SpO2 is penalised only on
+//             supplemental oxygen (over-oxygenation risk). Without it, every COPD
+//             patient false-alarms on Scale 1 -> alarm fatigue.
+// CLINICAL: thresholds need MD / informaticist sign-off; the Scale-2 indication
+// is a clinician decision recorded per admission (admissions.news2_scale).
+function calcNEWS2(sys, hr, temp, o2, rr, onO2, consciousness, scale) {
+  scale = (scale === 2) ? 2 : 1;
   let score = 0;
-  // Respiratory rate
+  // Respiratory rate (same on both scales)
   if (rr !== null) {
     if (rr <= 8) score += 3;
     else if (rr <= 11) score += 1;
@@ -4040,12 +4055,26 @@ function calcNEWS2(sys, hr, temp, o2, rr, onO2, consciousness) {
     else if (rr <= 24) score += 2;
     else score += 3;
   }
-  // O2 saturation (Scale 1)
+  // O2 saturation
   if (o2 !== null) {
-    if (o2 <= 91) score += 3;
-    else if (o2 <= 93) score += 2;
-    else if (o2 <= 95) score += 1;
-    else score += 0;
+    if (scale === 2) {
+      // SpO2 Scale 2 (hypercapnic respiratory failure, target 88-92%)
+      if (o2 <= 83) score += 3;
+      else if (o2 <= 85) score += 2;
+      else if (o2 <= 87) score += 1;
+      else if (o2 <= 92) score += 0;
+      else if (onO2) {                 // 93%+ is scored ONLY on supplemental oxygen
+        if (o2 <= 94) score += 1;
+        else if (o2 <= 96) score += 2;
+        else score += 3;
+      }                                // 93%+ on air -> 0
+    } else {
+      // SpO2 Scale 1 (default)
+      if (o2 <= 91) score += 3;
+      else if (o2 <= 93) score += 2;
+      else if (o2 <= 95) score += 1;
+      else score += 0;
+    }
   }
   // On supplemental O2
   if (onO2) score += 2;
@@ -4087,6 +4116,40 @@ function calcQSOFA(sys, rr, consciousness) {
   return score;
 }
 
+// Lets a logged-in portal patient set/change a real password on top of MRN+DOB
+// (which are wristband-printed identity, not authentication). `force` hides the
+// "Later" button.
+function showSetPatientPasswordModal(force) {
+  const lang = currentLanguage();
+  const ar = lang === 'ar';
+  const patient = (typeof getCurrentPatient === 'function') ? getCurrentPatient() : null;
+  if (!patient) return;
+  const inputStyle = 'width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;margin-bottom:8px;font-size:1rem';
+  const overlay = showModal(`
+    <h2 style="margin-top:0">🔐 ${ar ? 'أمّن حسابك' : 'Secure your account'}</h2>
+    <p style="color:#555">${ar
+      ? 'رقم الملف وتاريخ الميلاد مطبوعان على سوار معصمك — أي شخص يراهما يمكنه الدخول. عيّن كلمة مرور لحماية سجلّك.'
+      : 'Your MRN and date of birth are printed on your wristband — anyone who sees them can get in. Set a password to protect your records.'}</p>
+    <input type="password" id="spp-pw" autocomplete="new-password" placeholder="${ar ? 'كلمة مرور جديدة (6+ أحرف)' : 'New password (6+ characters)'}" style="${inputStyle}">
+    <input type="password" id="spp-pw2" autocomplete="new-password" placeholder="${ar ? 'تأكيد كلمة المرور' : 'Confirm password'}" style="${inputStyle}">
+    <div id="spp-err" style="color:var(--danger);min-height:1.2em;font-size:0.9rem"></div>
+    <div class="flex gap-1" style="justify-content:flex-end;margin-top:8px">
+      ${force ? '' : `<button class="btn btn-secondary" onclick="closeModal()">${ar ? 'لاحقاً' : 'Later'}</button>`}
+      <button class="btn btn-primary" id="spp-save">${ar ? 'حفظ' : 'Save'}</button>
+    </div>
+  `, { preventOutsideClose: true, maxWidth: 460 });
+  overlay.querySelector('#spp-save').addEventListener('click', async () => {
+    const pw = overlay.querySelector('#spp-pw').value;
+    const pw2 = overlay.querySelector('#spp-pw2').value;
+    const err = overlay.querySelector('#spp-err');
+    if (!pw || pw.length < 6) { err.textContent = ar ? '٦ أحرف على الأقل' : 'At least 6 characters'; return; }
+    if (pw !== pw2) { err.textContent = ar ? 'كلمتا المرور غير متطابقتين' : 'Passwords do not match'; return; }
+    const r = await setPatientPortalPassword(patient.patient_id, pw);
+    if (r.success) { closeModal(); if (typeof showSuccess === 'function') showSuccess(ar ? 'تم تعيين كلمة المرور' : 'Password set'); }
+    else { err.textContent = ar ? 'تعذّر الحفظ' : 'Could not save'; }
+  });
+}
+
 async function handleRecordVitals(e, admissionId, patientId) {
   e.preventDefault();
   const user = getCurrentUser();
@@ -4101,8 +4164,13 @@ async function handleRecordVitals(e, admissionId, patientId) {
   const rr = parseInt(document.getElementById('nv-rr').value) || null;
   const onO2 = document.getElementById('nv-o2-supp').checked ? 1 : 0;
   const consciousness = document.getElementById('nv-consciousness').value;
+  // SpO2 scale: clinician toggle for chronic hypercapnic resp failure (COPD).
+  // Persisted on the admission so it stays set for that patient's future vitals.
+  const scale2El = document.getElementById('nv-scale2');
+  const news2Scale = (scale2El && scale2El.checked) ? 2 : 1;
+  dbRun('UPDATE admissions SET news2_scale = ? WHERE admission_id = ?', [news2Scale, admissionId]);
 
-  const news2 = calcNEWS2(sys, hr, temp, o2, rr, onO2, consciousness);
+  const news2 = calcNEWS2(sys, hr, temp, o2, rr, onO2, consciousness, news2Scale);
   const qsofa = calcQSOFA(sys, rr, consciousness);
 
   dbRun(`INSERT INTO vitals_log (admission_id, recorded_by, recorded_at, bp_systolic, bp_diastolic, heart_rate, temperature, o2_sat, rbs, resp_rate, on_o2, consciousness, news2_score, qsofa_score)

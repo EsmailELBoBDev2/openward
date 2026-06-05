@@ -117,6 +117,7 @@ async function initDB() {
     )`); } catch(e) {}
     // ---- Patient Portal additions ----
     try { db.run('ALTER TABLE patients ADD COLUMN portal_password_hash TEXT'); } catch(e) {}
+    try { db.run('ALTER TABLE patients ADD COLUMN portal_salt TEXT'); } catch(e) {}
     try { db.run('ALTER TABLE patients ADD COLUMN portal_enabled INTEGER DEFAULT 1'); } catch(e) {}
     try { db.run('ALTER TABLE patients ADD COLUMN weight_kg REAL'); } catch(e) {}
     try { db.run('ALTER TABLE patients ADD COLUMN egfr REAL'); } catch(e) {}
@@ -168,6 +169,7 @@ async function initDB() {
     try { db.run("ALTER TABLE admissions ADD COLUMN code_status TEXT DEFAULT 'unknown'"); } catch(e) {}
     try { db.run("ALTER TABLE admissions ADD COLUMN code_status_set_by INTEGER"); } catch(e) {}
     try { db.run("ALTER TABLE admissions ADD COLUMN code_status_set_at TEXT"); } catch(e) {}
+    try { db.run("ALTER TABLE admissions ADD COLUMN news2_scale INTEGER DEFAULT 1"); } catch(e) {}
     // ---- Communicable diseases & enhanced emergency contact ----
     try { db.run('ALTER TABLE patient_conditions ADD COLUMN category TEXT DEFAULT \'chronic\''); } catch(e) {}
     try { db.run('ALTER TABLE patients ADD COLUMN emergency_contact_name TEXT'); } catch(e) {}
@@ -409,6 +411,7 @@ function createAllTables() {
       registered_at            TEXT NOT NULL,
       qr_code_data             TEXT,
       portal_password_hash     TEXT,
+      portal_salt              TEXT,
       portal_enabled           INTEGER DEFAULT 1,
       weight_kg                REAL,
       egfr                     REAL
@@ -495,6 +498,7 @@ function createAllTables() {
       mode_of_arrival TEXT,
       pain_scale      INTEGER,
       gcs_score       INTEGER DEFAULT 15,
+      news2_scale     INTEGER DEFAULT 1,
       readmission_risk_score INTEGER,
       readmission_risk_level TEXT,
       readmission_risk_factors TEXT,
