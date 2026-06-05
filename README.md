@@ -179,6 +179,7 @@ Patterns to follow when contributing:
 - **All SQL is parameterized** — never string-concat user input
 - **All user-rendered fields (names, allergens, lab values, free text) go through `escapeHtml()`** — which escapes `< > & "`, so it is safe in both text and double-quoted attribute (`value="…"`) contexts
 - **Custom dropdowns expose ARIA** (`role="listbox/option"`, `aria-activedescendant`) and **modals trap focus** (`installModalFocusTrap` in `utils.js`) — keyboard- and screen-reader-friendly
+- **Theming/a11y in CSS:** `:focus-visible` keyboard outlines, `prefers-reduced-motion` (no distracting motion mid-charting), and a `prefers-color-scheme: dark` night-shift theme (palette-variable override; QR codes stay light for scanning)
 - **All schema changes go in `js/db.js` migration block** (the `if (saved) {...}` section) — auto-applies to existing installs
 - **If you add a clinical decision rule**, cite the guideline source in a comment AND note that it needs MD review (the dose calculator and sepsis screen carry explicit "estimate / screening only — verify" caveats)
 

@@ -2146,3 +2146,54 @@ body[dir="rtl"] .calc-fab {
     word-break: break-word;
   }
 }
+
+/* ============================================================
+   Accessibility & theming
+   ============================================================ */
+
+/* Keyboard-only focus indicator. Inputs keep their box-shadow (input:focus is
+   more specific); buttons, links and selects get a clear outline on KEYBOARD
+   focus without one appearing on a mouse click. */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Respect "reduce motion" — matters in a clinical UI (vestibular sensitivity,
+   and no distracting animation during time-critical charting). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Dark mode (night shift). The structural surfaces all use
+   var(--white)/--bg/--text/--border, so overriding the palette flips the whole
+   chrome coherently. Accent hues (primary/success/warning/danger) stay saturated
+   because they are button backgrounds with white text; only the *-light tints,
+   plain links and a few hardcoded light greys are remapped. QR codes stay white
+   (scanners need a light background). Opt-in via the OS preference. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --primary-light: #1c2a3d;
+    --success-light: #17271c;
+    --warning-light: #2b2410;
+    --danger-light:  #2c1715;
+    --info-light:    #1c2a3d;
+    --text:          #e8eaed;
+    --text-secondary:#9aa0a6;
+    --border:        #3c4043;
+    --bg:            #16171b;
+    --white:         #1f2125;
+    --shadow:        0 1px 3px rgba(0,0,0,0.6), 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-lg:     0 6px 16px rgba(0,0,0,0.7);
+  }
+  a { color: #8ab4f8; }                       /* brighter links on dark; buttons keep white-on-blue */
+  .btn-secondary { background: #2a2c33; color: var(--text); }
+  .btn-secondary:hover:not(:disabled) { background: #34373f; }
+  .btn-icon:hover { background: #2a2c33; }
+  tbody tr:hover { background: #26282e; }
+}
