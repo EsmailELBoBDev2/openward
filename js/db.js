@@ -414,7 +414,7 @@ function createAllTables() {
       full_name_ar  TEXT NOT NULL,
       full_name_en  TEXT NOT NULL,
       role          TEXT NOT NULL,
-      department_id INTEGER,
+      department_id INTEGER REFERENCES departments(dept_id),
       specialization TEXT,
       is_active     INTEGER DEFAULT 1,
       created_by    INTEGER,
@@ -524,7 +524,7 @@ function createAllTables() {
     CREATE TABLE IF NOT EXISTS admissions (
       admission_id    INTEGER PRIMARY KEY AUTOINCREMENT,
       patient_id      INTEGER NOT NULL REFERENCES patients(patient_id),
-      dept_id         INTEGER NOT NULL,
+      dept_id         INTEGER NOT NULL REFERENCES departments(dept_id),
       bed_number      TEXT,
       admitted_by     INTEGER,
       admitted_at     TEXT NOT NULL,
@@ -609,9 +609,9 @@ function createAllTables() {
   db.run(`
     CREATE TABLE IF NOT EXISTS dispensing_log (
       dispense_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-      prescription_id INTEGER,
-      drug_id       INTEGER NOT NULL,
-      patient_id    INTEGER NOT NULL,
+      prescription_id INTEGER REFERENCES prescriptions(rx_id),
+      drug_id       INTEGER NOT NULL REFERENCES drugs(drug_id),
+      patient_id    INTEGER NOT NULL REFERENCES patients(patient_id),
       qty_dispensed REAL NOT NULL,
       dispensed_by  INTEGER NOT NULL,
       dispensed_at  TEXT NOT NULL,

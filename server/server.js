@@ -130,17 +130,24 @@ function audit(actor, actionType, detail, req, patient) {
 function auditNow(actor, actionType, detail, req, patient) { audit(actor, actionType, detail, req, patient); persistNow(); }
 
 // ---- RBAC (server-authoritative) -------------------------------------------
-const CLINICAL = ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
+// Clinicians who may read clinical charts/meds. NOT it_admin/hospital_manager —
+// they are oversight (demographics/beds/audit), not a care team, so they don't get
+// chart/med access by default.
+const CLINICAL = ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
 const CAN = {
   register_patient: ['emergency_doctor', 'triage_nurse', 'receptionist', 'it_admin'],
-  // demographics (list + basic detail) — receptionist included; CLINICAL data is separate
-  view_patients:    [...CLINICAL, 'receptionist'],
+  // demographics (list + basic detail) — oversight + clinicians + receptionist
+  view_patients:    ['it_admin', 'hospital_manager', ...CLINICAL, 'receptionist'],
   view_chart:       CLINICAL,                            // vitals/clinical chart (NOT receptionist)
   view_meds:        CLINICAL,                            // prescriptions
   record_vitals:    ['nurse', 'senior_nurse', 'triage_nurse', 'doctor', 'emergency_doctor'],
   view_beds:        ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'senior_nurse', 'nurse', 'emergency_doctor', 'triage_nurse'],
   prescribe:        ['doctor', 'consultant', 'emergency_doctor'],
   order_labs:       ['doctor', 'consultant', 'emergency_doctor'],
+  administer_meds:  ['nurse', 'senior_nurse', 'triage_nurse', 'doctor', 'emergency_doctor'],  // record a dose given/held (MAR) at the bedside
+  dispense_meds:    ['pharmacist'],                      // pharmacy: dispense against an Rx and decrement central stock
+  enter_lab_result: ['lab_technician'],                 // lab: post a result to an order
+  discharge_patient:['doctor', 'consultant', 'emergency_doctor'],  // stop active meds + free the bed
   view_audit:       ['it_admin', 'hospital_manager'],   // full audit log is oversight-only (a consultant would see every dept's PHI access)
   manage_users:     ['it_admin'],                       // staff/department administration
 };
@@ -202,13 +209,17 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 // Only the actual frontend assets are servable. Everything else — server/, test/,
 // tools/, .git/, package.json, and CRUCIALLY server/data/{openward.sqlite,audit.key}
 // — is denied. (Allowlist, not denylist, so nothing leaks by default.)
-const STATIC_ALLOW = /^(?:index\.html|favicon\.ico)$|^(?:js|css|vendor)\/[\w./-]+$/;
+const STATIC_ALLOW = /^(?:index\.html|favicon\.ico|(?:js|css|vendor)\/[\w.\-/]+)$/;
 function serveStatic(req, res, pathname) {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  // Reject any dot/empty segment BEFORE normalization — blocks "/js/../server/...",
+  // "/js/./x", "//", and (since pathname is already decoded) "%2e%2e" traversals.
+  if (rel.split('/').some(s => s === '' || s === '.' || s === '..')) { res.writeHead(403); return res.end('forbidden'); }
   if (!STATIC_ALLOW.test(rel)) { res.writeHead(403); return res.end('forbidden'); }
   const full = path.join(ROOT, rel);
   const within = path.relative(ROOT, full);
-  if (within.startsWith('..') || path.isAbsolute(within)) { res.writeHead(403); return res.end('forbidden'); }
+  // Final guard: the resolved path must be index.html/favicon.ico or inside js/css/vendor.
+  if (within.startsWith('..') || path.isAbsolute(within) || !/^(?:index\.html|favicon\.ico|(?:js|css|vendor)[\\/])/.test(within)) { res.writeHead(403); return res.end('forbidden'); }
   fs.readFile(full, (err, buf) => {
     if (err) { res.writeHead(404); return res.end('not found'); }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' });
@@ -263,8 +274,7 @@ async function handleApi(req, res, pathname) {
     const v = okUser ? await u.verifyPassword(password, user.salt, user.password_hash) : { ok: false };
     if (!okUser || !v.ok) {
       run('INSERT INTO login_attempts (account, attempt_ms) VALUES (?, ?)', [acct, Date.now()]);
-      audit(null, 'LOGIN_FAILED', `Failed login for "${username}"`, req);
-      persist();
+      auditNow(null, 'LOGIN_FAILED', `Failed login for "${username}"`, req);   // durable security event
       return send(res, 401, { error: 'bad_credentials', message: 'Invalid username or password.' });
     }
     if (v.needsUpgrade) { try { run('UPDATE users SET password_hash = ? WHERE user_id = ?', [await u.hashPassword(password, user.salt), user.user_id]); } catch (e) {} }
@@ -287,7 +297,8 @@ async function handleApi(req, res, pathname) {
   const actor = auth.user;
 
   if (pathname === '/api/logout' && req.method === 'POST') {
-    run('DELETE FROM sessions WHERE session_id = ?', [auth.session.session_id]); persist();
+    run('DELETE FROM sessions WHERE session_id = ?', [auth.session.session_id]);
+    auditNow(actor, 'LOGOUT', `${actor ? actor.full_name_en : 'patient'} logged out`, req);
     return send(res, 200, { ok: true }, { 'Set-Cookie': 'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
   }
   if (pathname === '/api/me' && req.method === 'GET') {
@@ -329,9 +340,9 @@ async function handleApi(req, res, pathname) {
       run(`INSERT INTO admissions (patient_id, dept_id, bed_number, admitted_by, admitted_at, status, chief_complaint)
            VALUES (?, ?, ?, ?, ?, 'active', ?)`,
         [pid, deptId, bed, actor.user_id, new Date().toISOString(), body.chief_complaint || null]);
-      run('COMMIT');
       const patient = get('SELECT * FROM patients WHERE patient_id = ?', [pid]);
-      audit(actor, 'PATIENT_REGISTERED', `Registered ${nameAr} (MRN ${mrn})`, req, patient);
+      audit(actor, 'PATIENT_REGISTERED', `Registered ${nameAr} (MRN ${mrn})`, req, patient);   // audited INSIDE the tx
+      run('COMMIT');
       persistNow();
       return send(res, 201, { patient_id: pid, mrn });
     } catch (e) {
@@ -385,16 +396,18 @@ async function handleApi(req, res, pathname) {
       return send(res, 403, { error: 'forbidden', message: 'Patient is not in your department.' });
     }
     delete patient.portal_password_hash; delete patient.portal_salt;   // never ship secrets
-    // Clinical data (vitals + the clinical admission fields: chief complaint,
-    // diagnosis, code status, etc.) only for view_chart roles. Others (e.g.
-    // receptionist) get a demographics-only admission stub.
+    // Clinical data (vitals, clinical admission fields, and clinical patient fields
+    // like weight_kg/egfr) only for view_chart roles. Non-clinical roles (e.g.
+    // receptionist) get demographics only.
     const clinical = can(role, 'view_chart');
+    const DEMOG = ['patient_id', 'mrn', 'national_id', 'full_name_ar', 'full_name_en', 'date_of_birth', 'gender', 'blood_type', 'phone', 'emergency_contact', 'emergency_contact_name', 'emergency_contact_phone', 'emergency_contact_relation', 'registered_at'];
+    const safePatient = clinical ? patient : Object.fromEntries(DEMOG.map(k => [k, patient[k]]));
     const safeAdmission = !admission ? null : (clinical ? admission
       : { admission_id: admission.admission_id, dept_id: admission.dept_id, bed_number: admission.bed_number, admitted_at: admission.admitted_at, status: admission.status });
     const vitals = (admission && clinical) ? all('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 10', [admission.admission_id]) : [];
     audit(actor, 'PATIENT_VIEWED', 'Opened patient chart', req, patient);   // log every PHI read
     persistNow();   // durable: don't lose a PHI-access record on a crash
-    return send(res, 200, { patient, admission: safeAdmission, vitals });
+    return send(res, 200, { patient: safePatient, admission: safeAdmission, vitals });
   }
 
   if (pathname === '/api/prescriptions' && req.method === 'GET') {
@@ -523,6 +536,103 @@ async function handleApi(req, res, pathname) {
     return send(res, 200, { ok: true });
   }
 
+  // ---- MAR: a bedside nurse/doctor records a dose given or held against an Rx ----
+  const am = pathname.match(/^\/api\/prescriptions\/(\d+)\/administer$/);
+  if (am && req.method === 'POST') {
+    if (!can(role, 'administer_meds')) return send(res, 403, { error: 'forbidden' });
+    const rx = get('SELECT * FROM prescriptions WHERE rx_id = ?', [parseInt(am[1], 10)]);
+    if (!rx) return send(res, 404, { error: 'not_found', message: 'prescription not found' });
+    if (!canAccessAdmission(actor, role, rx.admission_id)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
+    if (rx.status !== 'active') return send(res, 409, { error: 'not_active', message: 'prescription is not active' });
+    const status = body.status === 'held' ? 'held' : 'given';
+    if (status === 'held' && !String(body.hold_reason || '').trim()) return send(res, 400, { error: 'validation', message: 'hold_reason required when holding a dose' });
+    let marId;
+    withTx(() => {
+      run(`INSERT INTO med_admin_records (prescription_id, admission_id, drug_name, dose, route, administered_at, administered_by, status, hold_reason, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [rx.rx_id, rx.admission_id, rx.drug_name, rx.dose, rx.route, new Date().toISOString(), actor.user_id, status, status === 'held' ? String(body.hold_reason).trim() : null, body.notes ? String(body.notes) : null]);
+      marId = lastId();   // before audit()
+      audit(actor, status === 'held' ? 'MED_HELD' : 'MED_ADMINISTERED', `${status === 'held' ? 'Held' : 'Administered'} ${rx.drug_name} ${rx.dose} ${rx.route} (rx ${rx.rx_id})`, req, patientOfAdmission(rx.admission_id));
+    });
+    persistNow();
+    return send(res, 201, { mar_id: marId, status });
+  }
+
+  // ---- Pharmacy: dispense against an Rx, decrementing central stock atomically.
+  //      Pharmacy is a hospital-wide service, so it is NOT department-scoped — the
+  //      RBAC role (pharmacist) is the gate, not the patient's ward. ----
+  const dm = pathname.match(/^\/api\/prescriptions\/(\d+)\/dispense$/);
+  if (dm && req.method === 'POST') {
+    if (!can(role, 'dispense_meds')) return send(res, 403, { error: 'forbidden' });
+    const rx = get('SELECT * FROM prescriptions WHERE rx_id = ?', [parseInt(dm[1], 10)]);
+    if (!rx) return send(res, 404, { error: 'not_found', message: 'prescription not found' });
+    if (rx.status !== 'active') return send(res, 409, { error: 'not_active', message: 'prescription is not active' });
+    const qty = Number(body.qty);
+    if (!Number.isFinite(qty) || qty <= 0) return send(res, 400, { error: 'validation', message: 'qty must be a positive number' });
+    const drug = get('SELECT * FROM drugs WHERE drug_id = ?', [rx.drug_id]);
+    if (!drug) return send(res, 400, { error: 'validation', message: 'drug no longer in formulary' });
+    const pt = patientOfAdmission(rx.admission_id);
+    let dispenseId;
+    try {
+      dispenseId = withTx(() => {
+        const cur = Number(get('SELECT stock_qty FROM drugs WHERE drug_id = ?', [rx.drug_id]).stock_qty) || 0;
+        if (cur < qty) { const e = new Error('insufficient_stock'); e.code = 'insufficient_stock'; throw e; }   // rolls back the tx
+        run('UPDATE drugs SET stock_qty = stock_qty - ? WHERE drug_id = ?', [qty, rx.drug_id]);
+        run('INSERT INTO dispensing_log (prescription_id, drug_id, patient_id, qty_dispensed, dispensed_by, dispensed_at, notes) VALUES (?,?,?,?,?,?,?)',
+          [rx.rx_id, rx.drug_id, pt.patient_id, qty, actor.user_id, new Date().toISOString(), body.notes ? String(body.notes) : null]);
+        const id = lastId();
+        audit(actor, 'MED_DISPENSED', `Dispensed ${qty} ${drug.unit} of ${drug.name_generic} (rx ${rx.rx_id})`, req, pt);
+        return id;
+      });
+    } catch (e) {
+      if (e.code === 'insufficient_stock') return send(res, 409, { error: 'insufficient_stock', message: 'Not enough stock to dispense.' });
+      throw e;
+    }
+    persistNow();
+    return send(res, 201, { dispense_id: dispenseId, remaining_stock: get('SELECT stock_qty FROM drugs WHERE drug_id = ?', [rx.drug_id]).stock_qty });
+  }
+
+  // ---- Lab: a technician posts a result to an order (hospital-wide service) ----
+  const lr = pathname.match(/^\/api\/lab-orders\/(\d+)\/result$/);
+  if (lr && req.method === 'POST') {
+    if (!can(role, 'enter_lab_result')) return send(res, 403, { error: 'forbidden' });
+    const order = get('SELECT * FROM lab_orders WHERE order_id = ?', [parseInt(lr[1], 10)]);
+    if (!order) return send(res, 404, { error: 'not_found', message: 'lab order not found' });
+    if (order.status === 'resulted') return send(res, 409, { error: 'already_resulted', message: 'order already has a result' });
+    const value = String(body.result_value || '').trim();
+    if (!value) return send(res, 400, { error: 'validation', message: 'result_value required' });
+    const critical = body.is_critical === true ? 1 : 0;
+    withTx(() => {
+      run(`UPDATE lab_orders SET status='resulted', result_value=?, result_unit=?, result_flag=?, result_notes=?, is_critical=?, resulted_by=?, resulted_at=? WHERE order_id=?`,
+        [value, body.result_unit ? String(body.result_unit) : null, body.result_flag ? String(body.result_flag) : null, body.result_notes ? String(body.result_notes) : null, critical, actor.user_id, new Date().toISOString(), order.order_id]);
+      audit(actor, critical ? 'LAB_RESULT_CRITICAL' : 'LAB_RESULTED', `Resulted ${order.test_name}: ${value}${body.result_unit ? ' ' + body.result_unit : ''}${critical ? ' [CRITICAL]' : ''}`, req, patientOfAdmission(order.admission_id));
+    });
+    persistNow();
+    return send(res, 200, { ok: true, critical: !!critical });
+  }
+
+  // ---- Discharge: stop active meds (reconciliation) + free the bed, atomically ----
+  const dg = pathname.match(/^\/api\/admissions\/(\d+)\/discharge$/);
+  if (dg && req.method === 'POST') {
+    if (!can(role, 'discharge_patient')) return send(res, 403, { error: 'forbidden' });
+    const adm = get('SELECT * FROM admissions WHERE admission_id = ?', [parseInt(dg[1], 10)]);
+    if (!adm) return send(res, 404, { error: 'not_found', message: 'admission not found' });
+    if (!canAccessAdmission(actor, role, adm.admission_id)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
+    if (adm.status !== 'active') return send(res, 409, { error: 'not_active', message: 'admission is not active' });
+    const summary = String(body.summary || '').trim();
+    if (!summary) return send(res, 400, { error: 'validation', message: 'a discharge summary is required (medication reconciliation)' });
+    let stopped = 0;
+    withTx(() => {
+      const active = all("SELECT rx_id FROM prescriptions WHERE admission_id = ? AND status = 'active'", [adm.admission_id]);
+      stopped = active.length;
+      run("UPDATE prescriptions SET status = 'discontinued' WHERE admission_id = ? AND status = 'active'", [adm.admission_id]);
+      run("UPDATE admissions SET status = 'discharged', discharged_at = ?, disposition_plan = ? WHERE admission_id = ?", [new Date().toISOString(), summary, adm.admission_id]);
+      audit(actor, 'PATIENT_DISCHARGED', `Discharged admission ${adm.admission_id}; ${stopped} active med(s) reconciled/stopped`, req, patientOfAdmission(adm.admission_id));
+    });
+    persistNow();
+    return send(res, 200, { ok: true, medications_stopped: stopped });
+  }
+
   return send(res, 404, { error: 'not_found' });
 }
 
@@ -585,11 +695,13 @@ async function init() {
 
 // Tables → the columns we expect to carry FK constraints; report any not constrained.
 const EXPECT_FK = {
-  admissions: ['patient_id'],
+  admissions: ['patient_id', 'dept_id'],
+  users: ['department_id'],
   vitals_log: ['admission_id'],
   prescriptions: ['admission_id', 'drug_id'],
   lab_orders: ['admission_id'],
   med_admin_records: ['prescription_id', 'admission_id'],
+  dispensing_log: ['prescription_id', 'drug_id', 'patient_id'],
   patient_conditions: ['patient_id'],
   patient_allergies: ['patient_id'],
 };

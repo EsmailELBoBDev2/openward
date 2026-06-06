@@ -71,13 +71,27 @@ curl -b jar localhost:8080/api/patients
   `POST /api/login`, `POST /api/logout`, `GET /api/me`,
   `GET/POST /api/patients`, `GET /api/patients/:id`, `GET /api/beds`,
   `POST /api/vitals`, `GET/POST /api/prescriptions` (formulary-only),
-  `POST /api/lab-orders`, `GET /api/audit` (role-gated).
+  `POST /api/prescriptions/:id/administer` (MAR — bedside, dept-scoped),
+  `POST /api/prescriptions/:id/dispense` (pharmacy — decrements central stock
+  atomically; **service role**, hospital-wide), `POST /api/lab-orders`,
+  `POST /api/lab-orders/:id/result` (lab — **service role**),
+  `POST /api/admissions/:id/discharge` (stops active meds + frees the bed in one
+  transaction), `GET /api/audit` (role-gated),
+  `GET/POST /api/departments`, `GET/POST /api/users`, `POST /api/users/:id/{disable,enable,reset-password}`.
+- **Service vs ward roles:** ward clinicians are scoped to their department's active
+  admissions (`canAccessAdmission`). Pharmacy (`pharmacist`) and lab
+  (`lab_technician`) are **hospital-wide services**: their one workflow endpoint
+  (dispense / result) is gated by role, not by ward — but they get no patient list
+  and no chart, so they can't browse PHI across departments.
 
-Covered by `test/test_server.js` + `test/test_setup.js` (auth, RBAC denial,
-transactional bed conflict, **a second client seeing the first's write**,
-formulary-only prescribing, no secret leakage in patient detail, role-gated audit,
-audit chain, **FK enforcement** of orphan rows, path-traversal, **first-run setup
-with no default accounts**).
+Covered by `test/test_server.js` (116 assertions) + `test/test_setup.js` (auth,
+RBAC denial incl. **service roles**, transactional bed conflict, **a second client
+seeing the first's write**, formulary-only prescribing, **clinical fields
+allowlisted out of non-clinical payloads**, role-gated audit, **durable
+login-fail/logout audit**, audit chain, **FK enforcement** of orphan rows incl.
+dispensing/dept, **dot-segment path-traversal denied (sent raw)**, **MAR /
+pharmacy dispensing with atomic stock decrement / lab result entry / discharge with
+med reconciliation + bed release**, **first-run setup with no default accounts**).
 
 ## This IS the production target (decision locked)
 
@@ -95,12 +109,17 @@ off the in-browser sql.js/IndexedDB source-of-truth onto `/api`. Because the UI'
 DB calls are synchronous and `/api` is async, this is done screen-by-screen:
 
 1. ✅ Server owns the DB; auth/RBAC/audit/transactions; patients, beds, vitals,
-   prescriptions, lab orders, patient detail, audit endpoints.
+   prescriptions, lab orders, patient detail, audit, **staff/department admin**,
+   **MAR, pharmacy dispensing (stock-decrementing), lab result entry, and
+   discharge (med reconciliation + bed release)** endpoints.
 2. ⬜ Wire the browser **login** to `/api/login` (load `js/api.js`; drop the
    client-side `login()` for staff).
 3. ⬜ Migrate registration → beds → vitals → orders → MAR → dispensing → labs →
-   discharge → portal to `/api`, deleting their `dbRun/dbGet/saveDBToIndexedDB`
-   source-of-truth use (keep `localStorage` for UI prefs only).
+   discharge → portal **screens** to the `/api` endpoints above, deleting their
+   `dbRun/dbGet/saveDBToIndexedDB` source-of-truth use (keep `localStorage` for UI
+   prefs only). The server side of these workflows now exists; the remaining work
+   is the browser wiring (needs a real browser to validate, so it's done
+   screen-by-screen).
 4. ⬜ Server push (WebSocket/SSE) to replace `BroadcastChannel` for live updates.
 5. ⬜ Server-side backup/restore (scheduled, encrypted, off-machine); remove the
    in-UI "Reset Database" from server builds.

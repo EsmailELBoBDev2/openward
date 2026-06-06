@@ -40,6 +40,13 @@ function makeClient(base) {
   const httpServer = server.start();
   if (!httpServer.listening) await new Promise(r => httpServer.once('listening', r));
   const base = `http://127.0.0.1:${httpServer.address().port}`;
+  // raw GET that sends the path VERBATIM — fetch()/curl normalize "/a/../b" on the
+  // client, so to exercise the server's dot-segment guard the ".." must survive to
+  // the wire (otherwise the request the server sees is already collapsed).
+  const rawGet = (p) => new Promise((resolve) => {
+    const r = http.request({ host: '127.0.0.1', port: httpServer.address().port, path: p, method: 'GET' }, (res) => { res.resume(); resolve(res.statusCode); });
+    r.on('error', () => resolve('error')); r.end();
+  });
 
   const A = makeClient(base);   // admin client
   const N = makeClient(base);   // nurse client
@@ -156,6 +163,14 @@ function makeClient(base) {
   assert((await fetch(base + '/server/server.js')).status === 403, 'static: server source is denied (403)');
   assert((await fetch(base + '/test/test_server.js')).status === 403, 'static: test/ is denied (403)');
   assert((await fetch(base + '/index.html')).status === 200 && (await fetch(base + '/js/api.js')).status === 200, 'static: real frontend assets still serve (200)');
+  // #1 (critical, reproduced): a dot-segment that path.join would normalize back
+  //     INTO root used to pass the allowlist and serve the DB/key. Sent raw so the
+  //     ".." survives to the server (fetch would collapse it before sending).
+  assert((await rawGet('/js/../server/data/audit.key')) === 403, 'static: raw dot-segment /js/../server/data/audit.key is denied (403) (#1)');
+  assert((await rawGet('/js/%2e%2e/server/data/audit.key')) === 403, 'static: raw encoded %2e%2e dot-segment is denied (403) (#1)');
+  assert((await rawGet('/js/../server/server.js')) === 403, 'static: raw dot-segment to server source is denied (403) (#1)');
+  assert((await rawGet('/js/./api.js')) === 403, 'static: raw single-dot segment /js/./api.js is denied (403) (#1)');
+  assert((await rawGet('/js/api.js')) === 200, 'static: a clean nested asset still serves over the raw client (200) (#1)');
 
   // 7f. finer RBAC (#2): receptionist sees demographics but NOT vitals or meds
   const R = makeClient(base);
@@ -165,6 +180,18 @@ function makeClient(base) {
   assert(rDet.json.admission && !('chief_complaint' in rDet.json.admission), 'receptionist admission is sanitized — no clinical fields (#2)');
   assert('chief_complaint' in det.json.admission, 'a clinical role gets the full admission object (chief_complaint present)');
   assert((await R('GET', '/api/prescriptions?admission_id=' + adm1.admission_id)).status === 403, 'receptionist cannot read prescriptions (#2 view_meds split)');
+  // #2 (leak fix): clinical patient columns (weight_kg/egfr) must be allowlisted OUT
+  //     of a non-clinical payload — stripping only the portal secrets was not enough.
+  server._internals().run('UPDATE patients SET weight_kg = 70, egfr = 88 WHERE patient_id = ?', [reg.json.patient_id]);
+  const rWeight = await R('GET', '/api/patients/' + reg.json.patient_id);
+  assert(!('weight_kg' in rWeight.json.patient) && !('egfr' in rWeight.json.patient), 'receptionist patient payload omits clinical fields weight_kg/egfr (#2 allowlist)');
+  const dWeight = await D('GET', '/api/patients/' + reg.json.patient_id);
+  assert('weight_kg' in dWeight.json.patient && dWeight.json.patient.weight_kg === 70, 'a clinical role (doctor) still receives weight_kg/egfr (#2)');
+  // #7 (RBAC): it_admin is oversight (demographics/beds/audit), NOT a care team — even
+  //     on a patient it may see, it gets no chart (vitals/weight_kg) and no meds.
+  const aChart = await A('GET', '/api/patients/' + reg.json.patient_id);
+  assert(aChart.status === 200 && aChart.json.vitals.length === 0 && !('weight_kg' in aChart.json.patient), 'it_admin gets demographics but NOT the clinical chart — oversight only (#7)');
+  assert((await A('GET', '/api/prescriptions?admission_id=' + adm1.admission_id)).status === 403, 'it_admin cannot read prescriptions — not a clinician (#7)');
 
   // 7g. clinical safety (#4): vitals range, duplicate Rx, allergy block + override
   assert((await N('POST', '/api/vitals', { admission_id: adm2.admission_id, heart_rate: 999 })).status === 400, 'implausible vitals are rejected (#4)');
@@ -195,6 +222,12 @@ function makeClient(base) {
   assert(arows.some(r => r.action_type === 'LAB_ORDERED' && r.patient_mrn), 'lab-order write audit carries patient context (#4)');
   assert(arows.some(r => r.action_type === 'PATIENT_VIEW_DENIED'), 'a denied out-of-department chart read is audited (durably via auditNow)');
   assert(arows.some(r => r.action_type === 'AUDIT_LOG_VIEWED'), 'reading the audit log is itself audited (#6)');
+  // #6: failed logins and logouts are DURABLE audit events (persisted, not in-memory).
+  assert(arows.some(r => r.action_type === 'LOGIN_FAILED'), 'a failed login is a durable audit event (#6)');
+  const LO = makeClient(base);
+  await LO('POST', '/api/login', { username: 'nurse', password: 'nurse123' });
+  await LO('POST', '/api/logout', {});
+  assert(internals.all("SELECT 1 AS x FROM audit_log WHERE action_type = 'LOGOUT'").length >= 1, 'logout is a durable audit event (#6)');
 
   // 8c. withTx rolls back the clinical insert if the audit step throws (#3 atomicity)
   const beforeV = internals.get('SELECT COUNT(*) AS c FROM vitals_log').c;
@@ -230,6 +263,58 @@ function makeClient(base) {
   try { internals.run("INSERT INTO med_admin_records (prescription_id, admission_id, drug_name, dose, route) VALUES (999, 999, 'X', '1', 'PO')"); }
   catch (e) { marBlocked = true; }
   assert(marBlocked, 'FK: an orphan med_admin_records row (bad prescription/admission) is rejected');
+
+  // 11b. FK extends to the dispensing log and admission.dept_id (#11 expanded coverage)
+  let dispFkBlocked = false;
+  try { internals.run("INSERT INTO dispensing_log (drug_id, patient_id, qty_dispensed, dispensed_by, dispensed_at) VALUES (999999, 999999, 1, 1, '2026-06-06T00:00:00Z')"); }
+  catch (e) { dispFkBlocked = true; }
+  assert(dispFkBlocked, 'FK: an orphan dispensing_log row (bad drug/patient) is rejected (#11)');
+  let admDeptFkBlocked = false;
+  try { internals.run("INSERT INTO admissions (patient_id, dept_id, admitted_at, status) VALUES (?, 999999, '2026-06-06T00:00:00Z', 'active')", [reg.json.patient_id]); }
+  catch (e) { admDeptFkBlocked = true; }
+  assert(admDeptFkBlocked, 'FK: an admission with a non-existent dept_id is rejected (#11)');
+
+  // 13. clinical workflow endpoints (#8) + service-role RBAC (#7). Pharmacy and lab are
+  //     hospital-wide services (no dept seeded), so create them via the admin API.
+  assert((await A('POST', '/api/users', { username: 'pharm', password: 'Str0ngPass!', role: 'pharmacist', full_name_en: 'Pharmacist' })).status === 201, 'admin creates a pharmacist (#7 service role)');
+  assert((await A('POST', '/api/users', { username: 'labtech', password: 'Str0ngPass!', role: 'lab_technician', full_name_en: 'Lab Tech' })).status === 201, 'admin creates a lab technician (#7 service role)');
+  const P = makeClient(base), L = makeClient(base);
+  assert((await P('POST', '/api/login', { username: 'pharm', password: 'Str0ngPass!' })).status === 200, 'pharmacist logs in');
+  assert((await L('POST', '/api/login', { username: 'labtech', password: 'Str0ngPass!' })).status === 200, 'lab technician logs in');
+  const activeRx = (await D('GET', '/api/prescriptions?admission_id=' + adm1.admission_id)).json.prescriptions.find(r => r.status === 'active' && r.drug_id === 1);
+  assert(activeRx, 'found an active prescription on the dept-1 admission to administer/dispense');
+
+  // 13a. MAR — bedside administration. er.doc (dept 1) may; the dept-2 nurse may not.
+  assert((await D('POST', `/api/prescriptions/${activeRx.rx_id}/administer`, { status: 'given' })).status === 201, 'a bedside clinician records a dose given on its own dept admission (201) (#8 MAR)');
+  assert((await N('POST', `/api/prescriptions/${activeRx.rx_id}/administer`, { status: 'given' })).status === 403, 'dept scope: a dept-2 nurse cannot administer on a dept-1 Rx (403) (#8 MAR)');
+  assert((await D('POST', `/api/prescriptions/${activeRx.rx_id}/administer`, { status: 'held' })).status === 400, 'holding a dose requires a hold_reason (400) (#8 MAR)');
+  assert((await P('POST', `/api/prescriptions/${activeRx.rx_id}/administer`, { status: 'given' })).status === 403, 'a pharmacist cannot record a bedside administration (#7)');
+
+  // 13b. Pharmacy dispensing — decrements central stock atomically; not dept-scoped.
+  internals.run('UPDATE drugs SET stock_qty = 100 WHERE drug_id = 1');
+  assert((await D('POST', `/api/prescriptions/${activeRx.rx_id}/dispense`, { qty: 10 })).status === 403, 'a doctor cannot dispense (pharmacy-only) (#7)');
+  const disp = await P('POST', `/api/prescriptions/${activeRx.rx_id}/dispense`, { qty: 10 });
+  assert(disp.status === 201 && disp.json.remaining_stock === 90, 'pharmacist dispenses 10 units; central stock decremented to 90 (#8 dispense)');
+  assert((await P('POST', `/api/prescriptions/${activeRx.rx_id}/dispense`, { qty: 99999 })).status === 409, 'dispensing more than stock is rejected (409) (#8)');
+  assert(internals.get('SELECT stock_qty FROM drugs WHERE drug_id = 1').stock_qty === 90, 'the over-dispense attempt rolled back — stock still 90 (#8 atomic)');
+
+  // 13c. Lab result entry — a technician posts a result; doctors cannot enter results.
+  const labOrder = await D('POST', '/api/lab-orders', { admission_id: adm1.admission_id, test_name: 'Potassium', priority: 'stat' });
+  assert(labOrder.status === 201, 'doctor orders a stat lab to be resulted');
+  assert((await D('POST', `/api/lab-orders/${labOrder.json.order_id}/result`, { result_value: '5.0' })).status === 403, 'a doctor cannot enter a lab result (lab-only) (#7)');
+  const lres = await L('POST', `/api/lab-orders/${labOrder.json.order_id}/result`, { result_value: '6.8', result_unit: 'mmol/L', is_critical: true });
+  assert(lres.status === 200 && lres.json.critical === true, 'lab technician posts a CRITICAL result (#8 lab result)');
+  assert((await L('POST', `/api/lab-orders/${labOrder.json.order_id}/result`, { result_value: '6.8' })).status === 409, 're-resulting an already-resulted order is rejected (409) (#8)');
+
+  // 13d. Discharge — stops active meds (reconciliation) + frees the bed, atomically.
+  assert((await D('POST', `/api/admissions/${adm1.admission_id}/discharge`, {})).status === 400, 'discharge requires a summary — medication reconciliation (400) (#8)');
+  const disch = await D('POST', `/api/admissions/${adm1.admission_id}/discharge`, { summary: 'Improved; home with PO meds.' });
+  assert(disch.status === 200, 'doctor discharges the admission (200) (#8 discharge)');
+  assert(internals.get('SELECT status FROM admissions WHERE admission_id = ?', [adm1.admission_id]).status === 'discharged', 'the admission is marked discharged (#8)');
+  assert(internals.get("SELECT COUNT(*) AS c FROM prescriptions WHERE admission_id = ? AND status = 'active'", [adm1.admission_id]).c === 0, 'all active meds were stopped on discharge — reconciliation (#8)');
+  assert((await A('POST', '/api/patients', { full_name_ar: 'سرير جديد', dept_id: 1, bed_number: '5' })).status === 201, 'the discharged bed (5/dept 1) is now free to admit into (#8 atomic discharge)');
+  const wrows = internals.all('SELECT DISTINCT action_type FROM audit_log').map(r => r.action_type);
+  assert(['MED_ADMINISTERED', 'MED_DISPENSED', 'LAB_RESULT_CRITICAL', 'PATIENT_DISCHARGED'].every(a => wrows.includes(a)), 'MAR / dispense / critical-lab / discharge are all audited (#8)');
 
   // 12. setup/HTTP guard helpers
   assert(internals.isLoopback({ socket: { remoteAddress: '127.0.0.1' } }) === true
