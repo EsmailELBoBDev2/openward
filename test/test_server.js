@@ -82,6 +82,13 @@ function makeClient(base) {
   assert(rows.length >= 3 && rows.every(r => r.row_hash) && rows.slice(1).every((r, i) => r.prev_hash === rows[i].row_hash),
     'audit log is a linked HMAC chain (LOGIN/PATIENT_REGISTERED/VITALS_RECORDED, IP recorded server-side)');
 
+  // 9. static path-traversal guard: an encoded ../ escape is rejected (403), not
+  //    served. (startsWith(ROOT) used to also accept a sibling like "<root>2".)
+  const trav = await fetch(base + '/%2e%2e%2f%2e%2e%2fetc%2fpasswd');
+  assert(trav.status === 403, 'path-traversal request (../../etc/passwd) is rejected with 403');
+  const ok = await fetch(base + '/index.html');
+  assert(ok.status === 200, 'a normal static file still serves (200)');
+
   httpServer.close();
   try { fs.rmSync(process.env.OPENWARD_DATA_DIR, { recursive: true, force: true }); } catch (e) {}
   console.log(`\n${pass} passed, ${fail} failed`);

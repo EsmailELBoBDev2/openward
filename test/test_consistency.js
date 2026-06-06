@@ -107,8 +107,9 @@ if (clearFn) {
   if (fn) {
     const body = fn[0];
     assert(/order_set_exceptions/.test(body), 'unmatched order-set meds go to order_set_exceptions');
-    assert(!/order_set_med_unmatched/.test(body) && !/INSERT INTO nursing_tasks[\s\S]*not in formulary/i.test(body),
-      'unmatched meds are NOT inserted as a (doctor-owned, shown-as-done) nurse task');
+    assert(!/INSERT INTO nursing_tasks/.test(body),
+      'order sets no longer write nursing_tasks (which were doctor-owned + shown-as-done)');
+    assert(/'task'/.test(body), 'order-set tasks are recorded as pending follow-ups (item_type task)');
     assert(/createdRx/.test(body) && /manualMeds/.test(body), 'tracks createdRx vs manualMeds');
     assert(!/\$\{os\.meds\.length\} meds`/.test(body), 'success/audit no longer reports os.meds.length as "meds" (would over-count)');
   }

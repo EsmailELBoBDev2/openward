@@ -124,6 +124,7 @@ function applySchemaMigrations() {
       exc_id        INTEGER PRIMARY KEY AUTOINCREMENT,
       admission_id  INTEGER NOT NULL,
       set_name      TEXT,
+      item_type     TEXT DEFAULT 'med',
       drug_name     TEXT NOT NULL,
       dose          TEXT,
       route         TEXT,
@@ -133,6 +134,7 @@ function applySchemaMigrations() {
       created_at    TEXT NOT NULL,
       status        TEXT DEFAULT 'pending'
     )`); } catch(e) {}
+    try { db.run("ALTER TABLE order_set_exceptions ADD COLUMN item_type TEXT DEFAULT 'med'"); } catch(e) {}
     // Code Blue events
     try { db.run(`CREATE TABLE IF NOT EXISTS code_blue_events (
       event_id      INTEGER PRIMARY KEY AUTOINCREMENT,

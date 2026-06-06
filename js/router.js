@@ -8489,17 +8489,20 @@ async function handleApplyOrderSet(setName, patientId, admissionId) {
         [admissionId, user.user_id, d.drug_id, med.drug, med.dose, med.route, med.frequency, now.slice(0, 10), now]);
       createdRx++;
     } else {
-      dbRun(`INSERT INTO order_set_exceptions (admission_id, set_name, drug_name, dose, route, frequency, reason, created_by, created_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'not_in_formulary', ?, ?, 'pending')`,
+      dbRun(`INSERT INTO order_set_exceptions (admission_id, set_name, item_type, drug_name, dose, route, frequency, reason, created_by, created_at, status)
+        VALUES (?, ?, 'med', ?, ?, ?, ?, 'not_in_formulary', ?, ?, 'pending')`,
         [admissionId, setName, med.drug, med.dose, med.route, med.frequency, user.user_id, now]);
       manualMeds.push(med.drug);
     }
   });
 
-  // Log tasks as nursing tasks
+  // Order-set TASKS as pending follow-ups (item_type='task'), NOT nursing_tasks:
+  // those were inserted with nurse_id = the doctor and a done_at, so the nurse
+  // "tasks done today" view never showed them. A proper ward task-queue UI is TODO.
   os.tasks.forEach(task => {
-    dbRun(`INSERT INTO nursing_tasks (admission_id, nurse_id, task_type, task_detail, status, done_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [admissionId, user.user_id, 'order_set_task', task, 'pending', nowISO(), task]);
+    dbRun(`INSERT INTO order_set_exceptions (admission_id, set_name, item_type, drug_name, reason, created_by, created_at, status)
+      VALUES (?, ?, 'task', ?, 'nursing_task', ?, ?, 'pending')`,
+      [admissionId, setName, task, user.user_id, nowISO()]);
   });
 
   const setLabel = lang==='ar' ? os.ar : os.en;

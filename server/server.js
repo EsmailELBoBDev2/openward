@@ -36,6 +36,7 @@ const DB_FILE = path.join(DATA_DIR, 'openward.sqlite');
 const KEY_FILE = path.join(DATA_DIR, 'audit.key');
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = parseInt(process.env.PORT || '8080', 10);
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';   // only then is X-Forwarded-For believed
 
 const initSqlJs = require(path.join(ROOT, 'vendor', 'sql-wasm.js'));
 const dbjs = require(path.join(ROOT, 'js', 'db.js'));     // reuse schema builder (createAllTables + migrations)
@@ -54,21 +55,39 @@ function get(sql, params = []) { const r = all(sql, params); return r.length ? r
 function run(sql, params = []) { db.run(sql, params); }
 function lastId() { const r = get('SELECT last_insert_rowid() AS id'); return r ? r.id : null; }
 let _persistTimer = null;
+function writeDbAtomic() {                  // temp file + rename: a crash mid-write can't corrupt the live DB
+  const tmp = DB_FILE + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, Buffer.from(db.export()));
+  fs.renameSync(tmp, DB_FILE);             // rename is atomic on the same filesystem
+}
 function persist() {                       // debounced write-to-disk
   if (_persistTimer) return;
-  _persistTimer = setTimeout(() => { _persistTimer = null; fs.writeFileSync(DB_FILE, Buffer.from(db.export())); }, 50);
+  _persistTimer = setTimeout(() => { _persistTimer = null; writeDbAtomic(); }, 50);
 }
-function persistNow() { if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null; } fs.writeFileSync(DB_FILE, Buffer.from(db.export())); }
+function persistNow() { if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null; } writeDbAtomic(); }
 
 // ---- audit (HMAC chain, key outside the DB) --------------------------------
 function auditHash(prev, row) {
-  const canon = JSON.stringify([row.timestamp, row.user_id, row.action_type, row.action_detail, row.patient_id || '', prev || '']);
+  // HMAC must cover EVERY persisted audit field, or an insider could alter an
+  // uncovered column (ip, patient name/mrn, role, dept) without breaking the chain.
+  const canon = JSON.stringify([
+    row.timestamp, row.user_id, row.user_name_en, row.user_name_ar, row.user_role,
+    row.dept_id || '', row.patient_id || '', row.patient_name || '', row.patient_mrn || '',
+    row.action_type, row.action_detail, row.ip_address || '', prev || '',
+  ]);
   return crypto.createHmac('sha256', auditKey).update(canon).digest('hex');
+}
+function clientIp(req) {
+  if (!req) return '';
+  // Only believe X-Forwarded-For when explicitly behind a trusted proxy; otherwise
+  // any client could spoof it. Default to the real socket address.
+  if (TRUST_PROXY && req.headers['x-forwarded-for']) return String(req.headers['x-forwarded-for']).split(',')[0].trim();
+  return req.socket.remoteAddress || '';
 }
 function audit(actor, actionType, detail, req, patient) {
   const prev = get('SELECT row_hash FROM audit_log ORDER BY log_id DESC LIMIT 1');
   const prevHash = prev ? prev.row_hash : null;
-  const ip = req ? (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '') : '';
+  const ip = clientIp(req);
   const row = {
     timestamp: new Date().toISOString(),
     user_id: actor ? actor.user_id : 0,
@@ -127,7 +146,10 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 function serveStatic(req, res, pathname) {
   let rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
   const full = path.join(ROOT, rel);
-  if (!full.startsWith(ROOT)) { res.writeHead(403); return res.end('forbidden'); }   // path traversal guard
+  // Path-traversal guard: startsWith(ROOT) would also accept a sibling like
+  // "<root>2". Use path.relative and reject anything that escapes ROOT.
+  const within = path.relative(ROOT, full);
+  if (within === '' || within.startsWith('..') || path.isAbsolute(within)) { res.writeHead(403); return res.end('forbidden'); }
   fs.readFile(full, (err, buf) => {
     if (err) { res.writeHead(404); return res.end('not found'); }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' });

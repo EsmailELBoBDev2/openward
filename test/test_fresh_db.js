@@ -61,15 +61,20 @@ function noThrow(label, fn) { try { fn(); pass++; console.log('  ok  - ' + label
 
   // ---- order-set UNMATCHED med: records an exception, creates NO prescription --
   assert(tableExists('order_set_exceptions'), 'fresh DB has the order_set_exceptions table');
+  assert(cols('order_set_exceptions').includes('item_type'), 'order_set_exceptions has item_type (med vs task)');
   const rxBefore = d.exec("SELECT COUNT(*) FROM prescriptions")[0].values[0][0];
-  noThrow('unmatched protocol med -> order_set_exceptions (not a prescription, not a nurse task)', () => {
-    d.run(`INSERT INTO order_set_exceptions (admission_id, set_name, drug_name, dose, route, frequency, reason, created_by, created_at, status)
-      VALUES (1, 'Sepsis Bundle', 'Broad-spectrum Antibiotics', 'per protocol', 'IV', 'stat', 'not_in_formulary', 1, '2026-06-06T10:00:00Z', 'pending')`);
+  noThrow('unmatched protocol med + order-set task -> order_set_exceptions (not Rx, not nurse task)', () => {
+    d.run(`INSERT INTO order_set_exceptions (admission_id, set_name, item_type, drug_name, dose, route, frequency, reason, created_by, created_at, status)
+      VALUES (1, 'Sepsis Bundle', 'med', 'Broad-spectrum Antibiotics', 'per protocol', 'IV', 'stat', 'not_in_formulary', 1, '2026-06-06T10:00:00Z', 'pending')`);
+    d.run(`INSERT INTO order_set_exceptions (admission_id, set_name, item_type, drug_name, reason, created_by, created_at, status)
+      VALUES (1, 'Sepsis Bundle', 'task', 'Insert urinary catheter', 'nursing_task', 1, '2026-06-06T10:00:00Z', 'pending')`);
   });
   const rxAfter = d.exec("SELECT COUNT(*) FROM prescriptions")[0].values[0][0];
   assert(rxAfter === rxBefore, 'the unmatched med created NO prescription (no fake drug_id=0 link)');
-  const exc = d.exec("SELECT drug_name, status FROM order_set_exceptions WHERE status='pending'");
-  assert(exc.length && exc[0].values[0][0] === 'Broad-spectrum Antibiotics', 'the unmatched med is a visible, actionable pending exception');
+  const med = d.exec("SELECT drug_name FROM order_set_exceptions WHERE item_type='med' AND status='pending'");
+  const tsk = d.exec("SELECT drug_name FROM order_set_exceptions WHERE item_type='task' AND status='pending'");
+  assert(med.length && med[0].values[0][0] === 'Broad-spectrum Antibiotics', 'unmatched med is a visible pending exception');
+  assert(tsk.length && tsk[0].values[0][0] === 'Insert urinary catheter', 'order-set task is a visible pending follow-up');
 
   // ---- negative controls: the OLD broken statements MUST still fail ----------
   let brokeLab = false;

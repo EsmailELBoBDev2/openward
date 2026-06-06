@@ -88,13 +88,18 @@ Demo logins (all fictional, no real PHI):
 
 | Role | Username | Password |
 |---|---|---|
-| IT Admin | `admin` | `admin123` |
+| IT Admin | `admin` | `HIS@2024` |
 | Hospital Manager | `manager` | `manager123` |
-| ER Doctor | `dr.omar` | `er123` |
-| Doctor | `dr.ahmed` | `doctor123` |
-| Senior Nurse | `nurse.fatima` | `senior123` |
+| Consultant | `dr.ahmed` | `doctor123` |
+| ER Doctor | `dr.omar` | `doctor123` |
+| Senior Nurse | `nurse.fatima` | `nurse123` |
 | Nurse | `nurse.mona` | `nurse123` |
 | Pharmacist | `pharm.ali` | `pharm123` |
+| Lab Tech | `lab.nasser` | `lab123` |
+| Dietitian | `diet.amira` | `diet123` |
+| Social Worker | `sw.hessa` | `social123` |
+
+(These are the actual seeded demo accounts — change them before any real use; first-run admin setup is a TODO.)
 
 **Patient portal:** MRN `HIS-20260518-00028`, DOB `1981-03-15` (no portal password set yet, so MRN+DOB works — but a patient can now set a password, and it's **required once set**. MRN+DOB alone is wristband-printed *identity*, not authentication, so the portal prompts to set one on first login.)
 
