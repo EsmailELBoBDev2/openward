@@ -137,6 +137,14 @@ const ALL_PATIENTS_ROLES = ['it_admin', 'hospital_manager'];
 function patientOfAdmission(aid) {
   return get('SELECT p.* FROM patients p JOIN admissions a ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [aid]) || null;
 }
+// Central admission-access gate: oversight sees all; everyone else only their
+// department's admissions. Used by every endpoint that reads/writes an admission,
+// so scoping can't be bypassed via beds/vitals/orders.
+function canAccessAdmission(actor, role, admissionId) {
+  if (ALL_PATIENTS_ROLES.includes(role)) return true;
+  const a = get('SELECT dept_id FROM admissions WHERE admission_id = ?', [admissionId]);
+  return !!(a && actor && a.dept_id === actor.department_id);
+}
 
 // ---- sessions ---------------------------------------------------------------
 function sessionFromReq(req) {
@@ -262,8 +270,9 @@ async function handleApi(req, res, pathname) {
       : all(`SELECT DISTINCT p.patient_id, p.mrn, p.full_name_ar, p.full_name_en, p.date_of_birth, p.gender, p.blood_type
              FROM patients p JOIN admissions a ON a.patient_id = p.patient_id
              WHERE a.status='active' AND a.dept_id = ? ORDER BY p.patient_id DESC LIMIT 500`, [actor.department_id]);
-    audit(actor, 'PATIENT_LIST_VIEWED', `Viewed patient list (${patients.length} rows)`, req);
-    persist();
+    const scope = ALL_PATIENTS_ROLES.includes(role) ? 'all-departments' : `dept ${actor.department_id}`;
+    audit(actor, 'PATIENT_LIST_VIEWED', `Viewed patient list — scope: ${scope}; ids: [${patients.map(p => p.patient_id).join(',') || 'none'}]`, req);
+    persistNow();   // durable: don't lose a PHI-access record on a crash
     return send(res, 200, { patients });
   }
 
@@ -302,14 +311,18 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/beds' && req.method === 'GET') {
     if (!can(role, 'view_beds')) return send(res, 403, { error: 'forbidden' });
-    return send(res, 200, { admissions: all(`SELECT a.admission_id, a.bed_number, a.dept_id, p.mrn, p.full_name_ar, p.full_name_en
-      FROM admissions a JOIN patients p ON a.patient_id = p.patient_id WHERE a.status = 'active' ORDER BY a.dept_id, a.bed_number`) });
+    const cols = `a.admission_id, a.bed_number, a.dept_id, p.mrn, p.full_name_ar, p.full_name_en`;
+    const admissions = ALL_PATIENTS_ROLES.includes(role)
+      ? all(`SELECT ${cols} FROM admissions a JOIN patients p ON a.patient_id = p.patient_id WHERE a.status='active' ORDER BY a.dept_id, a.bed_number`)
+      : all(`SELECT ${cols} FROM admissions a JOIN patients p ON a.patient_id = p.patient_id WHERE a.status='active' AND a.dept_id = ? ORDER BY a.bed_number`, [actor.department_id]);
+    return send(res, 200, { admissions });
   }
 
   if (pathname === '/api/vitals' && req.method === 'POST') {
     if (!can(role, 'record_vitals')) return send(res, 403, { error: 'forbidden' });
     const aid = parseInt(body.admission_id, 10);
     if (!aid || !get('SELECT admission_id FROM admissions WHERE admission_id = ?', [aid])) return send(res, 400, { error: 'validation', message: 'valid admission_id required' });
+    if (!canAccessAdmission(actor, role, aid)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
     run(`INSERT INTO vitals_log (admission_id, recorded_by, recorded_at, bp_systolic, bp_diastolic, heart_rate, temperature, o2_sat, resp_rate)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [aid, actor.user_id, new Date().toISOString(), body.bp_systolic || null, body.bp_diastolic || null, body.heart_rate || null, body.temperature || null, body.o2_sat || null, body.resp_rate || null]);
@@ -334,7 +347,7 @@ async function handleApi(req, res, pathname) {
     delete patient.portal_password_hash; delete patient.portal_salt;   // never ship secrets
     const vitals = admission ? all('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 10', [admission.admission_id]) : [];
     audit(actor, 'PATIENT_VIEWED', 'Opened patient chart', req, patient);   // log every PHI read
-    persist();
+    persistNow();   // durable: don't lose a PHI-access record on a crash
     return send(res, 200, { patient, admission, vitals });
   }
 
@@ -342,6 +355,7 @@ async function handleApi(req, res, pathname) {
     if (!can(role, 'view_patients')) return send(res, 403, { error: 'forbidden' });
     const aid = parseInt((req.url.split('?')[1] || '').match(/admission_id=(\d+)/)?.[1], 10);
     if (!aid) return send(res, 400, { error: 'validation', message: 'admission_id query param required' });
+    if (!canAccessAdmission(actor, role, aid)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
     return send(res, 200, { prescriptions: all("SELECT rx_id, drug_id, drug_name, dose, route, frequency, status, prescribed_at FROM prescriptions WHERE admission_id = ? ORDER BY rx_id DESC", [aid]) });
   }
 
@@ -350,6 +364,7 @@ async function handleApi(req, res, pathname) {
     const aid = parseInt(body.admission_id, 10);
     const drug = get('SELECT * FROM drugs WHERE drug_id = ?', [parseInt(body.drug_id, 10)]);
     if (!aid || !get('SELECT admission_id FROM admissions WHERE admission_id = ?', [aid])) return send(res, 400, { error: 'validation', message: 'valid admission_id required' });
+    if (!canAccessAdmission(actor, role, aid)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
     if (!drug) return send(res, 400, { error: 'validation', message: 'valid drug_id required (formulary only — no free-text drug)' });
     if (!body.dose || !body.route || !body.frequency) return send(res, 400, { error: 'validation', message: 'dose, route, frequency required' });
     const now = new Date().toISOString();
@@ -367,6 +382,7 @@ async function handleApi(req, res, pathname) {
     const aid = parseInt(body.admission_id, 10);
     const test = String(body.test_name || '').trim();
     if (!aid || !get('SELECT admission_id FROM admissions WHERE admission_id = ?', [aid])) return send(res, 400, { error: 'validation', message: 'valid admission_id required' });
+    if (!canAccessAdmission(actor, role, aid)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
     if (!test) return send(res, 400, { error: 'validation', message: 'test_name required' });
     const priority = ['routine', 'urgent', 'stat'].includes(body.priority) ? body.priority : 'routine';
     run(`INSERT INTO lab_orders (admission_id, doctor_id, test_name, priority, status, ordered_at) VALUES (?, ?, ?, ?, 'ordered', ?)`,

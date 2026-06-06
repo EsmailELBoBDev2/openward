@@ -89,29 +89,39 @@ function makeClient(base) {
   // detail dept scope: nurse blocked from the dept-1 chart
   assert((await N('GET', '/api/patients/' + reg.json.patient_id)).status === 403, 'dept scope: nurse is blocked from an out-of-department chart (403)');
 
-  // 7. nurse can record vitals; result persists to the central DB
-  const beds = await N('GET', '/api/beds');
-  const adm = beds.json.admissions.find(a => a.bed_number === '5');
-  assert(!!adm, 'beds endpoint lists the active admission');
-  const vit = await N('POST', '/api/vitals', { admission_id: adm.admission_id, heart_rate: 88, resp_rate: 18 });
-  assert(vit.status === 201, 'nurse records vitals (201)');
+  // 7. dept-scoped beds + WRITES (the hole this commit closes). Get both admissions
+  //    from an oversight (admin) view.
+  const allBeds = (await A('GET', '/api/beds')).json.admissions;
+  const adm1 = allBeds.find(a => a.bed_number === '5');   // dept 1
+  const adm2 = allBeds.find(a => a.bed_number === '7');   // dept 2 (the nurse's dept)
+  assert(adm1 && adm2, 'oversight beds lists admissions in both departments');
+  const nBeds = (await N('GET', '/api/beds')).json.admissions;
+  assert(nBeds.some(a => a.bed_number === '7') && !nBeds.some(a => a.bed_number === '5'),
+    'dept scope: nurse /api/beds shows its own dept only');
+  assert((await N('POST', '/api/vitals', { admission_id: adm2.admission_id, heart_rate: 88, resp_rate: 18 })).status === 201, 'nurse records vitals in its OWN dept (201)');
+  assert((await N('POST', '/api/vitals', { admission_id: adm1.admission_id, heart_rate: 90 })).status === 403, 'dept scope: nurse CANNOT record vitals on a dept-1 admission (403)');
 
-  // 7b. doctor endpoints: prescribe (RBAC + formulary-only), lab order, patient detail
+  // 7b. doctor endpoints (er.doc is dept 1 → may act on adm1)
   const D = makeClient(base);
   assert((await D('POST', '/api/login', { username: 'er.doc', password: 'doctor123' })).status === 200, 'ER doctor logs in');
-  assert((await N('POST', '/api/prescriptions', { admission_id: adm.admission_id, drug_id: 1, dose: '500mg', route: 'PO', frequency: 'q8h' })).status === 403, 'nurse is forbidden from prescribing (403)');
-  assert((await D('POST', '/api/prescriptions', { admission_id: adm.admission_id, dose: 'x', route: 'PO', frequency: 'q8h' })).status === 400, 'prescription with no real drug_id is rejected (formulary only)');
-  assert((await D('POST', '/api/prescriptions', { admission_id: adm.admission_id, drug_id: 1, dose: '500mg', route: 'PO', frequency: 'q8h' })).status === 201, 'doctor prescribes a formulary drug (201)');
-  const rxList = await D('GET', '/api/prescriptions?admission_id=' + adm.admission_id);
+  assert((await N('POST', '/api/prescriptions', { admission_id: adm1.admission_id, drug_id: 1, dose: '500mg', route: 'PO', frequency: 'q8h' })).status === 403, 'nurse is forbidden from prescribing (403)');
+  assert((await D('POST', '/api/prescriptions', { admission_id: adm1.admission_id, dose: 'x', route: 'PO', frequency: 'q8h' })).status === 400, 'prescription with no real drug_id is rejected (formulary only)');
+  assert((await D('POST', '/api/prescriptions', { admission_id: adm1.admission_id, drug_id: 1, dose: '500mg', route: 'PO', frequency: 'q8h' })).status === 201, 'doctor prescribes a formulary drug in own dept (201)');
+  const rxList = await D('GET', '/api/prescriptions?admission_id=' + adm1.admission_id);
   assert(rxList.status === 200 && rxList.json.prescriptions.length >= 1, 'prescriptions list reflects the new Rx (shared central DB)');
-  assert((await D('POST', '/api/lab-orders', { admission_id: adm.admission_id, test_name: 'CBC', priority: 'urgent' })).status === 201, 'doctor orders a lab (201)');
+  assert((await D('POST', '/api/lab-orders', { admission_id: adm1.admission_id, test_name: 'CBC', priority: 'urgent' })).status === 201, 'doctor orders a lab in own dept (201)');
   const det = await D('GET', '/api/patients/' + reg.json.patient_id);
   assert(det.status === 200 && det.json.patient && det.json.admission, 'patient detail returns record + active admission + vitals');
   assert(det.json.patient.portal_password_hash === undefined, 'patient detail never ships portal_password_hash/salt');
-  assert((await N('GET', '/api/audit')).status === 403, 'nurse is forbidden from the audit read (403)');
+
+  // 7c. consultant is dept 2 → may prescribe by ROLE, but NOT on a dept-1 admission
   const C = makeClient(base);
   assert((await C('POST', '/api/login', { username: 'consultant', password: 'doctor123' })).status === 200, 'consultant logs in');
-  assert((await C('GET', '/api/audit')).status === 403, 'consultant is forbidden from the full audit read (403) — oversight roles only');
+  assert((await C('POST', '/api/prescriptions', { admission_id: adm1.admission_id, drug_id: 1, dose: '500mg', route: 'PO', frequency: 'q8h' })).status === 403, 'dept scope: consultant (dept 2) CANNOT prescribe on a dept-1 admission (403)');
+
+  // audit read gating
+  assert((await N('GET', '/api/audit')).status === 403, 'nurse is forbidden from the audit read (403)');
+  assert((await C('GET', '/api/audit')).status === 403, 'consultant is forbidden from the full audit read (403) — oversight only');
   assert((await A('GET', '/api/audit')).json.entries.length >= 3, 'admin can read the central audit log');
 
   // 8. audit chain exists and is HMAC-linked (key lives outside the DB)
