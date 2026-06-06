@@ -31,6 +31,9 @@ package-lock.json
 *.db
 backup-*.json
 
+# LAN server runtime state (central DB + HMAC audit key — never commit)
+server/data/
+
 # Python (the dev server script is the only Py file, but ignore caches)
 __pycache__/
 *.pyc
