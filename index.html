@@ -406,7 +406,7 @@
     // ============================================================
 
     async function clearDatabase() {
-      if (confirm('Clear all data and reset database?\n\nUsername: admin\nPassword: HIS@2024')) {
+      if (confirm('Clear ALL local data and reset the database to defaults? This cannot be undone. (Default demo logins are listed in Help — press ?)')) {
         try {
           // Wipe EVERY persisted copy (current blob + all generational snapshots),
           // not just the legacy 'main' key — otherwise a snapshot would silently

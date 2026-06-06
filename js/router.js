@@ -1546,7 +1546,32 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
   const ecRelation = (document.getElementById('reg-ec-relation')?.value || '');
   const ecLegacy   = [ecName, ecPhone, ecRelation].filter(Boolean).join(' - ');
 
-  dbRun(`INSERT INTO patients (mrn, national_id, full_name_ar, full_name_en, date_of_birth, gender, blood_type, phone,
+  // Derive bed/dept/diet up front so bed availability is validated BEFORE any
+  // write. Previously patient + conditions + allergies were inserted first and a
+  // bed conflict only DELETEd the patient, orphaning the conditions/allergies.
+  const deptId = parseInt(document.getElementById('reg-dept').value);
+  const bedNum = document.getElementById('reg-bed').value.trim() || null;
+  const complexityScore = pieValues.complexity_score || 1;
+  const dietCode = pieValues.diet_code || 'REG';
+  if (bedNum) {
+    const conflict = dbGet(`SELECT a.admission_id, p.full_name_ar, p.full_name_en, p.mrn
+      FROM admissions a JOIN patients p ON a.patient_id = p.patient_id
+      WHERE a.bed_number = ? AND a.status = 'active' AND a.dept_id = ?`, [bedNum, deptId]);
+    if (conflict) {
+      const occName = lang === 'ar' ? conflict.full_name_ar : (conflict.full_name_en || conflict.full_name_ar);
+      showError(lang === 'ar'
+        ? `السرير ${bedNum} مشغول حالياً بالمريض ${occName} (${conflict.mrn}). الرجاء اختيار سرير آخر.`
+        : `Bed ${bedNum} is currently occupied by patient ${occName} (${conflict.mrn}). Please choose another bed.`);
+      return;
+    }
+  }
+
+  // Atomic unit: every patient write commits together or rolls back together, so
+  // a failure mid-way can't leave a half-registered patient.
+  let patientId, mrn;
+  dbRun('BEGIN IMMEDIATE');
+  try {
+    dbRun(`INSERT INTO patients (mrn, national_id, full_name_ar, full_name_en, date_of_birth, gender, blood_type, phone,
     emergency_contact, emergency_contact_name, emergency_contact_phone, emergency_contact_relation,
     registered_by, registered_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
@@ -1561,8 +1586,8 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
     session.user_id, nowISO()
   ]);
 
-  const patientId = dbLastId();
-  const mrn = generateMRN(patientId);
+  patientId = dbLastId();
+  mrn = generateMRN(patientId);
   dbRun('UPDATE patients SET mrn = ? WHERE patient_id = ?', [mrn, patientId]);
 
   // Communicable diseases — save with category='communicable'
@@ -1641,28 +1666,8 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
       [patientId, a.allergen, a.reaction, a.severity, session.user_id, nowISO()]);
   }
 
-  // 4. Create admission
-  const deptId = parseInt(document.getElementById('reg-dept').value);
-  const complexityScore = pieValues.complexity_score || 1;
-  const dietCode = pieValues.diet_code || 'REG';
-  const bedNum = document.getElementById('reg-bed').value.trim() || null;
-
-  // E1 fix: prevent double-booking a bed
-  if (bedNum) {
-    const conflict = dbGet(`SELECT a.admission_id, p.full_name_ar, p.full_name_en, p.mrn
-      FROM admissions a JOIN patients p ON a.patient_id = p.patient_id
-      WHERE a.bed_number = ? AND a.status = 'active' AND a.dept_id = ?`, [bedNum, deptId]);
-    if (conflict) {
-      const occName = lang === 'ar' ? conflict.full_name_ar : (conflict.full_name_en || conflict.full_name_ar);
-      showError(lang === 'ar'
-        ? `السرير ${bedNum} مشغول حالياً بالمريض ${occName} (${conflict.mrn}). الرجاء اختيار سرير آخر.`
-        : `Bed ${bedNum} is currently occupied by patient ${occName} (${conflict.mrn}). Please choose another bed.`);
-      // Roll back the patient insert
-      dbRun('DELETE FROM patients WHERE patient_id = ?', [patientId]);
-      return;
-    }
-  }
-
+  // 4. Create admission. Bed availability was validated up front; deptId, bedNum,
+  // complexityScore and dietCode were computed at the top of the transaction.
   dbRun(`INSERT INTO admissions (patient_id, dept_id, bed_number, admitted_by, admitted_at, status, complexity_score, diet_code, chief_complaint, initial_diagnosis, disposition_plan, on_ventilator, post_surgery)
     VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`, [
     patientId, deptId, bedNum,
@@ -1690,6 +1695,14 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
       document.getElementById('reg-height').value || null,
       document.getElementById('reg-rbs').value || null,
     ]);
+  }
+
+    dbRun('COMMIT');
+  } catch (e) {
+    try { dbRun('ROLLBACK'); } catch (_) {}
+    console.error('[register] rolled back:', e);
+    showError(lang === 'ar' ? 'فشل تسجيل المريض؛ تم التراجع عن جميع التغييرات.' : 'Registration failed; all changes were rolled back.');
+    return;
   }
 
   // 6. Blackbox
@@ -8407,18 +8420,23 @@ async function handleApplyOrderSet(setName, patientId, admissionId) {
   dbRun(`INSERT INTO order_set_log (admission_id, set_name, applied_by, applied_at) VALUES (?, ?, ?, ?)`,
     [admissionId, setName, user.user_id, nowISO()]);
 
-  // Create lab orders
+  // Create lab orders (schema column is doctor_id; valid initial status is 'ordered')
   os.labs.forEach(labName => {
-    dbRun(`INSERT INTO lab_orders (admission_id, ordered_by, test_name, priority, status, ordered_at)
-      VALUES (?, ?, ?, 'stat', 'pending', ?)`,
+    dbRun(`INSERT INTO lab_orders (admission_id, doctor_id, test_name, priority, status, ordered_at)
+      VALUES (?, ?, ?, 'stat', 'ordered', ?)`,
       [admissionId, user.user_id, labName, nowISO()]);
   });
 
-  // Create prescriptions
+  // Create prescriptions. Schema needs doctor_id, a NOT NULL drug_id and a NOT
+  // NULL start_date. Resolve each protocol med to a real formulary drug_id where
+  // possible (0 = unmatched protocol item, e.g. "per protocol" placeholders).
   os.meds.forEach(med => {
-    dbRun(`INSERT INTO prescriptions (admission_id, prescribed_by, drug_name, dose, route, frequency, status, prescribed_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`,
-      [admissionId, user.user_id, med.drug, med.dose, med.route, med.frequency, nowISO()]);
+    const now = nowISO();
+    const d = dbGet('SELECT drug_id FROM drugs WHERE name_generic = ? OR name_brand = ? OR name_generic LIKE ? LIMIT 1',
+      [med.drug, med.drug, '%' + med.drug + '%']);
+    dbRun(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+      [admissionId, user.user_id, (d ? d.drug_id : 0), med.drug, med.dose, med.route, med.frequency, now.slice(0, 10), now]);
   });
 
   // Log tasks as nursing tasks

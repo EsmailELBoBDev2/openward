@@ -16,8 +16,43 @@ async function initDB() {
   // version (transparently unlocking it if encrypted) and falls back to an older
   // backup if the newest copy is unreadable. See loadDatabaseWithRecovery.
   db = await loadDatabaseWithRecovery(SQL);
+  let _freshDb = false;
   if (db) {
     console.log('[DB] Restored database from IndexedDB');
+  } else {
+    db = new SQL.Database();
+    console.log('[DB] Created new database');
+    createAllTables();
+    _freshDb = true;
+  }
+
+  // Schema migrations run for BOTH fresh and restored DBs (previously only the
+  // restored path). They are idempotent (ALTER ... ADD COLUMN wrapped in
+  // try/catch, CREATE TABLE/INDEX IF NOT EXISTS), so a brand-new install gets
+  // every column/table the router uses (vitals NEWS2 fields, drugs.is_high_alert,
+  // lab rejection columns, MAR witness columns) instead of crashing at runtime.
+  applySchemaMigrations();
+  if (_freshDb) await seedData();
+
+  // Data remanence: SQLite leaves deleted-row bytes in free pages, which
+  // db.export() then encrypts and persists — so "deleted" PHI lingers on disk.
+  // secure_delete zeroes freed content on every future DELETE; a one-time VACUUM
+  // (gated by user_version so it runs once) purges any pre-existing remnants.
+  try { db.run('PRAGMA secure_delete = ON'); } catch (e) {}
+  try {
+    const uv = db.exec('PRAGMA user_version');
+    const ver = (uv && uv[0]) ? uv[0].values[0][0] : 0;
+    if (ver < 1) { db.run('VACUUM'); db.run('PRAGMA user_version = 1'); }
+  } catch (e) {}
+
+  // Auto-save every 30 seconds
+  setInterval(() => saveDBToIndexedDB(), 30000);
+}
+
+// Idempotent schema migrations, applied to BOTH fresh and restored databases
+// (called from initDB). Kept as one function so a brand-new install and the
+// fresh-DB boot test build the exact same schema.
+function applySchemaMigrations() {
     // Schema migrations for existing databases
     try { db.run('ALTER TABLE prescriptions ADD COLUMN verified_by INTEGER'); } catch(e) {}
     try { db.run('ALTER TABLE prescriptions ADD COLUMN verified_at TEXT'); } catch(e) {}
@@ -324,26 +359,6 @@ async function initDB() {
       attempt_ms INTEGER NOT NULL
     )`); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_login_attempts_acct ON login_attempts(account, attempt_ms)'); } catch(e) {}
-  } else {
-    db = new SQL.Database();
-    console.log('[DB] Created new database');
-    createAllTables();
-    await seedData();
-  }
-
-  // Data remanence: SQLite leaves deleted-row bytes in free pages, which
-  // db.export() then encrypts and persists — so "deleted" PHI lingers on disk.
-  // secure_delete zeroes freed content on every future DELETE; a one-time VACUUM
-  // (gated by user_version so it runs once) purges any pre-existing remnants.
-  try { db.run('PRAGMA secure_delete = ON'); } catch (e) {}
-  try {
-    const uv = db.exec('PRAGMA user_version');
-    const ver = (uv && uv[0]) ? uv[0].values[0][0] : 0;
-    if (ver < 1) { db.run('VACUUM'); db.run('PRAGMA user_version = 1'); }
-  } catch (e) {}
-
-  // Auto-save every 30 seconds
-  setInterval(() => saveDBToIndexedDB(), 30000);
 }
 
 // ============================================================
@@ -2435,5 +2450,12 @@ function dbLastId() {
 
 // Node test harness only (the browser has no `module`):
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { loadDatabaseWithRecovery, _persistBlobTiered, _collectDbCandidates, wipeLocalDatabase, DB_SNAPSHOT_TIERS, DB_CURRENT_KEY, DB_META_KEY };
+  module.exports = {
+    loadDatabaseWithRecovery, _persistBlobTiered, _collectDbCandidates, wipeLocalDatabase,
+    DB_SNAPSHOT_TIERS, DB_CURRENT_KEY, DB_META_KEY,
+    // Build the schema exactly as a brand-new install does — createAllTables()
+    // plus the shared migrations — on a caller-provided sql.js DB. Lets the
+    // fresh-DB boot test prove a clean install has every column the router uses.
+    __buildFreshSchemaForTest(sqlDb) { db = sqlDb; createAllTables(); applySchemaMigrations(); return db; },
+  };
 }

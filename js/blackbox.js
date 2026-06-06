@@ -237,7 +237,21 @@ async function verifyAgainstReceipt(receipt) {
  * @param {number} [filters.offset]
  * @returns {object[]}
  */
+// The audit trail is oversight-only. In a browser-only app this gate is advisory
+// (a determined user can bypass client JS — the real fix is a native authority,
+// see README), but it removes the trivially-open read and records denied attempts.
+const AUDIT_READ_ROLES = ['it_admin', 'hospital_manager', 'consultant'];
+function canReadAudit() {
+  const u = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (u && AUDIT_READ_ROLES.includes(u.role)) return true;
+  if (typeof logAction === 'function') {
+    try { const r = logAction('AUDIT_ACCESS_DENIED', `Blocked audit-log read by ${u ? u.full_name_en + ' (' + u.role + ')' : 'unauthenticated user'}`); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+  }
+  return false;
+}
+
 function queryBlackbox(filters = {}) {
+  if (!canReadAudit()) return [];
   let sql = 'SELECT * FROM audit_log WHERE 1=1';
   const params = [];
 
@@ -285,6 +299,7 @@ function queryBlackbox(filters = {}) {
  * Get total count for pagination
  */
 function queryBlackboxCount(filters = {}) {
+  if (!canReadAudit()) return 0;
   let sql = 'SELECT COUNT(*) as cnt FROM audit_log WHERE 1=1';
   const params = [];
 
