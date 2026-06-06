@@ -90,7 +90,7 @@ function _sha256Pure(message) {
  * back and can recognise (and upgrade) legacy salted-SHA-256 hashes.
  * @returns {Promise<string>}
  */
-const PBKDF2_ITERATIONS = 210000; // OWASP 2023 minimum for PBKDF2-HMAC-SHA256
+const PW_HASH_ITERATIONS = 210000; // OWASP 2023 minimum for PBKDF2-HMAC-SHA256
 
 async function pbkdf2Hex(password, salt, iterations) {
   const enc = new TextEncoder();
@@ -101,7 +101,7 @@ async function pbkdf2Hex(password, salt, iterations) {
 }
 
 async function hashPassword(password, salt) {
-  return `pbkdf2$${PBKDF2_ITERATIONS}$${await pbkdf2Hex(password, salt, PBKDF2_ITERATIONS)}`;
+  return `pbkdf2$${PW_HASH_ITERATIONS}$${await pbkdf2Hex(password, salt, PW_HASH_ITERATIONS)}`;
 }
 
 // Length-constant hex compare (no early-exit timing leak).
@@ -124,9 +124,9 @@ async function verifyPassword(password, salt, storedHash) {
   if (typeof storedHash !== 'string' || !storedHash) return { ok: false, needsUpgrade: false };
   if (storedHash.startsWith('pbkdf2$')) {
     const parts = storedHash.split('$');
-    const iter = parseInt(parts[1], 10) || PBKDF2_ITERATIONS;
+    const iter = parseInt(parts[1], 10) || PW_HASH_ITERATIONS;
     const ok = timingSafeEqualHex(await pbkdf2Hex(password, salt, iter), parts[2] || '');
-    return { ok, needsUpgrade: ok && iter !== PBKDF2_ITERATIONS };
+    return { ok, needsUpgrade: ok && iter !== PW_HASH_ITERATIONS };
   }
   // Legacy: salted SHA-256 = sha256(salt + ':' + password). Upgrade on success.
   const ok = timingSafeEqualHex(await sha256(String(salt) + ':' + String(password)), storedHash);
@@ -1142,5 +1142,5 @@ function closeModal() {
 
 // Node test harness only (browser has no `module`): expose the pure helpers.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { sha256, hashPassword, verifyPassword, pbkdf2Hex, timingSafeEqualHex, generateSalt, escapeHtml, PBKDF2_ITERATIONS };
+  module.exports = { sha256, hashPassword, verifyPassword, pbkdf2Hex, timingSafeEqualHex, generateSalt, escapeHtml, PW_HASH_ITERATIONS };
 }

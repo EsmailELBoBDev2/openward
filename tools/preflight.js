@@ -169,6 +169,37 @@ function checkJsSyntax() {
 }
 
 // ----------------------------------------------------------------------------
+// Layer C2 — cross-file top-level declaration collisions
+// index.html loads js/*.js into ONE global scope. Two files each declaring the
+// same top-level `const`/`let`/`class` throw "Identifier ... has already been
+// declared" at boot — which per-file `node --check` cannot see.
+// ----------------------------------------------------------------------------
+function checkCrossFileDecls() {
+  const indexHtml = path.join(ROOT, 'index.html');
+  if (!fs.existsSync(indexHtml)) return;
+  const html = fs.readFileSync(indexHtml, 'utf8');
+  const srcs = [...html.matchAll(/<script[^>]*\bsrc="(js\/[^"]+)"[^>]*>/g)].map(m => m[1]);
+  const seen = new Map();                 // name -> first file that declared it
+  // Only column-0 (top-level) const/let/class — these collide on redeclaration.
+  const re = /^(?:const|let|class)\s+([A-Za-z_$][\w$]*)/gm;
+  for (const src of srcs) {
+    const full = path.join(ROOT, src);
+    if (!fs.existsSync(full)) continue;
+    const code = read(full);
+    let m;
+    while ((m = re.exec(code))) {
+      const name = m[1];
+      if (seen.has(name)) {
+        const lineNo = code.slice(0, m.index).split('\n').length;
+        fail(src, lineNo, `top-level "${name}" already declared in ${seen.get(name)} — both load into one scope (boot SyntaxError)`);
+      } else {
+        seen.set(name, src);
+      }
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
 // Layer D — copy-paste corruption fingerprints over tracked text files
 // ----------------------------------------------------------------------------
 const CORRUPTION = [
@@ -223,6 +254,7 @@ function runAll() {
     checkInlineScripts(indexHtml);
   }
   checkJsSyntax();
+  checkCrossFileDecls();
   checkCorruption();
   return findings;
 }
