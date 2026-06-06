@@ -208,6 +208,18 @@ function getCurrentSession() {
     return null;
   }
 
+  // Staff accounts: re-check the account is still active, so disabling a user
+  // immediately invalidates their existing sessions instead of trusting the
+  // session row until it expires.
+  if (session.role && session.role !== 'patient') {
+    const u = dbGet('SELECT is_active FROM users WHERE user_id = ?', [session.user_id]);
+    if (!u || !u.is_active) {
+      dbRun('DELETE FROM sessions WHERE session_id = ?', [sessionId]);
+      localStorage.removeItem(SESSION_KEY);
+      return null;
+    }
+  }
+
   // Update last_active
   dbRun('UPDATE sessions SET last_active = ? WHERE session_id = ?', [nowISO(), sessionId]);
 
@@ -458,6 +470,9 @@ async function toggleUserActive(userId) {
 
   const newStatus = user.is_active ? 0 : 1;
   dbRun('UPDATE users SET is_active = ? WHERE user_id = ?', [newStatus, userId]);
+  // Disabling must also terminate live sessions, otherwise the session row keeps
+  // the disabled user logged in until it expires.
+  if (!newStatus) dbRun('DELETE FROM sessions WHERE user_id = ?', [userId]);
 
   const actionType = newStatus ? 'USER_ENABLED' : 'USER_DISABLED';
   const admin = getCurrentUser();
