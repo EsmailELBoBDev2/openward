@@ -117,6 +117,22 @@ function applySchemaMigrations() {
       applied_by    INTEGER NOT NULL,
       applied_at    TEXT NOT NULL
     )`); } catch(e) {}
+    // Order-set meds with no formulary match: a clinician must prescribe them
+    // manually. Tracked here (not as a fake nurse task) so they stay visible and
+    // actionable instead of vanishing.
+    try { db.run(`CREATE TABLE IF NOT EXISTS order_set_exceptions (
+      exc_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      admission_id  INTEGER NOT NULL,
+      set_name      TEXT,
+      drug_name     TEXT NOT NULL,
+      dose          TEXT,
+      route         TEXT,
+      frequency     TEXT,
+      reason        TEXT,
+      created_by    INTEGER NOT NULL,
+      created_at    TEXT NOT NULL,
+      status        TEXT DEFAULT 'pending'
+    )`); } catch(e) {}
     // Code Blue events
     try { db.run(`CREATE TABLE IF NOT EXISTS code_blue_events (
       event_id      INTEGER PRIMARY KEY AUTOINCREMENT,

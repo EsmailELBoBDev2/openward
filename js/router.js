@@ -746,6 +746,10 @@ async function handleTogglePatientPortal(patientId) {
   if (!patient) return;
   const newStatus = patient.portal_enabled ? 0 : 1;
   dbRun('UPDATE patients SET portal_enabled = ? WHERE patient_id = ?', [newStatus, patientId]);
+  // Disabling the portal must also kill any live patient session, otherwise the
+  // patient stays logged in until the session expires. (Patient sessions are
+  // stored with role='patient' and user_id = patient_id.)
+  if (!newStatus) dbRun("DELETE FROM sessions WHERE user_id = ? AND role = 'patient'", [patientId]);
   const lang = currentLanguage();
   await logAction('PORTAL_TOGGLED',
     `IT Admin toggled portal for patient ${patient.full_name_en || patient.full_name_ar} (MRN: ${patient.mrn}) → ${newStatus ? 'enabled' : 'disabled'}`,
@@ -8468,10 +8472,13 @@ async function handleApplyOrderSet(setName, patientId, admissionId) {
       [admissionId, user.user_id, labName, nowISO()]);
   });
 
-  // Create prescriptions. Only when the protocol med maps to a REAL formulary
-  // drug_id (NOT NULL). Unmatched items (e.g. "Broad-spectrum Antibiotics",
-  // "per protocol") would otherwise become a fake drug_id=0 link, so instead they
-  // are flagged as a task for a clinician to prescribe manually.
+  // Create prescriptions only when the protocol med maps to a REAL formulary
+  // drug_id (NOT NULL). Unmatched items (e.g. "Broad-spectrum Antibiotics", "per
+  // protocol") are recorded as order_set_exceptions for a clinician to prescribe
+  // manually — NOT as a fake nurse task (the doctor isn't a nurse, and that task
+  // view filtered by nurse_id and showed rows as already done).
+  let createdRx = 0;
+  const manualMeds = [];
   os.meds.forEach(med => {
     const now = nowISO();
     const d = dbGet('SELECT drug_id FROM drugs WHERE name_generic = ? OR name_brand = ? OR name_generic LIKE ? LIMIT 1',
@@ -8480,11 +8487,12 @@ async function handleApplyOrderSet(setName, patientId, admissionId) {
       dbRun(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
         [admissionId, user.user_id, d.drug_id, med.drug, med.dose, med.route, med.frequency, now.slice(0, 10), now]);
+      createdRx++;
     } else {
-      dbRun(`INSERT INTO nursing_tasks (admission_id, nurse_id, task_type, task_detail, status, done_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [admissionId, user.user_id, 'order_set_med_unmatched',
-         `Prescribe manually (not in formulary): ${med.drug} ${med.dose} ${med.route} ${med.frequency}`,
-         'pending', now, 'From order set: ' + setName]);
+      dbRun(`INSERT INTO order_set_exceptions (admission_id, set_name, drug_name, dose, route, frequency, reason, created_by, created_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'not_in_formulary', ?, ?, 'pending')`,
+        [admissionId, setName, med.drug, med.dose, med.route, med.frequency, user.user_id, now]);
+      manualMeds.push(med.drug);
     }
   });
 
@@ -8496,12 +8504,15 @@ async function handleApplyOrderSet(setName, patientId, admissionId) {
 
   const setLabel = lang==='ar' ? os.ar : os.en;
   await logAction('ORDER_SET_APPLIED',
-    `${user.full_name_en} applied order set: ${setLabel} (${os.labs.length} labs, ${os.meds.length} meds, ${os.tasks.length} tasks)`,
+    `${user.full_name_en} applied order set: ${setLabel} (${os.labs.length} labs, ${createdRx} meds prescribed, ${manualMeds.length} need manual prescribing, ${os.tasks.length} tasks)`,
     null, patientId, '', '');
 
   saveDBToIndexedDB();
   closeModal();
-  showSuccess(`✅ ${setLabel} ${lang==='ar'?'تم تطبيق البروتوكول':'protocol applied'} — ${os.labs.length} labs, ${os.meds.length} meds`);
+  const manualNote = manualMeds.length
+    ? (lang==='ar' ? ` — ${manualMeds.length} دواء يحتاج وصفة يدوية: ${manualMeds.join(', ')}` : ` — ${manualMeds.length} need manual Rx: ${manualMeds.join(', ')}`)
+    : '';
+  showSuccess(`✅ ${setLabel} ${lang==='ar'?'تم تطبيق البروتوكول':'protocol applied'} — ${os.labs.length} labs, ${createdRx} meds${manualNote}`);
 }
 
 // ============================================================

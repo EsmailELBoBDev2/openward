@@ -59,6 +59,18 @@ function noThrow(label, fn) { try { fn(); pass++; console.log('  ok  - ' + label
       VALUES (1, 1, 1, 'Regular Insulin', '0.1 u/kg/hr', 'IV', 'continuous', '2026-06-06', 'active', '2026-06-06T10:00:00Z')`);
   });
 
+  // ---- order-set UNMATCHED med: records an exception, creates NO prescription --
+  assert(tableExists('order_set_exceptions'), 'fresh DB has the order_set_exceptions table');
+  const rxBefore = d.exec("SELECT COUNT(*) FROM prescriptions")[0].values[0][0];
+  noThrow('unmatched protocol med -> order_set_exceptions (not a prescription, not a nurse task)', () => {
+    d.run(`INSERT INTO order_set_exceptions (admission_id, set_name, drug_name, dose, route, frequency, reason, created_by, created_at, status)
+      VALUES (1, 'Sepsis Bundle', 'Broad-spectrum Antibiotics', 'per protocol', 'IV', 'stat', 'not_in_formulary', 1, '2026-06-06T10:00:00Z', 'pending')`);
+  });
+  const rxAfter = d.exec("SELECT COUNT(*) FROM prescriptions")[0].values[0][0];
+  assert(rxAfter === rxBefore, 'the unmatched med created NO prescription (no fake drug_id=0 link)');
+  const exc = d.exec("SELECT drug_name, status FROM order_set_exceptions WHERE status='pending'");
+  assert(exc.length && exc[0].values[0][0] === 'Broad-spectrum Antibiotics', 'the unmatched med is a visible, actionable pending exception');
+
   // ---- negative controls: the OLD broken statements MUST still fail ----------
   let brokeLab = false;
   try { d.run(`INSERT INTO lab_orders (admission_id, ordered_by, test_name, priority, status, ordered_at) VALUES (1, 1, 'X', 'stat', 'pending', 't')`); }

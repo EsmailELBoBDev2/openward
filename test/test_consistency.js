@@ -99,5 +99,20 @@ if (clearFn) {
     'dose auto-fill is guarded by HIGH_ALERT_DRUGS.has(drug)');
 }
 
+// ---- 6. Order sets: unmatched meds -> exceptions, and honest counts ----------
+{
+  const r = read('js/router.js');
+  const fn = r.match(/async function handleApplyOrderSet\([\s\S]*?\n\}/);
+  assert(!!fn, 'found handleApplyOrderSet()');
+  if (fn) {
+    const body = fn[0];
+    assert(/order_set_exceptions/.test(body), 'unmatched order-set meds go to order_set_exceptions');
+    assert(!/order_set_med_unmatched/.test(body) && !/INSERT INTO nursing_tasks[\s\S]*not in formulary/i.test(body),
+      'unmatched meds are NOT inserted as a (doctor-owned, shown-as-done) nurse task');
+    assert(/createdRx/.test(body) && /manualMeds/.test(body), 'tracks createdRx vs manualMeds');
+    assert(!/\$\{os\.meds\.length\} meds`/.test(body), 'success/audit no longer reports os.meds.length as "meds" (would over-count)');
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

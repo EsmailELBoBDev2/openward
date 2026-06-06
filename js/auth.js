@@ -301,6 +301,13 @@ async function createUser(userData) {
  * Update user account (IT Admin only)
  */
 async function updateUser(userId, userData) {
+  // Enforce "IT Admin only" (advisory in a browser-only app; authoritative on the
+  // server). Mirrors createUser so account edits can't be made by other roles.
+  const actor = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (!actor || actor.role !== 'it_admin') {
+    try { const r = logAction('USER_UPDATE_DENIED', `Blocked account edit by ${actor ? actor.full_name_en + ' (' + actor.role + ')' : 'unauthenticated user'}`); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+    return { success: false, errorKey: 'not_authorized' };
+  }
   const existingUser = dbGet('SELECT * FROM users WHERE user_id = ?', [userId]);
   if (!existingUser) return { success: false, error: 'User not found' };
 
