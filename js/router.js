@@ -8507,28 +8507,34 @@ function printWristband(patientId, admissionId) {
     WHERE a.admission_id = ?`, [admissionId]);
   if (!patient || !admission) return;
 
-  const name = lang==='ar' ? patient.full_name_ar : (patient.full_name_en || patient.full_name_ar);
+  // Escape every patient-controlled field: this HTML is written into a print
+  // window with win.document.write(), so an unescaped name/allergen/EC value
+  // containing markup would execute there (stored XSS via the wristband).
+  const name = escapeHtml(lang==='ar' ? patient.full_name_ar : (patient.full_name_en || patient.full_name_ar));
   const dob = patient.date_of_birth ? new Date(patient.date_of_birth).toLocaleDateString('en-GB') : '—';
-  const dept = lang==='ar' ? admission.dept_ar : admission.dept_en;
+  const dept = escapeHtml(lang==='ar' ? admission.dept_ar : admission.dept_en);
   const admitted = admission.admitted_at ? new Date(admission.admitted_at).toLocaleDateString('en-GB') : '—';
   const allergies = dbAll('SELECT allergen FROM patient_allergies WHERE patient_id = ?', [patientId]);
-  const allergyText = allergies.length ? allergies.map(a=>a.allergen).join(', ') : (lang==='ar'?'لا توجد':'None');
+  const allergyText = allergies.length ? escapeHtml(allergies.map(a=>a.allergen).join(', ')) : (lang==='ar'?'لا توجد':'None');
   const commDiseases = dbAll("SELECT condition_code FROM patient_conditions WHERE patient_id = ? AND category = 'communicable'", [patientId]);
-  const commText = commDiseases.length ? commDiseases.map(c => COMMUNICABLE_DISEASES[c.condition_code] ? COMMUNICABLE_DISEASES[c.condition_code].en : c.condition_code).join(', ') : null;
-  const ecName = patient.emergency_contact_name || patient.emergency_contact;
-  const ecPhone = patient.emergency_contact_phone;
+  const commText = commDiseases.length ? escapeHtml(commDiseases.map(c => COMMUNICABLE_DISEASES[c.condition_code] ? COMMUNICABLE_DISEASES[c.condition_code].en : c.condition_code).join(', ')) : null;
+  const ecName = escapeHtml(patient.emergency_contact_name || patient.emergency_contact || '');
+  const ecPhone = escapeHtml(patient.emergency_contact_phone || '');
+  const mrnEsc = escapeHtml(patient.mrn);
+  const bedEsc = escapeHtml(admission.bed_number || '—');
+  const bloodEsc = escapeHtml(patient.blood_type || '');
 
   // Simple barcode-like visual using MRN characters
   const barcodeHtml = patient.mrn.split('').map(c =>
     `<div style="display:inline-block;width:${2+Math.random()*3}px;height:40px;background:#000;margin:0 1px;vertical-align:bottom;"></div>`
-  ).join('') + `<div style="font-size:10px;text-align:center;letter-spacing:3px;margin-top:2px;">${patient.mrn}</div>`;
+  ).join('') + `<div style="font-size:10px;text-align:center;letter-spacing:3px;margin-top:2px;">${mrnEsc}</div>`;
 
   const wristbandHtml = `
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="UTF-8">
-      <title>Wristband — ${patient.mrn}</title>
+      <title>Wristband — ${mrnEsc}</title>
       <style>
         @page { size: 25cm 10cm; margin: 0; }
         body { margin: 0; font-family: Arial, sans-serif; }
@@ -8558,11 +8564,11 @@ function printWristband(patientId, admissionId) {
       <div class="wristband">
         <div class="wb-main">
           <div class="wb-name">${name}</div>
-          <div class="wb-mrn">MRN: ${patient.mrn}</div>
+          <div class="wb-mrn">MRN: ${mrnEsc}</div>
           <div class="wb-row">📅 DOB: ${dob}</div>
-          <div class="wb-row">🛏️ ${lang==='ar'?'السرير':'Bed'}: ${admission.bed_number || '—'} &nbsp;|&nbsp; 🏥 ${dept}</div>
+          <div class="wb-row">🛏️ ${lang==='ar'?'السرير':'Bed'}: ${bedEsc} &nbsp;|&nbsp; 🏥 ${dept}</div>
           <div class="wb-row">📅 ${lang==='ar'?'تاريخ الدخول':'Admitted'}: ${admitted}</div>
-          ${patient.blood_type && patient.blood_type !== 'unknown' ? `<div class="wb-row">🩸 ${lang==='ar'?'فصيلة الدم':'Blood Type'}: <strong>${patient.blood_type}</strong></div>` : ''}
+          ${patient.blood_type && patient.blood_type !== 'unknown' ? `<div class="wb-row">🩸 ${lang==='ar'?'فصيلة الدم':'Blood Type'}: <strong>${bloodEsc}</strong></div>` : ''}
           <div class="wb-allergy">⚠️ ${lang==='ar'?'الحساسية':'Allergy'}: ${allergyText}</div>
           ${commText ? `<div class="wb-allergy" style="background:#7c3aed;margin-top:4px;">&#128252; ${lang==='ar'?'أمراض معدية':'Communicable'}: ${commText}</div>` : ''}
           ${ecName ? `<div class="wb-row" style="margin-top:4px;">&#128222; ${lang==='ar'?'طوارئ':'EC'}: ${ecName}${ecPhone ? ' — ' + ecPhone : ''}</div>` : ''}
