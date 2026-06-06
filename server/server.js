@@ -118,6 +118,9 @@ function audit(actor, actionType, detail, req, patient) {
     [row.timestamp, row.user_id, row.user_name_en, row.user_name_ar, row.user_role, row.dept_id,
      row.patient_id, row.patient_name, row.patient_mrn, row.action_type, row.action_detail, row.ip_address, prevHash, row.row_hash]);
 }
+// Durable audit for PHI/security events — flushes to disk immediately so a crash
+// can't drop the record.
+function auditNow(actor, actionType, detail, req, patient) { audit(actor, actionType, detail, req, patient); persistNow(); }
 
 // ---- RBAC (server-authoritative) -------------------------------------------
 const CAN = {
@@ -128,7 +131,10 @@ const CAN = {
   prescribe:        ['doctor', 'consultant', 'emergency_doctor'],
   order_labs:       ['doctor', 'consultant', 'emergency_doctor'],
   view_audit:       ['it_admin', 'hospital_manager'],   // full audit log is oversight-only (a consultant would see every dept's PHI access)
+  manage_users:     ['it_admin'],                       // staff/department administration
 };
+// Roles a staff account may have (mirrors the client ROLES map; 'patient' is not a staff role).
+const VALID_ROLES = new Set(['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'pharmacist', 'lab_technician', 'radiologist', 'receptionist', 'dietitian', 'social_worker']);
 function can(role, action) { return (CAN[action] || []).includes(role); }
 // Oversight roles see every patient; everyone else is scoped to their department's
 // active admissions (minimum-necessary access).
@@ -326,9 +332,10 @@ async function handleApi(req, res, pathname) {
     run(`INSERT INTO vitals_log (admission_id, recorded_by, recorded_at, bp_systolic, bp_diastolic, heart_rate, temperature, o2_sat, resp_rate)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [aid, actor.user_id, new Date().toISOString(), body.bp_systolic || null, body.bp_diastolic || null, body.heart_rate || null, body.temperature || null, body.o2_sat || null, body.resp_rate || null]);
+    const vid = lastId();   // before audit()
     audit(actor, 'VITALS_RECORDED', `Vitals for admission ${aid}`, req, patientOfAdmission(aid));
     persistNow();
-    return send(res, 201, { vitals_id: lastId() });
+    return send(res, 201, { vitals_id: vid });
   }
 
   // Patient detail: record + active admission + recent vitals.
@@ -341,7 +348,7 @@ async function handleApi(req, res, pathname) {
     const admission = get("SELECT * FROM admissions WHERE patient_id = ? AND status = 'active' ORDER BY admission_id DESC LIMIT 1", [pid]);
     // dept-scope: non-oversight roles can only open a chart in their department
     if (!ALL_PATIENTS_ROLES.includes(role) && !(admission && admission.dept_id === actor.department_id)) {
-      audit(actor, 'PATIENT_VIEW_DENIED', `Blocked out-of-department chart access for patient ${pid}`, req); persist();
+      auditNow(actor, 'PATIENT_VIEW_DENIED', `Blocked out-of-department chart access for patient ${pid}`, req);
       return send(res, 403, { error: 'forbidden', message: 'Patient is not in your department.' });
     }
     delete patient.portal_password_hash; delete patient.portal_salt;   // never ship secrets
@@ -371,10 +378,11 @@ async function handleApi(req, res, pathname) {
     run(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
       [aid, actor.user_id, drug.drug_id, drug.name_generic, String(body.dose), String(body.route), String(body.frequency), now.slice(0, 10), now]);
+    const rxId = lastId();   // before audit()
     const patient = get('SELECT p.* FROM patients p JOIN admissions a ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [aid]);
     audit(actor, 'PRESCRIPTION_ISSUED', `Prescribed ${drug.name_generic} ${body.dose} ${body.route} ${body.frequency}`, req, patient);
     persistNow();
-    return send(res, 201, { rx_id: lastId() });
+    return send(res, 201, { rx_id: rxId });
   }
 
   if (pathname === '/api/lab-orders' && req.method === 'POST') {
@@ -387,14 +395,77 @@ async function handleApi(req, res, pathname) {
     const priority = ['routine', 'urgent', 'stat'].includes(body.priority) ? body.priority : 'routine';
     run(`INSERT INTO lab_orders (admission_id, doctor_id, test_name, priority, status, ordered_at) VALUES (?, ?, ?, ?, 'ordered', ?)`,
       [aid, actor.user_id, test, priority, new Date().toISOString()]);
+    const orderId = lastId();   // before audit()
     audit(actor, 'LAB_ORDERED', `Ordered ${test} (${priority})`, req, patientOfAdmission(aid));
     persistNow();
-    return send(res, 201, { order_id: lastId() });
+    return send(res, 201, { order_id: orderId });
   }
 
   if (pathname === '/api/audit' && req.method === 'GET') {
     if (!can(role, 'view_audit')) return send(res, 403, { error: 'forbidden' });
     return send(res, 200, { entries: all('SELECT log_id, timestamp, user_name_en, user_role, action_type, action_detail, patient_mrn, ip_address FROM audit_log ORDER BY log_id DESC LIMIT 200') });
+  }
+
+  // ---- Departments (read: any staff, for dropdowns; create: it_admin) ----
+  if (pathname === '/api/departments' && req.method === 'GET') {
+    return send(res, 200, { departments: all('SELECT dept_id, name_ar, name_en, type FROM departments ORDER BY dept_id') });
+  }
+  if (pathname === '/api/departments' && req.method === 'POST') {
+    if (!can(role, 'manage_users')) return send(res, 403, { error: 'forbidden' });
+    const en = String(body.name_en || '').trim(), ar = String(body.name_ar || '').trim(), type = String(body.type || 'ward').trim();
+    if (!en || !ar) return send(res, 400, { error: 'validation', message: 'name_en and name_ar required' });
+    run('INSERT INTO departments (name_ar, name_en, type) VALUES (?, ?, ?)', [ar, en, type]);
+    const newDeptId = lastId();   // before audit()
+    auditNow(actor, 'DEPT_CREATED', `Created department ${en}`, req);
+    return send(res, 201, { dept_id: newDeptId });
+  }
+
+  // ---- Staff / user administration (it_admin only) ----
+  if (pathname === '/api/users' && req.method === 'GET') {
+    if (!can(role, 'manage_users')) return send(res, 403, { error: 'forbidden' });
+    return send(res, 200, { users: all('SELECT user_id, username, full_name_en, full_name_ar, role, department_id, is_active, created_at FROM users ORDER BY user_id') });
+  }
+  if (pathname === '/api/users' && req.method === 'POST') {
+    if (!can(role, 'manage_users')) return send(res, 403, { error: 'forbidden' });
+    const username = String(body.username || '').trim();
+    const password = String(body.password || '');
+    const urole = String(body.role || '');
+    if (!username || password.length < 8) return send(res, 400, { error: 'validation', message: 'username and a password of at least 8 chars are required' });
+    if (!VALID_ROLES.has(urole)) return send(res, 400, { error: 'validation', message: 'invalid role' });
+    if (get('SELECT user_id FROM users WHERE username = ?', [username])) return send(res, 409, { error: 'username_taken' });
+    const dept = body.department_id ? parseInt(body.department_id, 10) : null;
+    if (dept && !get('SELECT dept_id FROM departments WHERE dept_id = ?', [dept])) return send(res, 400, { error: 'validation', message: 'invalid department_id' });
+    const salt = u.generateSalt();
+    run('INSERT INTO users (username, password_hash, salt, full_name_ar, full_name_en, role, department_id, is_active, created_by, created_at) VALUES (?,?,?,?,?,?,?,1,?,?)',
+      [username, await u.hashPassword(password, salt), salt, String(body.full_name_ar || username), String(body.full_name_en || username), urole, dept, actor.user_id, new Date().toISOString()]);
+    const newUserId = lastId();   // capture BEFORE audit() inserts its own row
+    auditNow(actor, 'USER_CREATED', `Created ${urole} "${username}"`, req);
+    return send(res, 201, { user_id: newUserId });
+  }
+
+  const um = pathname.match(/^\/api\/users\/(\d+)\/(disable|enable|reset-password)$/);
+  if (um && req.method === 'POST') {
+    if (!can(role, 'manage_users')) return send(res, 403, { error: 'forbidden' });
+    const uid = parseInt(um[1], 10);
+    const target = get('SELECT * FROM users WHERE user_id = ?', [uid]);
+    if (!target) return send(res, 404, { error: 'not_found' });
+    if (um[2] === 'disable') {
+      if (uid === actor.user_id) return send(res, 400, { error: 'validation', message: 'cannot disable your own account' });
+      run('UPDATE users SET is_active = 0 WHERE user_id = ?', [uid]);
+      run("DELETE FROM sessions WHERE user_id = ? AND role != 'patient'", [uid]);   // kill live sessions
+      auditNow(actor, 'USER_DISABLED', `Disabled "${target.username}"`, req);
+    } else if (um[2] === 'enable') {
+      run('UPDATE users SET is_active = 1 WHERE user_id = ?', [uid]);
+      auditNow(actor, 'USER_ENABLED', `Enabled "${target.username}"`, req);
+    } else { // reset-password
+      const password = String(body.password || '');
+      if (password.length < 8) return send(res, 400, { error: 'validation', message: 'password of at least 8 chars required' });
+      const salt = u.generateSalt();
+      run('UPDATE users SET password_hash = ?, salt = ? WHERE user_id = ?', [await u.hashPassword(password, salt), salt, uid]);
+      run("DELETE FROM sessions WHERE user_id = ? AND role != 'patient'", [uid]);   // force re-login
+      auditNow(actor, 'USER_PASSWORD_RESET', `Reset password for "${target.username}"`, req);
+    }
+    return send(res, 200, { ok: true });
   }
 
   return send(res, 404, { error: 'not_found' });

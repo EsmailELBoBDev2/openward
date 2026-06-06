@@ -124,6 +124,28 @@ function makeClient(base) {
   assert((await C('GET', '/api/audit')).status === 403, 'consultant is forbidden from the full audit read (403) — oversight only');
   assert((await A('GET', '/api/audit')).json.entries.length >= 3, 'admin can read the central audit log');
 
+  // 7d. staff / department administration (it_admin only)
+  assert((await N('GET', '/api/departments')).json.departments.length >= 1, 'any staff can list departments (for dropdowns)');
+  assert((await N('GET', '/api/users')).status === 403, 'nurse is forbidden from /api/users (403)');
+  assert((await N('POST', '/api/departments', { name_en: 'X', name_ar: 'x' })).status === 403, 'nurse cannot create departments (403)');
+  assert((await A('GET', '/api/users')).json.users.length >= 1 && !('password_hash' in (await A('GET', '/api/users')).json.users[0]), 'admin lists users without password hashes');
+  assert((await A('POST', '/api/users', { username: 'dr.new', password: 'short', role: 'doctor' })).status === 400, 'create user rejects weak password (400)');
+  assert((await A('POST', '/api/users', { username: 'dr.new', password: 'Str0ngPass!', role: 'wizard' })).status === 400, 'create user rejects invalid role (400)');
+  const created = await A('POST', '/api/users', { username: 'dr.new', password: 'Str0ngPass!', role: 'doctor', department_id: 2, full_name_en: 'Dr New' });
+  assert(created.status === 201, 'admin creates a staff user (201)');
+  assert((await A('POST', '/api/users', { username: 'dr.new', password: 'Str0ngPass!', role: 'doctor' })).status === 409, 'duplicate username rejected (409)');
+  const newId = created.json.user_id;
+  // the new doctor can log in
+  const DN = makeClient(base);
+  assert((await DN('POST', '/api/login', { username: 'dr.new', password: 'Str0ngPass!' })).status === 200, 'the newly-created doctor can log in');
+  // disable kills the account + sessions
+  assert((await A('POST', `/api/users/${newId}/disable`, {})).status === 200, 'admin disables the user (200)');
+  assert((await makeClient(base)('POST', '/api/login', { username: 'dr.new', password: 'Str0ngPass!' })).status === 401, 'a disabled user can no longer log in (401)');
+  // reset password + re-enable
+  assert((await A('POST', `/api/users/${newId}/reset-password`, { password: 'N3wStr0ng!' })).status === 200, 'admin resets the password (200)');
+  assert((await A('POST', `/api/users/${newId}/enable`, {})).status === 200, 'admin re-enables the user (200)');
+  assert((await makeClient(base)('POST', '/api/login', { username: 'dr.new', password: 'N3wStr0ng!' })).status === 200, 'the user logs in with the reset password');
+
   // 8. audit chain exists and is HMAC-linked (key lives outside the DB)
   const internals = server._internals();
   const rows = internals.all('SELECT action_type, prev_hash, row_hash FROM audit_log ORDER BY log_id');
@@ -136,6 +158,7 @@ function makeClient(base) {
   assert(arows.some(r => r.action_type === 'PATIENT_LIST_VIEWED'), 'patient-list reads are audited (#2)');
   assert(arows.some(r => r.action_type === 'VITALS_RECORDED' && r.patient_mrn), 'vitals write audit carries patient context (#4)');
   assert(arows.some(r => r.action_type === 'LAB_ORDERED' && r.patient_mrn), 'lab-order write audit carries patient context (#4)');
+  assert(arows.some(r => r.action_type === 'PATIENT_VIEW_DENIED'), 'a denied out-of-department chart read is audited (durably via auditNow)');
 
   // 8b. foreign keys ON: an orphan clinical row (vitals for a non-existent admission) is rejected
   let fkBlocked = false;
