@@ -4,7 +4,6 @@
   "private": true,
   "description": "OpenWard HIS prototype — Node unit tests for the client-side logic (crypto, audit chain, backup rotation, lockout, NEWS2, etc.). No dependencies: tests run against the bundled vendor/sql-wasm.js and the browser globals Node provides (crypto.subtle, TextEncoder).",
   "scripts": {
-    "start": "node --experimental-sqlite server/index.js",
     "test": "node test/run-all.js"
   }
 }

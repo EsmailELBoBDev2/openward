@@ -6,8 +6,6 @@
 [![Status: Educational Demo](https://img.shields.io/badge/Status-Educational%20Demo-orange)]()
 [![Bilingual](https://img.shields.io/badge/Lang-EN%20%2F%20%D8%A7%D9%84%D8%B9%D8%B1%D8%A8%D9%8A%D8%A9-blue)]()
 
-> **🚧 Architecture in transition → hospital-local.** The browser-only design below is the deal-breaker for real clinical use. A **local Node service** that owns the DB, auth, RBAC, and a tamper-evident audit log is now being built in [`server/`](server/README.md) — the trust boundary moves off the browser while staying FOSS / no-cloud. The legacy browser app still runs and is the feature-complete UI during the migration. Run the backend: `npm start`; run all tests: `npm test`.
-
 ---
 
 ## ⚠️ Read this first — what OpenWard is NOT
