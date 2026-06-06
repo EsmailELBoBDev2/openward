@@ -180,6 +180,7 @@ const LANG = {
   user_created_success: { ar: 'تم إنشاء حساب {name} بنجاح', en: 'Account for {name} created successfully' },
   user_updated_success: { ar: 'تم تحديث حساب {name} بنجاح', en: 'Account for {name} updated successfully' },
   username_taken:    { ar: 'اسم المستخدم مستخدم مسبقاً', en: 'Username is already taken' },
+  not_authorized:    { ar: 'غير مصرّح لك بهذا الإجراء', en: 'You are not authorized to perform this action' },
 
   // ---- Hospital Manager ----
   overview:          { ar: 'نظرة عامة', en: 'Overview' },

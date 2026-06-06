@@ -235,6 +235,15 @@ function getActiveSessionsCount() {
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 async function createUser(userData) {
+  // Enforce "IT Admin only". Advisory in a browser-only app (a determined user
+  // can bypass client JS — the real fix is a native authority), but no longer a
+  // no-op: non-admin callers are refused and the attempt is logged.
+  const actor = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (!actor || actor.role !== 'it_admin') {
+    try { const r = logAction('USER_CREATE_DENIED', `Blocked account creation by ${actor ? actor.full_name_en + ' (' + actor.role + ')' : 'unauthenticated user'}`); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+    return { success: false, errorKey: 'not_authorized' };
+  }
+
   // Check username uniqueness
   const existing = dbGet('SELECT user_id FROM users WHERE username = ?', [userData.username]);
   if (existing) {
