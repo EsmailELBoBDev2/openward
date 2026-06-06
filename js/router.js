@@ -8468,16 +8468,24 @@ async function handleApplyOrderSet(setName, patientId, admissionId) {
       [admissionId, user.user_id, labName, nowISO()]);
   });
 
-  // Create prescriptions. Schema needs doctor_id, a NOT NULL drug_id and a NOT
-  // NULL start_date. Resolve each protocol med to a real formulary drug_id where
-  // possible (0 = unmatched protocol item, e.g. "per protocol" placeholders).
+  // Create prescriptions. Only when the protocol med maps to a REAL formulary
+  // drug_id (NOT NULL). Unmatched items (e.g. "Broad-spectrum Antibiotics",
+  // "per protocol") would otherwise become a fake drug_id=0 link, so instead they
+  // are flagged as a task for a clinician to prescribe manually.
   os.meds.forEach(med => {
     const now = nowISO();
     const d = dbGet('SELECT drug_id FROM drugs WHERE name_generic = ? OR name_brand = ? OR name_generic LIKE ? LIMIT 1',
       [med.drug, med.drug, '%' + med.drug + '%']);
-    dbRun(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
-      [admissionId, user.user_id, (d ? d.drug_id : 0), med.drug, med.dose, med.route, med.frequency, now.slice(0, 10), now]);
+    if (d) {
+      dbRun(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+        [admissionId, user.user_id, d.drug_id, med.drug, med.dose, med.route, med.frequency, now.slice(0, 10), now]);
+    } else {
+      dbRun(`INSERT INTO nursing_tasks (admission_id, nurse_id, task_type, task_detail, status, done_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [admissionId, user.user_id, 'order_set_med_unmatched',
+         `Prescribe manually (not in formulary): ${med.drug} ${med.dose} ${med.route} ${med.frequency}`,
+         'pending', now, 'From order set: ' + setName]);
+    }
   });
 
   // Log tasks as nursing tasks

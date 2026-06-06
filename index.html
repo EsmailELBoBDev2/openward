@@ -52,6 +52,15 @@
         <button type="button" class="btn btn-sm btn-secondary" onclick="clearDatabase()" style="font-size: 0.75rem;">🔄 Reset Database</button>
       </div>
 
+      <!-- Local-only data scope notice: this app stores data in THIS browser's
+           IndexedDB. Hosting the files over an IP does NOT share the database
+           between computers — each browser has its own. Warn staff so they don't
+           manage the same patients from two workstations and collide. -->
+      <div style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
+        &#9888; <strong>Local device only</strong> — data is stored in <strong>this browser on this computer</strong> and is <strong>not shared</strong> with other workstations. Do not manage the same patients from multiple devices.<br>
+        <span dir="rtl">البيانات مخزّنة في هذا المتصفح على هذا الجهاز فقط، ولا تتم مشاركتها مع الأجهزة الأخرى.</span>
+      </div>
+
       <!-- Login Mode Toggle -->
       <div class="login-mode-toggle" id="login-mode-toggle">
         <button type="button" class="login-mode-btn active" id="login-staff-btn" onclick="setLoginMode('staff')">

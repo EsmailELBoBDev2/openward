@@ -17,6 +17,7 @@
 - A nurse who clears her browser cache loses everything.
 - A nurse who walks to a different workstation cannot see her patients.
 - Two nurses on two devices each have their own diverging copy of "the truth."
+- **Hosting the files from one PC over `http://server-ip:port` does NOT fix this.** That centralizes only the HTML/JS; the database is still each browser's own IndexedDB ([MDN: IndexedDB is client-side storage](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API)). A real shared LAN HIS needs a server process that owns the DB and an `/api` the browsers call — see the two production architectures above.
 - The "your data stays on the device" framing is a *privacy demo*, not a real clinical workflow.
 
 **To make this production-ready you would need** one of two architectures, because a browser tab cannot be the security authority over its own user:
