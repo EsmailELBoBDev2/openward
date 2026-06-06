@@ -61,6 +61,13 @@ function all(sql, params = []) {
 function get(sql, params = []) { const r = all(sql, params); return r.length ? r[0] : null; }
 function run(sql, params = []) { db.run(sql, params); }
 function lastId() { const r = get('SELECT last_insert_rowid() AS id'); return r ? r.id : null; }
+// Run fn() inside one SQL transaction (clinical write + its audit row commit
+// together, or roll back together). Caller persists after a successful return.
+function withTx(fn) {
+  run('BEGIN IMMEDIATE');
+  try { const r = fn(); run('COMMIT'); return r; }
+  catch (e) { try { run('ROLLBACK'); } catch (_) {} throw e; }
+}
 let _persistTimer = null;
 function writeDbAtomic() {                  // temp file + rename: a crash mid-write can't corrupt the live DB
   const tmp = DB_FILE + '.tmp-' + process.pid;
@@ -192,13 +199,16 @@ function readBody(req) {
   });
 }
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.wasm': 'application/wasm', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+// Only the actual frontend assets are servable. Everything else — server/, test/,
+// tools/, .git/, package.json, and CRUCIALLY server/data/{openward.sqlite,audit.key}
+// — is denied. (Allowlist, not denylist, so nothing leaks by default.)
+const STATIC_ALLOW = /^(?:index\.html|favicon\.ico)$|^(?:js|css|vendor)\/[\w./-]+$/;
 function serveStatic(req, res, pathname) {
-  let rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  if (!STATIC_ALLOW.test(rel)) { res.writeHead(403); return res.end('forbidden'); }
   const full = path.join(ROOT, rel);
-  // Path-traversal guard: startsWith(ROOT) would also accept a sibling like
-  // "<root>2". Use path.relative and reject anything that escapes ROOT.
   const within = path.relative(ROOT, full);
-  if (within === '' || within.startsWith('..') || path.isAbsolute(within)) { res.writeHead(403); return res.end('forbidden'); }
+  if (within.startsWith('..') || path.isAbsolute(within)) { res.writeHead(403); return res.end('forbidden'); }
   fs.readFile(full, (err, buf) => {
     if (err) { res.writeHead(404); return res.end('not found'); }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' });
@@ -349,11 +359,14 @@ async function handleApi(req, res, pathname) {
     for (const [k, [lo, hi]] of Object.entries(RANGES)) {
       if (body[k] != null && body[k] !== '') { const n = Number(body[k]); if (!Number.isFinite(n) || n < lo || n > hi) return send(res, 400, { error: 'validation', message: `${k} out of plausible range (${lo}-${hi})` }); }
     }
-    run(`INSERT INTO vitals_log (admission_id, recorded_by, recorded_at, bp_systolic, bp_diastolic, heart_rate, temperature, o2_sat, resp_rate)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [aid, actor.user_id, new Date().toISOString(), body.bp_systolic || null, body.bp_diastolic || null, body.heart_rate || null, body.temperature || null, body.o2_sat || null, body.resp_rate || null]);
-    const vid = lastId();   // before audit()
-    audit(actor, 'VITALS_RECORDED', `Vitals for admission ${aid}`, req, patientOfAdmission(aid));
+    let vid;
+    withTx(() => {
+      run(`INSERT INTO vitals_log (admission_id, recorded_by, recorded_at, bp_systolic, bp_diastolic, heart_rate, temperature, o2_sat, resp_rate)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [aid, actor.user_id, new Date().toISOString(), body.bp_systolic || null, body.bp_diastolic || null, body.heart_rate || null, body.temperature || null, body.o2_sat || null, body.resp_rate || null]);
+      vid = lastId();   // before audit()
+      audit(actor, 'VITALS_RECORDED', `Vitals for admission ${aid}`, req, patientOfAdmission(aid));
+    });
     persistNow();
     return send(res, 201, { vitals_id: vid });
   }
@@ -372,11 +385,16 @@ async function handleApi(req, res, pathname) {
       return send(res, 403, { error: 'forbidden', message: 'Patient is not in your department.' });
     }
     delete patient.portal_password_hash; delete patient.portal_salt;   // never ship secrets
-    // demographics for view_patients; vitals/clinical chart only for view_chart roles
-    const vitals = (admission && can(role, 'view_chart')) ? all('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 10', [admission.admission_id]) : [];
+    // Clinical data (vitals + the clinical admission fields: chief complaint,
+    // diagnosis, code status, etc.) only for view_chart roles. Others (e.g.
+    // receptionist) get a demographics-only admission stub.
+    const clinical = can(role, 'view_chart');
+    const safeAdmission = !admission ? null : (clinical ? admission
+      : { admission_id: admission.admission_id, dept_id: admission.dept_id, bed_number: admission.bed_number, admitted_at: admission.admitted_at, status: admission.status });
+    const vitals = (admission && clinical) ? all('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 10', [admission.admission_id]) : [];
     audit(actor, 'PATIENT_VIEWED', 'Opened patient chart', req, patient);   // log every PHI read
     persistNow();   // durable: don't lose a PHI-access record on a crash
-    return send(res, 200, { patient, admission, vitals });
+    return send(res, 200, { patient, admission: safeAdmission, vitals });
   }
 
   if (pathname === '/api/prescriptions' && req.method === 'GET') {
@@ -404,12 +422,15 @@ async function handleApi(req, res, pathname) {
     if (get("SELECT rx_id FROM prescriptions WHERE admission_id = ? AND drug_id = ? AND status = 'active'", [aid, drug.drug_id]))
       return send(res, 409, { error: 'duplicate_active', message: 'An active prescription for this drug already exists for this admission.' });
     const now = new Date().toISOString();
-    run(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
-      [aid, actor.user_id, drug.drug_id, drug.name_generic, String(body.dose), String(body.route), String(body.frequency), now.slice(0, 10), now]);
-    const rxId = lastId();   // before audit()
-    const patient = get('SELECT p.* FROM patients p JOIN admissions a ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [aid]);
-    audit(actor, 'PRESCRIPTION_ISSUED', `Prescribed ${drug.name_generic} ${body.dose} ${body.route} ${body.frequency}`, req, patient);
+    let rxId;
+    withTx(() => {
+      run(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+        [aid, actor.user_id, drug.drug_id, drug.name_generic, String(body.dose), String(body.route), String(body.frequency), now.slice(0, 10), now]);
+      rxId = lastId();   // before audit()
+      const det = body.override === true && allergyHit ? ` [allergy override: ${allergyHit.allergen}]` : '';
+      audit(actor, allergyHit && body.override === true ? 'PRESCRIPTION_ALLERGY_OVERRIDE' : 'PRESCRIPTION_ISSUED', `Prescribed ${drug.name_generic} ${body.dose} ${body.route} ${body.frequency}${det}`, req, ptRx);
+    });
     persistNow();
     return send(res, 201, { rx_id: rxId });
   }
@@ -422,10 +443,13 @@ async function handleApi(req, res, pathname) {
     if (!canAccessAdmission(actor, role, aid)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
     if (!test) return send(res, 400, { error: 'validation', message: 'test_name required' });
     const priority = ['routine', 'urgent', 'stat'].includes(body.priority) ? body.priority : 'routine';
-    run(`INSERT INTO lab_orders (admission_id, doctor_id, test_name, priority, status, ordered_at) VALUES (?, ?, ?, ?, 'ordered', ?)`,
-      [aid, actor.user_id, test, priority, new Date().toISOString()]);
-    const orderId = lastId();   // before audit()
-    audit(actor, 'LAB_ORDERED', `Ordered ${test} (${priority})`, req, patientOfAdmission(aid));
+    let orderId;
+    withTx(() => {
+      run(`INSERT INTO lab_orders (admission_id, doctor_id, test_name, priority, status, ordered_at) VALUES (?, ?, ?, ?, 'ordered', ?)`,
+        [aid, actor.user_id, test, priority, new Date().toISOString()]);
+      orderId = lastId();   // before audit()
+      audit(actor, 'LAB_ORDERED', `Ordered ${test} (${priority})`, req, patientOfAdmission(aid));
+    });
     persistNow();
     return send(res, 201, { order_id: orderId });
   }
@@ -617,4 +641,4 @@ if (require.main === module) {
   init().then(start).catch(e => { console.error('server init failed:', e); process.exit(1); });
 }
 
-module.exports = { init, start, _internals: () => ({ all, get, run, audit, can, sessionFromReq, isLoopback, plainHttpAllowed, missingFks, getSetupToken: () => setupToken }) };
+module.exports = { init, start, _internals: () => ({ all, get, run, withTx, audit, can, sessionFromReq, isLoopback, plainHttpAllowed, missingFks, getSetupToken: () => setupToken }) };

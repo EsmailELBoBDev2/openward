@@ -146,15 +146,24 @@ function makeClient(base) {
   assert((await A('POST', `/api/users/${newId}/enable`, {})).status === 200, 'admin re-enables the user (200)');
   assert((await makeClient(base)('POST', '/api/login', { username: 'dr.new', password: 'N3wStr0ng!' })).status === 200, 'the user logs in with the reset password');
 
-  // 7e. PHI response headers (#3)
+  // 7e. PHI response headers
   const hres = await fetch(base + '/api/health');
-  assert(hres.headers.get('cache-control') === 'no-store' && hres.headers.get('x-content-type-options') === 'nosniff', 'API responses set no-store + nosniff (#3)');
+  assert(hres.headers.get('cache-control') === 'no-store' && hres.headers.get('x-content-type-options') === 'nosniff', 'API responses set no-store + nosniff');
+
+  // 7e2. static-file allowlist (#1 critical): the DB, audit key, and source are NOT served
+  assert((await fetch(base + '/server/data/audit.key')).status === 403, 'static: /server/data/audit.key is denied (403)');
+  assert((await fetch(base + '/server/data/openward.sqlite')).status === 403, 'static: the central DB file is denied (403)');
+  assert((await fetch(base + '/server/server.js')).status === 403, 'static: server source is denied (403)');
+  assert((await fetch(base + '/test/test_server.js')).status === 403, 'static: test/ is denied (403)');
+  assert((await fetch(base + '/index.html')).status === 200 && (await fetch(base + '/js/api.js')).status === 200, 'static: real frontend assets still serve (200)');
 
   // 7f. finer RBAC (#2): receptionist sees demographics but NOT vitals or meds
   const R = makeClient(base);
   assert((await R('POST', '/api/login', { username: 'reception', password: 'front123' })).status === 200, 'receptionist logs in');
   const rDet = await R('GET', '/api/patients/' + reg.json.patient_id);
   assert(rDet.status === 200 && rDet.json.patient && rDet.json.vitals.length === 0, 'receptionist sees demographics but NOT vitals (#2 view_chart split)');
+  assert(rDet.json.admission && !('chief_complaint' in rDet.json.admission), 'receptionist admission is sanitized — no clinical fields (#2)');
+  assert('chief_complaint' in det.json.admission, 'a clinical role gets the full admission object (chief_complaint present)');
   assert((await R('GET', '/api/prescriptions?admission_id=' + adm1.admission_id)).status === 403, 'receptionist cannot read prescriptions (#2 view_meds split)');
 
   // 7g. clinical safety (#4): vitals range, duplicate Rx, allergy block + override
@@ -186,6 +195,13 @@ function makeClient(base) {
   assert(arows.some(r => r.action_type === 'LAB_ORDERED' && r.patient_mrn), 'lab-order write audit carries patient context (#4)');
   assert(arows.some(r => r.action_type === 'PATIENT_VIEW_DENIED'), 'a denied out-of-department chart read is audited (durably via auditNow)');
   assert(arows.some(r => r.action_type === 'AUDIT_LOG_VIEWED'), 'reading the audit log is itself audited (#6)');
+
+  // 8c. withTx rolls back the clinical insert if the audit step throws (#3 atomicity)
+  const beforeV = internals.get('SELECT COUNT(*) AS c FROM vitals_log').c;
+  let txThrew = false;
+  try { internals.withTx(() => { internals.run("INSERT INTO vitals_log (admission_id, recorded_by, recorded_at) VALUES (?,?,?)", [adm2.admission_id, 1, '2026-01-01T00:00:00Z']); throw new Error('audit boom'); }); }
+  catch (e) { txThrew = true; }
+  assert(txThrew && internals.get('SELECT COUNT(*) AS c FROM vitals_log').c === beforeV, 'withTx rolls back the clinical write on error (#3 atomic clinical+audit)');
 
   // 8b. foreign keys ON: an orphan clinical row (vitals for a non-existent admission) is rejected
   let fkBlocked = false;
