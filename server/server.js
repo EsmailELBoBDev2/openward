@@ -123,9 +123,13 @@ function audit(actor, actionType, detail, req, patient) {
 function auditNow(actor, actionType, detail, req, patient) { audit(actor, actionType, detail, req, patient); persistNow(); }
 
 // ---- RBAC (server-authoritative) -------------------------------------------
+const CLINICAL = ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
 const CAN = {
   register_patient: ['emergency_doctor', 'triage_nurse', 'receptionist', 'it_admin'],
-  view_patients:    ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'receptionist'],
+  // demographics (list + basic detail) — receptionist included; CLINICAL data is separate
+  view_patients:    [...CLINICAL, 'receptionist'],
+  view_chart:       CLINICAL,                            // vitals/clinical chart (NOT receptionist)
+  view_meds:        CLINICAL,                            // prescriptions
   record_vitals:    ['nurse', 'senior_nurse', 'triage_nurse', 'doctor', 'emergency_doctor'],
   view_beds:        ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'senior_nurse', 'nurse', 'emergency_doctor', 'triage_nurse'],
   prescribe:        ['doctor', 'consultant', 'emergency_doctor'],
@@ -136,6 +140,9 @@ const CAN = {
 // Roles a staff account may have (mirrors the client ROLES map; 'patient' is not a staff role).
 const VALID_ROLES = new Set(['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'pharmacist', 'lab_technician', 'radiologist', 'receptionist', 'dietitian', 'social_worker']);
 function can(role, action) { return (CAN[action] || []).includes(role); }
+// usernames are case-insensitive: normalize on store AND lookup (schema UNIQUE is
+// case-sensitive, so 'admin' and 'Admin' would otherwise both be insertable).
+function normUser(s) { return String(s || '').trim().toLowerCase(); }
 // Oversight roles see every patient; everyone else is scoped to their department's
 // active admissions (minimum-necessary access).
 const ALL_PATIENTS_ROLES = ['it_admin', 'hospital_manager'];
@@ -170,11 +177,18 @@ function sessionFromReq(req) {
 }
 
 // ---- HTTP plumbing ----------------------------------------------------------
-function send(res, code, obj, headers) { const body = JSON.stringify(obj); res.writeHead(code, Object.assign({ 'Content-Type': 'application/json' }, headers || {})); res.end(body); }
+function send(res, code, obj, headers) {
+  const body = JSON.stringify(obj);
+  // PHI must never be cached; nosniff hardens content handling.
+  res.writeHead(code, Object.assign({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'X-Content-Type-Options': 'nosniff' }, headers || {}));
+  res.end(body);
+}
 function readBody(req) {
   return new Promise((resolve) => {
-    let data = ''; req.on('data', c => { data += c; if (data.length > 1e6) req.destroy(); });
-    req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch { resolve({}); } });
+    let data = '', tooLarge = false;
+    req.on('data', c => { if (tooLarge) return; data += c; if (data.length > 1e6) { tooLarge = true; resolve({ __tooLarge: true }); } });   // stop accumulating; let the handler send 413 (don't destroy the socket)
+    req.on('end', () => { if (tooLarge) return; try { resolve(data ? JSON.parse(data) : {}); } catch { resolve({}); } });
+    req.on('error', () => { if (!tooLarge) resolve({}); });
   });
 }
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.wasm': 'application/wasm', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
@@ -197,6 +211,7 @@ function genMRN(patientId) { return `HIS-${new Date().toISOString().slice(0, 10)
 async function handleApi(req, res, pathname) {
   const auth = sessionFromReq(req);
   const body = (req.method === 'POST' || req.method === 'PUT') ? await readBody(req) : {};
+  if (body && body.__tooLarge) return send(res, 413, { error: 'too_large', message: 'request body exceeds 1 MB' });
 
   // ---- public: health / server-mode probe (lets the browser detect it's served
   // by the LAN server vs opened standalone) ----
@@ -212,13 +227,13 @@ async function handleApi(req, res, pathname) {
     if (get('SELECT user_id FROM users LIMIT 1')) return send(res, 409, { error: 'already_initialized', message: 'Setup is closed — an account already exists.' });
     if (!isLoopback(req)) return send(res, 403, { error: 'forbidden', message: 'First-run setup must be done on the hospital PC (loopback).' });
     if (!setupToken || String(body.token || '') !== setupToken) return send(res, 403, { error: 'bad_token', message: 'Provide the one-time setup token printed to the server console.' });
-    const username = String(body.username || '').trim();
+    const username = normUser(body.username);
     const password = String(body.password || '');
     if (!username || password.length < 8) return send(res, 400, { error: 'validation', message: 'username and a password of at least 8 chars are required' });
+    setupToken = null;   // CONSUME synchronously, immediately before the await — closes the concurrent-setup race (a typo'd password above doesn't burn it)
     const salt = u.generateSalt();
     run('INSERT INTO users (username, password_hash, salt, full_name_ar, full_name_en, role, department_id, is_active, created_at) VALUES (?,?,?,?,?,?,?,1,?)',
       [username, await u.hashPassword(password, salt), salt, String(body.full_name_ar || username), String(body.full_name_en || username), 'it_admin', null, new Date().toISOString()]);
-    setupToken = null;   // single use
     audit(null, 'FIRST_RUN_SETUP', `Initial it_admin account "${username}" created`, req);
     persistNow();
     return send(res, 201, { ok: true, username });
@@ -226,9 +241,9 @@ async function handleApi(req, res, pathname) {
 
   // ---- public: login ----
   if (pathname === '/api/login' && req.method === 'POST') {
-    const username = String(body.username || '').trim();
+    const username = normUser(body.username);
     const password = String(body.password || '');
-    const acct = username.toLowerCase();
+    const acct = username;
     // DB-backed lockout (5 fails / 15 min)
     const since = Date.now() - 15 * 60 * 1000;
     const fails = get('SELECT COUNT(*) AS c FROM login_attempts WHERE account = ? AND attempt_ms > ?', [acct, since]);
@@ -329,6 +344,11 @@ async function handleApi(req, res, pathname) {
     const aid = parseInt(body.admission_id, 10);
     if (!aid || !get('SELECT admission_id FROM admissions WHERE admission_id = ?', [aid])) return send(res, 400, { error: 'validation', message: 'valid admission_id required' });
     if (!canAccessAdmission(actor, role, aid)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
+    // server-side plausibility (the API is authoritative — don't trust the client)
+    const RANGES = { bp_systolic: [40, 300], bp_diastolic: [20, 200], heart_rate: [10, 300], temperature: [25, 45], o2_sat: [30, 100], resp_rate: [3, 80] };
+    for (const [k, [lo, hi]] of Object.entries(RANGES)) {
+      if (body[k] != null && body[k] !== '') { const n = Number(body[k]); if (!Number.isFinite(n) || n < lo || n > hi) return send(res, 400, { error: 'validation', message: `${k} out of plausible range (${lo}-${hi})` }); }
+    }
     run(`INSERT INTO vitals_log (admission_id, recorded_by, recorded_at, bp_systolic, bp_diastolic, heart_rate, temperature, o2_sat, resp_rate)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [aid, actor.user_id, new Date().toISOString(), body.bp_systolic || null, body.bp_diastolic || null, body.heart_rate || null, body.temperature || null, body.o2_sat || null, body.resp_rate || null]);
@@ -352,14 +372,15 @@ async function handleApi(req, res, pathname) {
       return send(res, 403, { error: 'forbidden', message: 'Patient is not in your department.' });
     }
     delete patient.portal_password_hash; delete patient.portal_salt;   // never ship secrets
-    const vitals = admission ? all('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 10', [admission.admission_id]) : [];
+    // demographics for view_patients; vitals/clinical chart only for view_chart roles
+    const vitals = (admission && can(role, 'view_chart')) ? all('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 10', [admission.admission_id]) : [];
     audit(actor, 'PATIENT_VIEWED', 'Opened patient chart', req, patient);   // log every PHI read
     persistNow();   // durable: don't lose a PHI-access record on a crash
     return send(res, 200, { patient, admission, vitals });
   }
 
   if (pathname === '/api/prescriptions' && req.method === 'GET') {
-    if (!can(role, 'view_patients')) return send(res, 403, { error: 'forbidden' });
+    if (!can(role, 'view_meds')) return send(res, 403, { error: 'forbidden' });
     const aid = parseInt((req.url.split('?')[1] || '').match(/admission_id=(\d+)/)?.[1], 10);
     if (!aid) return send(res, 400, { error: 'validation', message: 'admission_id query param required' });
     if (!canAccessAdmission(actor, role, aid)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
@@ -374,6 +395,14 @@ async function handleApi(req, res, pathname) {
     if (!canAccessAdmission(actor, role, aid)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
     if (!drug) return send(res, 400, { error: 'validation', message: 'valid drug_id required (formulary only — no free-text drug)' });
     if (!body.dose || !body.route || !body.frequency) return send(res, 400, { error: 'validation', message: 'dose, route, frequency required' });
+    // server-side medication safety (authoritative; not just the browser):
+    const ptRx = patientOfAdmission(aid);
+    const dn = (drug.name_generic || '').toLowerCase();
+    const allergyHit = all('SELECT allergen FROM patient_allergies WHERE patient_id = ?', [ptRx.patient_id])
+      .find(a => { const al = (a.allergen || '').toLowerCase().trim(); return al && (dn.includes(al) || al.includes(dn)); });
+    if (allergyHit && body.override !== true) return send(res, 409, { error: 'allergy_conflict', message: `Patient has a recorded allergy to "${allergyHit.allergen}". Re-send with override:true to proceed.` });
+    if (get("SELECT rx_id FROM prescriptions WHERE admission_id = ? AND drug_id = ? AND status = 'active'", [aid, drug.drug_id]))
+      return send(res, 409, { error: 'duplicate_active', message: 'An active prescription for this drug already exists for this admission.' });
     const now = new Date().toISOString();
     run(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
@@ -403,7 +432,9 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/audit' && req.method === 'GET') {
     if (!can(role, 'view_audit')) return send(res, 403, { error: 'forbidden' });
-    return send(res, 200, { entries: all('SELECT log_id, timestamp, user_name_en, user_role, action_type, action_detail, patient_mrn, ip_address FROM audit_log ORDER BY log_id DESC LIMIT 200') });
+    const entries = all('SELECT log_id, timestamp, user_name_en, user_role, action_type, action_detail, patient_mrn, ip_address FROM audit_log ORDER BY log_id DESC LIMIT 200');
+    auditNow(actor, 'AUDIT_LOG_VIEWED', `Read audit log (${entries.length} rows)`, req);   // reading the audit log is itself audited
+    return send(res, 200, { entries });
   }
 
   // ---- Departments (read: any staff, for dropdowns; create: it_admin) ----
@@ -427,7 +458,7 @@ async function handleApi(req, res, pathname) {
   }
   if (pathname === '/api/users' && req.method === 'POST') {
     if (!can(role, 'manage_users')) return send(res, 403, { error: 'forbidden' });
-    const username = String(body.username || '').trim();
+    const username = normUser(body.username);
     const password = String(body.password || '');
     const urole = String(body.role || '');
     if (!username || password.length < 8) return send(res, 400, { error: 'validation', message: 'username and a password of at least 8 chars are required' });
@@ -497,6 +528,7 @@ async function seedDemoAccounts() {
   await mk('er.doc', 'doctor123', 'طبيب طوارئ', 'ER Doctor', 'emergency_doctor', 1);
   await mk('nurse', 'nurse123', 'ممرضة', 'Ward Nurse', 'nurse', 2);
   await mk('consultant', 'doctor123', 'استشاري', 'Consultant', 'consultant', 2);
+  await mk('reception', 'front123', 'استقبال', 'Reception', 'receptionist', 1);
   audit(null, 'SERVER_SEED', 'Seeded DEMO accounts', null);
 }
 

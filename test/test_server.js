@@ -146,6 +146,32 @@ function makeClient(base) {
   assert((await A('POST', `/api/users/${newId}/enable`, {})).status === 200, 'admin re-enables the user (200)');
   assert((await makeClient(base)('POST', '/api/login', { username: 'dr.new', password: 'N3wStr0ng!' })).status === 200, 'the user logs in with the reset password');
 
+  // 7e. PHI response headers (#3)
+  const hres = await fetch(base + '/api/health');
+  assert(hres.headers.get('cache-control') === 'no-store' && hres.headers.get('x-content-type-options') === 'nosniff', 'API responses set no-store + nosniff (#3)');
+
+  // 7f. finer RBAC (#2): receptionist sees demographics but NOT vitals or meds
+  const R = makeClient(base);
+  assert((await R('POST', '/api/login', { username: 'reception', password: 'front123' })).status === 200, 'receptionist logs in');
+  const rDet = await R('GET', '/api/patients/' + reg.json.patient_id);
+  assert(rDet.status === 200 && rDet.json.patient && rDet.json.vitals.length === 0, 'receptionist sees demographics but NOT vitals (#2 view_chart split)');
+  assert((await R('GET', '/api/prescriptions?admission_id=' + adm1.admission_id)).status === 403, 'receptionist cannot read prescriptions (#2 view_meds split)');
+
+  // 7g. clinical safety (#4): vitals range, duplicate Rx, allergy block + override
+  assert((await N('POST', '/api/vitals', { admission_id: adm2.admission_id, heart_rate: 999 })).status === 400, 'implausible vitals are rejected (#4)');
+  assert((await D('POST', '/api/prescriptions', { admission_id: adm1.admission_id, drug_id: 1, dose: '500mg', route: 'PO', frequency: 'q8h' })).status === 409, 'duplicate active prescription is rejected (#4)');
+  server._internals().run("INSERT INTO patient_allergies (patient_id, allergen) VALUES (?, 'Ceftriaxone')", [reg.json.patient_id]);
+  assert((await D('POST', '/api/prescriptions', { admission_id: adm1.admission_id, drug_id: 2, dose: '1g', route: 'IV', frequency: 'q24h' })).status === 409, 'prescribing a drug the patient is allergic to is blocked (#4)');
+  assert((await D('POST', '/api/prescriptions', { admission_id: adm1.admission_id, drug_id: 2, dose: '1g', route: 'IV', frequency: 'q24h', override: true })).status === 201, 'allergy block is overridable with override:true (#4)');
+
+  // 7h. case-insensitive usernames (#5)
+  assert((await A('POST', '/api/users', { username: 'ADMIN', password: 'Str0ngPass!', role: 'doctor' })).status === 409, 'username uniqueness is case-insensitive (#5)');
+  assert((await makeClient(base)('POST', '/api/login', { username: 'ADMIN', password: 'HIS@2024' })).status === 200, 'login is case-insensitive (#5)');
+
+  // 7i. oversized body → 413, not a hang (#7)
+  const tooBig = await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"username":"' + 'x'.repeat(1100000) + '"}' });
+  assert(tooBig.status === 413, 'an oversized request body returns 413 (#7)');
+
   // 8. audit chain exists and is HMAC-linked (key lives outside the DB)
   const internals = server._internals();
   const rows = internals.all('SELECT action_type, prev_hash, row_hash FROM audit_log ORDER BY log_id');
@@ -159,6 +185,7 @@ function makeClient(base) {
   assert(arows.some(r => r.action_type === 'VITALS_RECORDED' && r.patient_mrn), 'vitals write audit carries patient context (#4)');
   assert(arows.some(r => r.action_type === 'LAB_ORDERED' && r.patient_mrn), 'lab-order write audit carries patient context (#4)');
   assert(arows.some(r => r.action_type === 'PATIENT_VIEW_DENIED'), 'a denied out-of-department chart read is audited (durably via auditNow)');
+  assert(arows.some(r => r.action_type === 'AUDIT_LOG_VIEWED'), 'reading the audit log is itself audited (#6)');
 
   // 8b. foreign keys ON: an orphan clinical row (vitals for a non-existent admission) is rejected
   let fkBlocked = false;

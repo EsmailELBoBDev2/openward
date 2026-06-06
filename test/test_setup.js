@@ -29,7 +29,8 @@ function makeClient(base) {
   await server.init();
   const httpServer = server.start();
   if (!httpServer.listening) await new Promise(r => httpServer.once('listening', r));
-  const C = makeClient(`http://127.0.0.1:${httpServer.address().port}`);
+  const base = `http://127.0.0.1:${httpServer.address().port}`;
+  const C = makeClient(base);
 
   const I = server._internals();
   const h = await C('GET', '/api/health');
@@ -40,10 +41,17 @@ function makeClient(base) {
   const token = I.getSetupToken();
   assert(typeof token === 'string' && token.length > 0, 'a one-time setup token is generated when no accounts exist');
   assert((await C('POST', '/api/setup', { username: 'root', password: 'Str0ngPass!' })).status === 403, 'setup WITHOUT the token is refused (403)');
-  assert((await C('POST', '/api/setup', { username: 'root', password: 'short', token })).status === 400, 'setup rejects a weak (<8) password (even with token)');
-  assert((await C('POST', '/api/setup', { username: 'root', password: 'Str0ngPass!', full_name_en: 'Root Admin', token })).status === 201, 'first-run setup with the token creates the initial it_admin (201)');
-  assert((await C('POST', '/api/setup', { username: 'root2', password: 'Str0ngPass!', token })).status === 409, 'setup is closed after the first account (409)');
-  const login = await C('POST', '/api/login', { username: 'root', password: 'Str0ngPass!' });
+  assert((await C('POST', '/api/setup', { username: 'root', password: 'short', token })).status === 400, 'setup rejects a weak (<8) password (token NOT consumed by a 400)');
+  // #1 concurrency: two simultaneous setups with the SAME token -> exactly one admin
+  const [r1, r2] = await Promise.all([
+    makeClient(base)('POST', '/api/setup', { username: 'root', password: 'Str0ngPass!', token }),
+    makeClient(base)('POST', '/api/setup', { username: 'root2', password: 'Str0ngPass!', token }),
+  ]);
+  assert([r1, r2].filter(r => r.status === 201).length === 1, 'concurrent /api/setup with one token creates exactly ONE admin (race-safe, #1)');
+  assert(I.get('SELECT COUNT(*) AS c FROM users').c === 1, 'exactly one user exists after the concurrent setup');
+  assert((await C('POST', '/api/setup', { username: 'root3', password: 'Str0ngPass!', token })).status === 409, 'setup is closed after the first account (409)');
+  const winner = I.get('SELECT username FROM users').username;
+  const login = await C('POST', '/api/login', { username: winner, password: 'Str0ngPass!' });
   assert(login.status === 200 && login.json.user.role === 'it_admin', 'the setup-created admin logs in as it_admin');
   assert((await C('GET', '/api/health')).json.needsSetup === false, 'health now reports setup complete');
 
