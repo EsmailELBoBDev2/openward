@@ -114,6 +114,9 @@ const CAN = {
   view_patients:    ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'receptionist'],
   record_vitals:    ['nurse', 'senior_nurse', 'triage_nurse', 'doctor', 'emergency_doctor'],
   view_beds:        ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'senior_nurse', 'nurse', 'emergency_doctor', 'triage_nurse'],
+  prescribe:        ['doctor', 'consultant', 'emergency_doctor'],
+  order_labs:       ['doctor', 'consultant', 'emergency_doctor'],
+  view_audit:       ['it_admin', 'hospital_manager', 'consultant'],
 };
 function can(role, action) { return (CAN[action] || []).includes(role); }
 
@@ -264,6 +267,62 @@ async function handleApi(req, res, pathname) {
     return send(res, 201, { vitals_id: lastId() });
   }
 
+  // Patient detail: record + active admission + recent vitals.
+  const pm = pathname.match(/^\/api\/patients\/(\d+)$/);
+  if (pm && req.method === 'GET') {
+    if (!can(role, 'view_patients')) return send(res, 403, { error: 'forbidden' });
+    const pid = parseInt(pm[1], 10);
+    const patient = get('SELECT * FROM patients WHERE patient_id = ?', [pid]);
+    if (!patient) return send(res, 404, { error: 'not_found' });
+    delete patient.portal_password_hash; delete patient.portal_salt;   // never ship secrets
+    const admission = get("SELECT * FROM admissions WHERE patient_id = ? AND status = 'active' ORDER BY admission_id DESC LIMIT 1", [pid]);
+    const vitals = admission ? all('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 10', [admission.admission_id]) : [];
+    return send(res, 200, { patient, admission, vitals });
+  }
+
+  if (pathname === '/api/prescriptions' && req.method === 'GET') {
+    if (!can(role, 'view_patients')) return send(res, 403, { error: 'forbidden' });
+    const aid = parseInt((req.url.split('?')[1] || '').match(/admission_id=(\d+)/)?.[1], 10);
+    if (!aid) return send(res, 400, { error: 'validation', message: 'admission_id query param required' });
+    return send(res, 200, { prescriptions: all("SELECT rx_id, drug_id, drug_name, dose, route, frequency, status, prescribed_at FROM prescriptions WHERE admission_id = ? ORDER BY rx_id DESC", [aid]) });
+  }
+
+  if (pathname === '/api/prescriptions' && req.method === 'POST') {
+    if (!can(role, 'prescribe')) return send(res, 403, { error: 'forbidden' });
+    const aid = parseInt(body.admission_id, 10);
+    const drug = get('SELECT * FROM drugs WHERE drug_id = ?', [parseInt(body.drug_id, 10)]);
+    if (!aid || !get('SELECT admission_id FROM admissions WHERE admission_id = ?', [aid])) return send(res, 400, { error: 'validation', message: 'valid admission_id required' });
+    if (!drug) return send(res, 400, { error: 'validation', message: 'valid drug_id required (formulary only — no free-text drug)' });
+    if (!body.dose || !body.route || !body.frequency) return send(res, 400, { error: 'validation', message: 'dose, route, frequency required' });
+    const now = new Date().toISOString();
+    run(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+      [aid, actor.user_id, drug.drug_id, drug.name_generic, String(body.dose), String(body.route), String(body.frequency), now.slice(0, 10), now]);
+    const patient = get('SELECT p.* FROM patients p JOIN admissions a ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [aid]);
+    audit(actor, 'PRESCRIPTION_ISSUED', `Prescribed ${drug.name_generic} ${body.dose} ${body.route} ${body.frequency}`, req, patient);
+    persistNow();
+    return send(res, 201, { rx_id: lastId() });
+  }
+
+  if (pathname === '/api/lab-orders' && req.method === 'POST') {
+    if (!can(role, 'order_labs')) return send(res, 403, { error: 'forbidden' });
+    const aid = parseInt(body.admission_id, 10);
+    const test = String(body.test_name || '').trim();
+    if (!aid || !get('SELECT admission_id FROM admissions WHERE admission_id = ?', [aid])) return send(res, 400, { error: 'validation', message: 'valid admission_id required' });
+    if (!test) return send(res, 400, { error: 'validation', message: 'test_name required' });
+    const priority = ['routine', 'urgent', 'stat'].includes(body.priority) ? body.priority : 'routine';
+    run(`INSERT INTO lab_orders (admission_id, doctor_id, test_name, priority, status, ordered_at) VALUES (?, ?, ?, ?, 'ordered', ?)`,
+      [aid, actor.user_id, test, priority, new Date().toISOString()]);
+    audit(actor, 'LAB_ORDERED', `Ordered ${test} (${priority})`, req);
+    persistNow();
+    return send(res, 201, { order_id: lastId() });
+  }
+
+  if (pathname === '/api/audit' && req.method === 'GET') {
+    if (!can(role, 'view_audit')) return send(res, 403, { error: 'forbidden' });
+    return send(res, 200, { entries: all('SELECT log_id, timestamp, user_name_en, user_role, action_type, action_detail, patient_mrn, ip_address FROM audit_log ORDER BY log_id DESC LIMIT 200') });
+  }
+
   return send(res, 404, { error: 'not_found' });
 }
 
@@ -279,7 +338,9 @@ async function seedMinimal() {
   await mk('admin', 'HIS@2024', 'مدير النظام', 'IT Admin', 'it_admin', null);
   await mk('er.doc', 'doctor123', 'طبيب طوارئ', 'ER Doctor', 'emergency_doctor', 1);
   await mk('nurse', 'nurse123', 'ممرضة', 'Ward Nurse', 'nurse', 2);
-  audit(null, 'SERVER_SEED', 'Seeded departments + initial accounts', null);
+  // a tiny starter formulary so prescribing works out of the box
+  run("INSERT INTO drugs (name_generic, unit, is_high_alert) VALUES ('Paracetamol','mg',0), ('Ceftriaxone','mg',0), ('Regular Insulin','units',1)");
+  audit(null, 'SERVER_SEED', 'Seeded departments + initial accounts + starter formulary', null);
   persistNow();
 }
 

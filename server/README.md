@@ -44,24 +44,39 @@ curl -b jar localhost:8080/api/patients
   multi-step writes use `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` (e.g. registration
   rejects a double-booked bed atomically).
 - **Endpoints:** `POST /api/login`, `POST /api/logout`, `GET /api/me`,
-  `GET/POST /api/patients`, `GET /api/beds`, `POST /api/vitals`.
+  `GET/POST /api/patients`, `GET /api/patients/:id`, `GET /api/beds`,
+  `POST /api/vitals`, `GET/POST /api/prescriptions` (formulary-only),
+  `POST /api/lab-orders`, `GET /api/audit` (role-gated).
 
 Covered by `test/test_server.js` (auth, RBAC denial, transactional bed conflict,
-**a second client seeing the first's write**, audit chain).
+**a second client seeing the first's write**, formulary-only prescribing, no
+secret leakage in patient detail, role-gated audit, audit chain, path-traversal).
 
-## Not done yet (honest roadmap)
+## This IS the production target (decision locked)
 
-This is **slice 1**. The browser UI still uses the old in-browser DB for most
-screens; those flows are migrated to `/api` (via `js/api.js`) slice by slice:
+OpenWard's agreed architecture is **a local LAN server**: one hospital PC runs
+this process and owns the one database; every workstation/phone/tablet is just a
+browser client hitting `/api`. No cloud. The SQLite file is owned by this one
+process only — never shared over SMB/NFS, never opened directly by clients. (If
+Node is unwanted, this same design can be a single Rust/Go binary; Node here has
+zero npm deps.)
 
-1. ✅ Server owns the DB; auth/RBAC/audit; patients + beds + vitals endpoints.
-2. ⬜ Wire the browser **login** to `/api/login` (drop client-side `login()`).
-3. ⬜ Migrate registration, beds, vitals, orders, MAR, dispensing, discharge,
-   labs, portal to `/api` and delete their `dbRun/dbGet/saveDBToIndexedDB`
+## Roadmap — the remaining work is the UI migration
+
+The server is now substantial; the big remaining job is moving the **browser UI**
+off the in-browser sql.js/IndexedDB source-of-truth onto `/api`. Because the UI's
+DB calls are synchronous and `/api` is async, this is done screen-by-screen:
+
+1. ✅ Server owns the DB; auth/RBAC/audit/transactions; patients, beds, vitals,
+   prescriptions, lab orders, patient detail, audit endpoints.
+2. ⬜ Wire the browser **login** to `/api/login` (load `js/api.js`; drop the
+   client-side `login()` for staff).
+3. ⬜ Migrate registration → beds → vitals → orders → MAR → dispensing → labs →
+   discharge → portal to `/api`, deleting their `dbRun/dbGet/saveDBToIndexedDB`
    source-of-truth use (keep `localStorage` for UI prefs only).
 4. ⬜ Server push (WebSocket/SSE) to replace `BroadcastChannel` for live updates.
-5. ⬜ Server-side backup/restore (scheduled, encrypted, off-machine) and remove
-   the in-UI "Reset Database" from server builds.
+5. ⬜ Server-side backup/restore (scheduled, encrypted, off-machine); remove the
+   in-UI "Reset Database" from server builds.
 6. ⬜ Row versioning / conflict detection on hot rows (beds, stock, MAR).
 
 ## Operational must-dos before real PHI

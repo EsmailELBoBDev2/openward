@@ -76,6 +76,21 @@ function makeClient(base) {
   const vit = await N('POST', '/api/vitals', { admission_id: adm.admission_id, heart_rate: 88, resp_rate: 18 });
   assert(vit.status === 201, 'nurse records vitals (201)');
 
+  // 7b. doctor endpoints: prescribe (RBAC + formulary-only), lab order, patient detail
+  const D = makeClient(base);
+  assert((await D('POST', '/api/login', { username: 'er.doc', password: 'doctor123' })).status === 200, 'ER doctor logs in');
+  assert((await N('POST', '/api/prescriptions', { admission_id: adm.admission_id, drug_id: 1, dose: '500mg', route: 'PO', frequency: 'q8h' })).status === 403, 'nurse is forbidden from prescribing (403)');
+  assert((await D('POST', '/api/prescriptions', { admission_id: adm.admission_id, dose: 'x', route: 'PO', frequency: 'q8h' })).status === 400, 'prescription with no real drug_id is rejected (formulary only)');
+  assert((await D('POST', '/api/prescriptions', { admission_id: adm.admission_id, drug_id: 1, dose: '500mg', route: 'PO', frequency: 'q8h' })).status === 201, 'doctor prescribes a formulary drug (201)');
+  const rxList = await D('GET', '/api/prescriptions?admission_id=' + adm.admission_id);
+  assert(rxList.status === 200 && rxList.json.prescriptions.length >= 1, 'prescriptions list reflects the new Rx (shared central DB)');
+  assert((await D('POST', '/api/lab-orders', { admission_id: adm.admission_id, test_name: 'CBC', priority: 'urgent' })).status === 201, 'doctor orders a lab (201)');
+  const det = await D('GET', '/api/patients/' + reg.json.patient_id);
+  assert(det.status === 200 && det.json.patient && det.json.admission, 'patient detail returns record + active admission + vitals');
+  assert(det.json.patient.portal_password_hash === undefined, 'patient detail never ships portal_password_hash/salt');
+  assert((await N('GET', '/api/audit')).status === 403, 'nurse is forbidden from the audit read (403)');
+  assert((await A('GET', '/api/audit')).json.entries.length >= 3, 'admin can read the central audit log');
+
   // 8. audit chain exists and is HMAC-linked (key lives outside the DB)
   const internals = server._internals();
   const rows = internals.all('SELECT action_type, prev_hash, row_hash FROM audit_log ORDER BY log_id');
