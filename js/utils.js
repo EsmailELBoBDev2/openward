@@ -9,10 +9,13 @@
  * @returns {Promise<string>} hex string
  */
 async function sha256(message) {
-  if (window.crypto && window.crypto.subtle) {
+  // Use the global Web Crypto (browser: window.crypto; Node: globalThis.crypto)
+  // when available; fall back to the pure-JS implementation on any origin.
+  const c = (typeof crypto !== 'undefined') ? crypto : null;
+  if (c && c.subtle) {
     try {
       const msgBuffer = new TextEncoder().encode(message);
-      const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgBuffer);
+      const hashBuffer = await c.subtle.digest('SHA-256', msgBuffer);
       const hashArray = Array.from(new Uint8Array(hashBuffer));
       return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
     } catch (e) {
@@ -80,13 +83,54 @@ function _sha256Pure(message) {
 }
 
 /**
- * Hash a password with a salt using SHA-256
- * @param {string} password
- * @param {string} salt
+ * PBKDF2-HMAC-SHA256 password hashing (Web Crypto). Replaces the old fast salted
+ * SHA-256, which is unsuitable for passwords (NIST/OWASP want a slow, salted KDF
+ * resistant to offline cracking). The result is self-describing —
+ * "pbkdf2$<iterations>$<hex>" — so verifyPassword() can read the iteration count
+ * back and can recognise (and upgrade) legacy salted-SHA-256 hashes.
  * @returns {Promise<string>}
  */
+const PBKDF2_ITERATIONS = 210000; // OWASP 2023 minimum for PBKDF2-HMAC-SHA256
+
+async function pbkdf2Hex(password, salt, iterations) {
+  const enc = new TextEncoder();
+  const km = await crypto.subtle.importKey('raw', enc.encode(String(password)), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: enc.encode(String(salt)), iterations, hash: 'SHA-256' }, km, 256);
+  return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 async function hashPassword(password, salt) {
-  return await sha256(salt + ':' + password);
+  return `pbkdf2$${PBKDF2_ITERATIONS}$${await pbkdf2Hex(password, salt, PBKDF2_ITERATIONS)}`;
+}
+
+// Length-constant hex compare (no early-exit timing leak).
+function timingSafeEqualHex(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+
+/**
+ * Verify a password against a stored hash, supporting BOTH the new PBKDF2 format
+ * and the legacy salted-SHA-256 format. Returns { ok, needsUpgrade }; on a
+ * successful verify of a legacy (or weaker-iteration) hash, callers should
+ * re-hash with hashPassword() and persist, so old hashes migrate to PBKDF2 on the
+ * next successful login.
+ * @returns {Promise<{ok:boolean, needsUpgrade:boolean}>}
+ */
+async function verifyPassword(password, salt, storedHash) {
+  if (typeof storedHash !== 'string' || !storedHash) return { ok: false, needsUpgrade: false };
+  if (storedHash.startsWith('pbkdf2$')) {
+    const parts = storedHash.split('$');
+    const iter = parseInt(parts[1], 10) || PBKDF2_ITERATIONS;
+    const ok = timingSafeEqualHex(await pbkdf2Hex(password, salt, iter), parts[2] || '');
+    return { ok, needsUpgrade: ok && iter !== PBKDF2_ITERATIONS };
+  }
+  // Legacy: salted SHA-256 = sha256(salt + ':' + password). Upgrade on success.
+  const ok = timingSafeEqualHex(await sha256(String(salt) + ':' + String(password)), storedHash);
+  return { ok, needsUpgrade: ok };
 }
 
 /**
@@ -1090,6 +1134,13 @@ function closeModal() {
     }, true);
   }
 
-  if (document.body) start();
-  else document.addEventListener('DOMContentLoaded', start);
+  if (typeof document !== 'undefined') {
+    if (document.body) start();
+    else document.addEventListener('DOMContentLoaded', start);
+  }
 })();
+
+// Node test harness only (browser has no `module`): expose the pure helpers.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { sha256, hashPassword, verifyPassword, pbkdf2Hex, timingSafeEqualHex, generateSalt, escapeHtml, PBKDF2_ITERATIONS };
+}

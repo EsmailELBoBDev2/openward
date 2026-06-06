@@ -81,11 +81,15 @@ async function login(username, password) {
     return { success: false, errorKey: 'login_error_cred' };
   }
 
-  // Check password
-  const hash = await hashPassword(password, user.salt);
-  if (hash !== user.password_hash) {
+  // Check password (verifyPassword accepts legacy salted-SHA-256 hashes and
+  // signals when the stored hash should be upgraded to PBKDF2).
+  const v = await verifyPassword(password, user.salt, user.password_hash);
+  if (!v.ok) {
     await _recordFailedLogin(username);
     return { success: false, errorKey: 'login_error_cred' };
+  }
+  if (v.needsUpgrade) {
+    try { const nh = await hashPassword(password, user.salt); dbRun('UPDATE users SET password_hash = ? WHERE user_id = ?', [nh, user.user_id]); } catch (e) {}
   }
 
   // Check if active
@@ -368,10 +372,13 @@ async function loginPatient(mrn, dob, password) {
     if (!password) {
       return { success: false, errorKey: 'patient_password_required', needsPassword: true };
     }
-    const ph = await hashPassword(password, patient.portal_salt || '');
-    if (ph !== patient.portal_password_hash) {
+    const v = await verifyPassword(password, patient.portal_salt || '', patient.portal_password_hash);
+    if (!v.ok) {
       await _recordFailedLogin(acct);
       return { success: false, errorKey: 'patient_login_error', needsPassword: true };
+    }
+    if (v.needsUpgrade) {
+      try { const nh = await hashPassword(password, patient.portal_salt || ''); dbRun('UPDATE patients SET portal_password_hash = ? WHERE patient_id = ?', [nh, patient.patient_id]); } catch (e) {}
     }
   }
 
