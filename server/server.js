@@ -130,6 +130,13 @@ const CAN = {
   view_audit:       ['it_admin', 'hospital_manager'],   // full audit log is oversight-only (a consultant would see every dept's PHI access)
 };
 function can(role, action) { return (CAN[action] || []).includes(role); }
+// Oversight roles see every patient; everyone else is scoped to their department's
+// active admissions (minimum-necessary access).
+const ALL_PATIENTS_ROLES = ['it_admin', 'hospital_manager'];
+// patient row behind an admission (for attaching patient context to write audits)
+function patientOfAdmission(aid) {
+  return get('SELECT p.* FROM patients p JOIN admissions a ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [aid]) || null;
+}
 
 // ---- sessions ---------------------------------------------------------------
 function sessionFromReq(req) {
@@ -250,7 +257,14 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/patients' && req.method === 'GET') {
     if (!can(role, 'view_patients')) return send(res, 403, { error: 'forbidden' });
-    return send(res, 200, { patients: all('SELECT patient_id, mrn, full_name_ar, full_name_en, date_of_birth, gender, blood_type FROM patients ORDER BY patient_id DESC LIMIT 500') });
+    const patients = ALL_PATIENTS_ROLES.includes(role)
+      ? all('SELECT patient_id, mrn, full_name_ar, full_name_en, date_of_birth, gender, blood_type FROM patients ORDER BY patient_id DESC LIMIT 500')
+      : all(`SELECT DISTINCT p.patient_id, p.mrn, p.full_name_ar, p.full_name_en, p.date_of_birth, p.gender, p.blood_type
+             FROM patients p JOIN admissions a ON a.patient_id = p.patient_id
+             WHERE a.status='active' AND a.dept_id = ? ORDER BY p.patient_id DESC LIMIT 500`, [actor.department_id]);
+    audit(actor, 'PATIENT_LIST_VIEWED', `Viewed patient list (${patients.length} rows)`, req);
+    persist();
+    return send(res, 200, { patients });
   }
 
   if (pathname === '/api/patients' && req.method === 'POST') {
@@ -299,7 +313,7 @@ async function handleApi(req, res, pathname) {
     run(`INSERT INTO vitals_log (admission_id, recorded_by, recorded_at, bp_systolic, bp_diastolic, heart_rate, temperature, o2_sat, resp_rate)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [aid, actor.user_id, new Date().toISOString(), body.bp_systolic || null, body.bp_diastolic || null, body.heart_rate || null, body.temperature || null, body.o2_sat || null, body.resp_rate || null]);
-    audit(actor, 'VITALS_RECORDED', `Vitals for admission ${aid}`, req);
+    audit(actor, 'VITALS_RECORDED', `Vitals for admission ${aid}`, req, patientOfAdmission(aid));
     persistNow();
     return send(res, 201, { vitals_id: lastId() });
   }
@@ -311,9 +325,16 @@ async function handleApi(req, res, pathname) {
     const pid = parseInt(pm[1], 10);
     const patient = get('SELECT * FROM patients WHERE patient_id = ?', [pid]);
     if (!patient) return send(res, 404, { error: 'not_found' });
-    delete patient.portal_password_hash; delete patient.portal_salt;   // never ship secrets
     const admission = get("SELECT * FROM admissions WHERE patient_id = ? AND status = 'active' ORDER BY admission_id DESC LIMIT 1", [pid]);
+    // dept-scope: non-oversight roles can only open a chart in their department
+    if (!ALL_PATIENTS_ROLES.includes(role) && !(admission && admission.dept_id === actor.department_id)) {
+      audit(actor, 'PATIENT_VIEW_DENIED', `Blocked out-of-department chart access for patient ${pid}`, req); persist();
+      return send(res, 403, { error: 'forbidden', message: 'Patient is not in your department.' });
+    }
+    delete patient.portal_password_hash; delete patient.portal_salt;   // never ship secrets
     const vitals = admission ? all('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 10', [admission.admission_id]) : [];
+    audit(actor, 'PATIENT_VIEWED', 'Opened patient chart', req, patient);   // log every PHI read
+    persist();
     return send(res, 200, { patient, admission, vitals });
   }
 
@@ -350,7 +371,7 @@ async function handleApi(req, res, pathname) {
     const priority = ['routine', 'urgent', 'stat'].includes(body.priority) ? body.priority : 'routine';
     run(`INSERT INTO lab_orders (admission_id, doctor_id, test_name, priority, status, ordered_at) VALUES (?, ?, ?, ?, 'ordered', ?)`,
       [aid, actor.user_id, test, priority, new Date().toISOString()]);
-    audit(actor, 'LAB_ORDERED', `Ordered ${test} (${priority})`, req);
+    audit(actor, 'LAB_ORDERED', `Ordered ${test} (${priority})`, req, patientOfAdmission(aid));
     persistNow();
     return send(res, 201, { order_id: lastId() });
   }
@@ -419,10 +440,24 @@ async function init() {
   return db;
 }
 
-// Tables we expect to carry FK constraints; report any that have none.
-const EXPECT_FK = ['admissions', 'vitals_log', 'prescriptions', 'lab_orders', 'med_admin_records', 'patient_conditions', 'patient_allergies'];
+// Tables → the columns we expect to carry FK constraints; report any not constrained.
+const EXPECT_FK = {
+  admissions: ['patient_id'],
+  vitals_log: ['admission_id'],
+  prescriptions: ['admission_id', 'drug_id'],
+  lab_orders: ['admission_id'],
+  med_admin_records: ['prescription_id', 'admission_id'],
+  patient_conditions: ['patient_id'],
+  patient_allergies: ['patient_id'],
+};
 function missingFks() {
-  return EXPECT_FK.filter(t => { try { return all(`PRAGMA foreign_key_list(${t})`).length === 0; } catch (e) { return false; } });
+  const out = [];
+  for (const [t, cols] of Object.entries(EXPECT_FK)) {
+    let present = [];
+    try { present = all(`PRAGMA foreign_key_list(${t})`).map(r => r.from); } catch (e) {}
+    for (const c of cols) if (!present.includes(c)) out.push(`${t}.${c}`);
+  }
+  return out;
 }
 
 // loopback check: first-run setup must come from the hospital PC itself.

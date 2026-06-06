@@ -67,14 +67,27 @@ function makeClient(base) {
   const clash = await A('POST', '/api/patients', { full_name_ar: 'آخر', dept_id: 1, bed_number: '5' });
   assert(clash.status === 409, 'double-booking bed 5/dept 1 is rejected (409)');
 
+  // 3b. a second patient in dept 2 (the nurse's department) for the sharing/scope test
+  const regWard = await A('POST', '/api/patients', { full_name_ar: 'مريض القسم', full_name_en: 'Ward Patient', dept_id: 2, bed_number: '7' });
+  assert(regWard.status === 201, 'admin registers a dept-2 patient');
+
   // 5. RBAC: nurse may NOT register patients
   assert((await N('POST', '/api/login', { username: 'nurse', password: 'nurse123' })).status === 200, 'nurse logs in');
   assert((await N('POST', '/api/patients', { full_name_ar: 'x', dept_id: 1 })).status === 403, 'nurse is forbidden from registering (403)');
 
-  // 6. SHARED state: the nurse's client sees the patient the admin created
+  // 6. SHARED state + dept scope: the dept-2 nurse sees the dept-2 patient the admin
+  //    created (one central DB) but NOT the dept-1 patient (minimum-necessary).
   const listN = await N('GET', '/api/patients');
-  assert(listN.status === 200 && listN.json.patients.some(p => p.full_name_en === 'Test Patient'),
-    'a second client sees the first client\'s write (one central DB)');
+  assert(listN.status === 200 && listN.json.patients.some(p => p.full_name_en === 'Ward Patient'),
+    'a second client sees the first client\'s write in its own dept (one central DB)');
+  assert(!listN.json.patients.some(p => p.full_name_en === 'Test Patient'),
+    'dept scope: the dept-2 nurse does NOT see the dept-1 patient');
+  // admin (oversight) sees both
+  const listA = await A('GET', '/api/patients');
+  assert(listA.json.patients.some(p => p.full_name_en === 'Test Patient') && listA.json.patients.some(p => p.full_name_en === 'Ward Patient'),
+    'oversight (it_admin) sees patients across departments');
+  // detail dept scope: nurse blocked from the dept-1 chart
+  assert((await N('GET', '/api/patients/' + reg.json.patient_id)).status === 403, 'dept scope: nurse is blocked from an out-of-department chart (403)');
 
   // 7. nurse can record vitals; result persists to the central DB
   const beds = await N('GET', '/api/beds');
@@ -105,7 +118,14 @@ function makeClient(base) {
   const internals = server._internals();
   const rows = internals.all('SELECT action_type, prev_hash, row_hash FROM audit_log ORDER BY log_id');
   assert(rows.length >= 3 && rows.every(r => r.row_hash) && rows.slice(1).every((r, i) => r.prev_hash === rows[i].row_hash),
-    'audit log is a linked HMAC chain (LOGIN/PATIENT_REGISTERED/VITALS_RECORDED, IP recorded server-side)');
+    'audit log is a linked HMAC chain (IP recorded server-side)');
+
+  // 8a. PHI reads are audited, and write audits carry patient context
+  const arows = internals.all('SELECT action_type, patient_mrn FROM audit_log');
+  assert(arows.some(r => r.action_type === 'PATIENT_VIEWED' && r.patient_mrn), 'PHI chart reads are audited with patient context (#2)');
+  assert(arows.some(r => r.action_type === 'PATIENT_LIST_VIEWED'), 'patient-list reads are audited (#2)');
+  assert(arows.some(r => r.action_type === 'VITALS_RECORDED' && r.patient_mrn), 'vitals write audit carries patient context (#4)');
+  assert(arows.some(r => r.action_type === 'LAB_ORDERED' && r.patient_mrn), 'lab-order write audit carries patient context (#4)');
 
   // 8b. foreign keys ON: an orphan clinical row (vitals for a non-existent admission) is rejected
   let fkBlocked = false;
