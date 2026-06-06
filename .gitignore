@@ -40,3 +40,6 @@ __pycache__/
 .env.local
 *.pem
 *.key
+
+# Local backend runtime data (DB, audit key) — never commit
+server/data/

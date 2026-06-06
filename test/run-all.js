@@ -12,7 +12,10 @@ let failed = 0;
 for (const f of files) {
   process.stdout.write(`\n=== ${f} ===\n`);
   try {
-    execFileSync(process.execPath, [path.join(dir, f)], { stdio: 'inherit', cwd: repoRoot });
+    // --experimental-sqlite enables node:sqlite for the server tests; it is a
+    // harmless no-op for the client-logic tests that don't require it.
+    execFileSync(process.execPath, ['--experimental-sqlite', path.join(dir, f)],
+      { stdio: 'inherit', cwd: repoRoot, env: Object.assign({}, process.env, { NODE_NO_WARNINGS: '1' }) });
   } catch (e) {
     failed++;
   }
