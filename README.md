@@ -19,7 +19,9 @@
 - Two nurses on two devices each have their own diverging copy of "the truth."
 - The "your data stays on the device" framing is a *privacy demo*, not a real clinical workflow.
 
-**To make this production-ready you would need:** a central server (Postgres + REST or GraphQL API), per-row encryption, sync to the browser as offline cache only, conflict resolution for concurrent edits.
+**To make this production-ready you would need** one of two architectures, because a browser tab cannot be the security authority over its own user:
+- **Single-machine local use:** a native desktop authority — e.g. Tauri/Electron with SQLite/SQLCipher, key storage in the OS keychain, and OS user isolation (no HTTP server) — with this browser layer as UI only.
+- **Multi-workstation use:** a central server (Postgres + REST/GraphQL API), per-row encryption, the browser as an offline cache only, and conflict resolution for concurrent edits.
 
 ### 2. It does NOT meet HIPAA, GDPR, or any healthcare data regulation
 - Optional AES-GCM encryption at rest now exists (key derived from a device passphrase via PBKDF2-SHA256) — but it's opt-in, guards only data **at rest** (a live unlocked tab is still readable in DevTools), a forgotten passphrase is unrecoverable, and there's still no managed key storage (KMS/HSM)
@@ -118,7 +120,7 @@ The QR scanner and NFC features require HTTPS (not plain HTTP) — GitHub Pages 
 | Frontend | Vanilla HTML/CSS/JS (+ CSP) | ✅ Same as any other webapp ✅ CSP `connect-src 'self'` blocks network-request exfiltration (fetch/beacon/image) even if a script is injected ❌ navigation exfil (`window.location`) and the injection itself still get through — closing both needs dropping `'unsafe-inline'` via a nonce refactor |
 | State | `sql.js` (SQLite in WebAssembly) | ✅ Works in browser ✅ `PRAGMA secure_delete` + one-time `VACUUM`, so deleted rows are zeroed (no free-page PHI remnants in the exported blob) ❌ Single-device only; the whole DB lives in RAM and every save re-exports + re-encrypts the full blob, so memory spikes to a few × DB size and it OOMs at ~hundreds of MB on a mobile tab (real fix: a streaming VFS — wa-sqlite/OPFS — that writes only changed pages) |
 | Persistence | IndexedDB (+ optional AES-GCM at rest, generational backups) | ✅ Survives reload ✅ Opt-in passphrase encryption ✅ Auto-recovers from a corrupt copy; minute/hour/day snapshots survive a burst of bad saves ❌ Wiped by a full cache clear or a console-capable insider, no cross-device sync, no off-device backup |
-| Auth | Salted SHA-256 + localStorage session | ✅ Better than nothing ✅ Brute-force counter in the DB (not reset by `localStorage.clear()`) ❌ No MFA, whole DB blob is client-editable |
+| Auth | PBKDF2-HMAC-SHA256 (210k iters) + localStorage session | ✅ Slow salted KDF (NIST 800-63B / OWASP-aligned) ✅ Legacy SHA-256 hashes auto-upgrade on next login ✅ Brute-force counter in the DB (not reset by `localStorage.clear()`) ❌ No MFA, whole DB blob is client-editable |
 | Audit log | `audit_log` table with hash chaining | ✅ Backdating flagged in the signed chain (backward-vs-last + monotonic in-session drift) ✅ Exportable integrity receipt detects a full recompute internal verification can't ❌ Keyless chain (not a signature); a console-capable insider can still rewrite+recompute or wipe — real tamper-proofing needs off-device append-only storage |
 | Charts | Chart.js | ✅ Real library |
 | QR | qrcode.js + native BarcodeDetector | ✅ Modern web API |
