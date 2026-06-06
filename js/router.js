@@ -4193,8 +4193,10 @@ async function handleRecordVitals(e, admissionId, patientId) {
 
   saveDBToIndexedDB();
 
-  // Get the just-inserted vitals_id for sepsis alert linking
-  const newVitalsRow = dbGet('SELECT MAX(id) as id FROM vitals_log WHERE admission_id = ?', [admissionId]);
+  // Get the just-inserted vitals_id for sepsis alert linking. The PK column is
+  // vitals_id (not "id") — MAX(id) threw "no such column: id", leaving the
+  // sepsis alert unlinked to its triggering vitals row.
+  const newVitalsRow = dbGet('SELECT MAX(vitals_id) AS id FROM vitals_log WHERE admission_id = ?', [admissionId]);
   const vitalsId = newVitalsRow ? newVitalsRow.id : null;
 
   // ---- SEPSIS AUTO-ALERT ----

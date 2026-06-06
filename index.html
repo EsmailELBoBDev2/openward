@@ -408,10 +408,21 @@
     async function clearDatabase() {
       if (confirm('Clear all data and reset database?\n\nUsername: admin\nPassword: HIS@2024')) {
         try {
-          // Delete from IndexedDB
-          const idb = await openIDB();
-          const tx = idb.transaction('databases', 'readwrite');
-          tx.objectStore('databases').delete('main');
+          // Wipe EVERY persisted copy (current blob + all generational snapshots),
+          // not just the legacy 'main' key — otherwise a snapshot would silently
+          // reload the "deleted" data. wipeLocalDatabase() clears the whole store.
+          if (typeof wipeLocalDatabase === 'function') {
+            await wipeLocalDatabase();
+          } else {
+            // Fallback if db.js failed to load: clear the object store directly.
+            const idb = await openIDB();
+            await new Promise((res, rej) => {
+              const tx = idb.transaction('databases', 'readwrite');
+              tx.objectStore('databases').clear();
+              tx.oncomplete = res;
+              tx.onerror = () => rej(tx.error);
+            });
+          }
 
           // Reload page to reinitialize
           setTimeout(() => location.reload(), 500);

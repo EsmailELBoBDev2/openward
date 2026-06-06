@@ -748,11 +748,15 @@ function renderSafetyBanner(patientId, admissionId, lang) {
 
   // Code status (from admissions)
   const codeStatus = admission && admission.code_status;
+  // Keys MUST match the values written by the code-status picker in
+  // easy-features.js (full / dnr / dni / limited / unknown). They previously
+  // read full_code/comfort, so Full-Code and Limited patients showed NO badge —
+  // a patient editor could set "Full Code" yet the safety bar stayed blank.
   const codeStatusLbl = {
-    full_code: { ar:'كود كامل', en:'FULL CODE', color:'#10b981' },
-    dnr:       { ar:'لا إنعاش (DNR)', en:'DNR', color:'#dc2626' },
-    dni:       { ar:'لا تنبيب (DNI)', en:'DNI', color:'#dc2626' },
-    comfort:   { ar:'رعاية ملطفة', en:'COMFORT CARE', color:'#7c3aed' },
+    full:    { ar:'كود كامل', en:'FULL CODE', color:'#10b981' },
+    dnr:     { ar:'لا إنعاش (DNR)', en:'DNR', color:'#dc2626' },
+    dni:     { ar:'لا تنبيب (DNI)', en:'DNI', color:'#dc2626' },
+    limited: { ar:'رعاية محدودة', en:'LIMITED', color:'#d97706' },
   }[codeStatus];
 
   return `<div class="sticky-patient-bar no-print">
