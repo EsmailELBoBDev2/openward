@@ -84,5 +84,20 @@ if (clearFn) {
   }
 }
 
+// ---- 5. High-alert meds: dose calculator must NOT auto-fill them -------------
+{
+  const cd = read('js/clinical-decision.js');
+  const setM = cd.match(/const HIGH_ALERT_DRUGS = new Set\(\[([\s\S]*?)\]\)/);
+  assert(!!setM, 'clinical-decision.js defines HIGH_ALERT_DRUGS');
+  if (setM) {
+    const keys = (setM[1].match(/'[a-z_]+'/g) || []).map(s => s.replace(/'/g, ''));
+    ['insulin_regular', 'morphine', 'heparin', 'warfarin', 'potassium_chloride'].forEach(k =>
+      assert(keys.includes(k), `HIGH_ALERT_DRUGS includes ${k}`));
+  }
+  // The one-click auto-fill (sets the dose input .value) must be gated by the set.
+  assert(/HIGH_ALERT_DRUGS\.has\(drug\)\s*\n?\s*\?/.test(cd) || /HIGH_ALERT_DRUGS\.has\(drug\)/.test(cd),
+    'dose auto-fill is guarded by HIGH_ALERT_DRUGS.has(drug)');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

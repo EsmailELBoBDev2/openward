@@ -602,6 +602,19 @@ const DRUG_DOSING = {
   }
 };
 
+// ISMP high-alert medication classes present in this formulary. For these, the
+// calculator does NOT offer one-click auto-fill — a decision-support tool must
+// not auto-populate a high-risk order; the clinician types the dose after an
+// independent double-check. (Cf. FDA CDS guidance / ISMP high-alert list.)
+const HIGH_ALERT_DRUGS = new Set([
+  'insulin_regular', 'glargine', 'gliclazide',                 // insulin / hypoglycemics
+  'morphine', 'fentanyl', 'tramadol',                          // opioids
+  'enoxaparin', 'heparin', 'warfarin', 'rivaroxaban', 'apixaban', 'clopidogrel', // anticoagulant/antiplatelet
+  'digoxin', 'amiodarone', 'phenytoin',                        // narrow therapeutic index
+  'lorazepam', 'diazepam',                                     // sedatives
+  'potassium_chloride', 'magnesium_sulfate',                   // concentrated electrolytes
+]);
+
 /**
  * Calculate recommended dose for a drug given patient parameters.
  * @param {string} drugKey - lowercase key in DRUG_DOSING
@@ -729,7 +742,7 @@ function renderAutoDoseWidget(containerId, opts) {
 
     container.innerHTML = `
       <div class="autodose-widget">
-        <h4>&#129524; ${lang==='ar'?'حاسبة الجرعة الذكية':'Smart Dose Calculator'}: ${escapeHtml(drugLabel)}</h4>
+        <h4>&#129524; ${lang==='ar'?'حاسبة الجرعة (استشارية)':'Dose Estimator (advisory)'}: ${escapeHtml(drugLabel)}</h4>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
           <div>
             <div style="color:#1e40af;font-size:0.8rem">${lang==='ar'?'جرعة مفردة موصى بها':'Recommended single dose'}</div>
@@ -750,12 +763,18 @@ function renderAutoDoseWidget(containerId, opts) {
             ? '⚠️ تقدير مبدئي بحسب وزن الجسم الكلي. تحقّق من الجرعة حسب الوزن المثالي/المعدّل في حالات السمنة، وجرعات الأطفال، ووظيفة الكلى، ودليل المستشفى قبل الوصف.'
             : '⚠️ Rough estimate using total body weight. Verify against ideal/adjusted body weight (obesity), pediatric dosing, renal function, and your formulary before prescribing.'}
         </div>
-        ${!result.contraindicated && opts.doseInputId ? `
-          <button type="button" class="btn btn-sm btn-primary" style="margin-top:8px"
+        ${!result.contraindicated && opts.doseInputId ? (
+          HIGH_ALERT_DRUGS.has(drug)
+          ? `<div style="font-size:0.78rem;color:#7f1d1d;background:#fee2e2;border-radius:6px;padding:6px 8px;margin-top:8px;font-weight:600">
+               ${lang==='ar'
+                 ? '⛔ دواء عالي الخطورة — لا يوجد إدخال تلقائي للجرعة. أدخلها يدوياً بعد تحقّق مستقل (تدقيق مزدوج).'
+                 : '⛔ High-alert medication — auto-fill disabled. Enter the dose manually after an independent double-check.'}
+             </div>`
+          : `<button type="button" class="btn btn-sm btn-primary" style="margin-top:8px"
                   onclick="document.getElementById('${opts.doseInputId}').value='${result.single_dose_mg}mg'; ${opts.freqInputId?`document.getElementById('${opts.freqInputId}').value='${result.frequency}';`:''}">
-            ${lang==='ar'?'استخدم هذه الجرعة':'Use this dose'}
-          </button>
-        ` : ''}
+               ${lang==='ar'?'استخدم هذه الجرعة':'Use this dose'}
+             </button>`
+        ) : ''}
       </div>
     `;
   }
@@ -872,6 +891,11 @@ function maybeShowSepsisAlert(admissionId, vitalsId, vitalsObj) {
           <li>${lang==='ar'?'قياس مستوى اللاكتات':'Check serum lactate'}</li>
           <li>${lang==='ar'?'قياس ساعي للبول (foley)':'Monitor hourly urine output (foley)'}</li>
         </ol>
+        <div style="font-size:0.72rem;color:#92400e;margin-top:6px">
+          ${lang==='ar'
+            ? 'استشاري — بروتوكول Sepsis-6 (UK Sepsis Trust). دعم قرار لا يُغني عن حكم الطبيب؛ يُسجَّل الإقرار.'
+            : 'Advisory — Sepsis-6 (UK Sepsis Trust). Decision support, not a substitute for clinician judgement; acknowledgement is logged.'}
+        </div>
       </div>
       <div class="alert-buttons" style="margin-top:14px">
         <button class="btn btn-primary" onclick="acknowledgeSepsisAlert(${admissionId}); this.closest('.alert-overlay').remove()">
