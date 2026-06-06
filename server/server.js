@@ -338,6 +338,7 @@ async function seedMinimal() {
   await mk('admin', 'HIS@2024', 'مدير النظام', 'IT Admin', 'it_admin', null);
   await mk('er.doc', 'doctor123', 'طبيب طوارئ', 'ER Doctor', 'emergency_doctor', 1);
   await mk('nurse', 'nurse123', 'ممرضة', 'Ward Nurse', 'nurse', 2);
+  await mk('consultant', 'doctor123', 'استشاري', 'Consultant', 'consultant', 2);
   // a tiny starter formulary so prescribing works out of the box
   run("INSERT INTO drugs (name_generic, unit, is_high_alert) VALUES ('Paracetamol','mg',0), ('Ceftriaxone','mg',0), ('Regular Insulin','units',1)");
   audit(null, 'SERVER_SEED', 'Seeded departments + initial accounts + starter formulary', null);

@@ -71,12 +71,22 @@ The patterns it demonstrates are legitimate and worth studying:
 
 ---
 
-## 🚀 Run it locally (30 seconds)
+## 🚀 Run it
+
+**Shared — the LAN-server target.** One hospital PC owns the database and serves it; staff use it from any browser on the LAN.
 
 ```bash
 git clone https://github.com/EsmailELBoBDev2/openward.git
 cd openward
-python3 serve.py
+node server/server.js          # serves the UI + /api on http://0.0.0.0:8080
+```
+
+Other devices open `http://<that-pc-ip>:8080`. The one central DB lives in `server/data/`. See **[server/README.md](server/README.md)**. (Put HTTPS in front before real PHI. Most UI screens are still being migrated onto `/api` — until then they use the browser-local DB; see the architecture note above.)
+
+**Standalone — the legacy single-device demo.** Runs 100% in the browser; data lives in *this* browser's IndexedDB only and is **not** shared with other devices.
+
+```bash
+python3 serve.py               # any static host works
 ```
 
 Open <http://localhost:8080>.
@@ -102,9 +112,9 @@ Demo logins (all fictional, no real PHI):
 
 ---
 
-## 🌐 Deploy as a static demo
+## 🌐 Host the standalone (legacy single-device) demo
 
-Because OpenWard is 100% client-side, you can host the demo on any static host:
+The legacy browser-only mode is 100% client-side, so you can host it on any static host **for a single-device demo** — but note each visitor gets their **own private IndexedDB**, which is **not** a shared hospital record. For shared/multi-user use, run the **LAN server** above instead.
 
 - **GitHub Pages** (recommended for FOSS demos — free, HTTPS, auto-deploys on push)
 - Netlify, Vercel, Cloudflare Pages — same flow
@@ -117,6 +127,8 @@ The QR scanner and NFC features require HTTPS (not plain HTTP) — GitHub Pages 
 ---
 
 ## 🏗️ Stack (and why it's a demo stack, not a production stack)
+
+> This table describes the **legacy browser tier** (the UI + the standalone demo). In the LAN-server target the authority is the **server** (`server/server.js`: owns the SQLite DB, server-side auth/RBAC, HMAC audit with the key outside the DB, transactional writes) — see [server/README.md](server/README.md). The browser tier is being migrated to call `/api` and stop being the source of truth.
 
 | Layer | What | Why it's fine for a demo / not OK for production |
 |---|---|---|

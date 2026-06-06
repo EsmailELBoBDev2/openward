@@ -89,6 +89,9 @@ function makeClient(base) {
   assert(det.status === 200 && det.json.patient && det.json.admission, 'patient detail returns record + active admission + vitals');
   assert(det.json.patient.portal_password_hash === undefined, 'patient detail never ships portal_password_hash/salt');
   assert((await N('GET', '/api/audit')).status === 403, 'nurse is forbidden from the audit read (403)');
+  const C = makeClient(base);
+  assert((await C('POST', '/api/login', { username: 'consultant', password: 'doctor123' })).status === 200, 'consultant logs in');
+  assert((await C('GET', '/api/audit')).status === 403, 'consultant is forbidden from the full audit read (403) — oversight roles only');
   assert((await A('GET', '/api/audit')).json.entries.length >= 3, 'admin can read the central audit log');
 
   // 8. audit chain exists and is HMAC-linked (key lives outside the DB)
