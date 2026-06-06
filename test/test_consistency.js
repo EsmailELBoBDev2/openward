@@ -62,5 +62,27 @@ if (clearFn) {
     'clearDatabase() does NOT delete only the legacy \'main\' key');
 }
 
+// ---- 4. Central view gate: no role is locked out of its own landing view ----
+// (navigateTo() now enforces VIEW_PREFIX_ROLES; a typo there could lock a role
+// out of the very view it lands on after login.)
+{
+  const r = read('js/router.js');
+  const defM = r.match(/const defaults = \{([\s\S]*?)\};/);
+  const mapM = r.match(/const VIEW_PREFIX_ROLES = \{([\s\S]*?)\};/);
+  assert(!!defM && !!mapM, 'router.js has both the defaults map and VIEW_PREFIX_ROLES');
+  if (defM && mapM) {
+    const defs = [...defM[1].matchAll(/(\w+):\s*'([\w-]+)'/g)].map(m => [m[1], m[2]]);
+    const map = {};
+    for (const m of mapM[1].matchAll(/'([a-z]+-)':\s*\[([^\]]*)\]/g)) map[m[1]] = m[2].match(/[a-z_]+/g) || [];
+    const lockouts = defs.filter(([role, view]) => {
+      const p = Object.keys(map).find(p => view.startsWith(p));
+      return !p || !map[p].includes(role);
+    });
+    assert(defs.length >= 15, `found ${defs.length} role default views`);
+    assert(lockouts.length === 0,
+      'every role can access its default view' + (lockouts.length ? ' (locked out: ' + lockouts.map(l => l.join('->')).join(', ') + ')' : ''));
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

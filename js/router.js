@@ -472,7 +472,48 @@ function navigateToDefault(role) {
   navigateTo(defaults[role] || 'it-users');
 }
 
+// Central view authorization. Every navigateTo target is a role-prefixed view and
+// each role owns exactly one prefix (these mirror renderSidebar), so this map is
+// the single source of truth for "who may open which view". Advisory in a
+// browser-only app — a determined user can bypass client JS, so the real boundary
+// needs a native authority (see README) — but it stops a patient session from
+// rendering staff views (and vice-versa) instead of trusting the menu alone.
+const VIEW_PREFIX_ROLES = {
+  'it-':  ['it_admin'],
+  'hm-':  ['hospital_manager'],
+  'con-': ['consultant'],
+  'doc-': ['doctor', 'consultant'],
+  'er-':  ['emergency_doctor'],
+  'tn-':  ['triage_nurse'],
+  'sn-':  ['senior_nurse'],
+  'nr-':  ['nurse', 'senior_nurse'],
+  'ph-':  ['pharmacist'],
+  'lt-':  ['lab_technician'],
+  'rad-': ['radiologist'],
+  'rcp-': ['receptionist'],
+  'dt-':  ['dietitian'],
+  'sw-':  ['social_worker'],
+  'pp-':  ['patient'],
+};
+
+function canAccessView(viewId, role) {
+  if (!role) return false;
+  const prefix = Object.keys(VIEW_PREFIX_ROLES).find(p => viewId.startsWith(p));
+  if (!prefix) return true;            // unknown/non-prefixed view: don't block (renders the safe default)
+  return VIEW_PREFIX_ROLES[prefix].includes(role);
+}
+
 function navigateTo(viewId) {
+  // Central authorization gate (see VIEW_PREFIX_ROLES).
+  const sess = (typeof getCurrentSession === 'function') ? getCurrentSession() : null;
+  const role = sess ? sess.role : null;
+  if (!canAccessView(viewId, role)) {
+    const denied = document.getElementById('main-content');
+    if (denied) denied.innerHTML = `<div class="empty-state"><div class="empty-icon">&#128683;</div><p>${t('not_authorized')}</p></div>`;
+    try { const r = logAction('VIEW_ACCESS_DENIED', `Blocked ${role || 'unauthenticated user'} from view ${viewId}`); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+    return;
+  }
+
   currentView = viewId;
   // Update active nav
   document.querySelectorAll('.nav-btn').forEach(btn => {
