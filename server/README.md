@@ -108,3 +108,9 @@ DB calls are synchronous and `/api` is async, this is done screen-by-screen:
   `openward.sqlite` on SMB/NFS — SQLite can corrupt when network file locking
   misbehaves.
 - **Back up** `server/data/` (DB + audit key) off the machine; test restores.
+- **FK retrofit.** Foreign keys are defined in `CREATE TABLE` and enforced
+  server-side (`PRAGMA foreign_keys=ON`, re-asserted after each `sql.js` export).
+  SQLite can't ALTER-add FKs to tables created *before* those clauses, so a
+  pre-FK `server/data/openward.sqlite` stays unconstrained — boot logs any
+  `foreign_key_check` violations; for a clean FK-enforced DB, recreate
+  `server/data` (a full table-rebuild migration is deferred as too risky pre-release).

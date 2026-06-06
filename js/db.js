@@ -465,7 +465,7 @@ function createAllTables() {
   db.run(`
     CREATE TABLE IF NOT EXISTS patient_conditions (
       id             INTEGER PRIMARY KEY AUTOINCREMENT,
-      patient_id     INTEGER NOT NULL,
+      patient_id     INTEGER NOT NULL REFERENCES patients(patient_id),
       condition_code TEXT NOT NULL,
       category       TEXT DEFAULT 'chronic',
       severity       TEXT,
@@ -511,7 +511,7 @@ function createAllTables() {
   db.run(`
     CREATE TABLE IF NOT EXISTS patient_allergies (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      patient_id  INTEGER NOT NULL,
+      patient_id  INTEGER NOT NULL REFERENCES patients(patient_id),
       allergen    TEXT NOT NULL,
       reaction    TEXT,
       severity    TEXT,
@@ -1082,8 +1082,8 @@ function createAllTables() {
   db.run(`
     CREATE TABLE IF NOT EXISTS med_admin_records (
       mar_id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      prescription_id INTEGER NOT NULL,
-      admission_id    INTEGER NOT NULL,
+      prescription_id INTEGER NOT NULL REFERENCES prescriptions(rx_id),
+      admission_id    INTEGER NOT NULL REFERENCES admissions(admission_id),
       drug_name       TEXT NOT NULL,
       dose            TEXT NOT NULL,
       route           TEXT NOT NULL,

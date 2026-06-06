@@ -41,6 +41,12 @@ function makeClient(base) {
   assert(login.status === 200 && login.json.user.role === 'it_admin', 'the setup-created admin logs in as it_admin');
   assert((await C('GET', '/api/health')).json.needsSetup === false, 'health now reports setup complete');
 
+  // #2: reference data (departments + formulary) must exist even WITHOUT demo mode,
+  // otherwise a fresh production server can't admit or prescribe.
+  const I = server._internals();
+  assert(I.get('SELECT COUNT(*) AS c FROM departments').c > 0, 'reference seed: departments exist without demo mode');
+  assert(I.get('SELECT COUNT(*) AS c FROM drugs').c > 0, 'reference seed: starter formulary exists without demo mode');
+
   httpServer.close();
   try { fs.rmSync(process.env.OPENWARD_DATA_DIR, { recursive: true, force: true }); } catch (e) {}
   console.log(`\n${pass} passed, ${fail} failed`);

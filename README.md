@@ -96,7 +96,7 @@ python3 serve.py               # any static host works
 
 Open <http://localhost:8080>.
 
-Demo logins (all fictional, no real PHI):
+Demo logins (all fictional, no real PHI) — these are the **legacy browser/standalone** seed accounts, and also the **LAN-server demo accounts when started with `OPENWARD_DEMO=1`**. A real LAN-server deployment has **no default accounts**: it starts empty and you create the first admin via `POST /api/setup` (from the hospital PC) — see [server/README.md](server/README.md).
 
 | Role | Username | Password |
 |---|---|---|
@@ -111,7 +111,7 @@ Demo logins (all fictional, no real PHI):
 | Dietitian | `diet.amira` | `diet123` |
 | Social Worker | `sw.hessa` | `social123` |
 
-(These are the actual seeded demo accounts — change them before any real use; first-run admin setup is a TODO.)
+(Server demo accounts include `consultant / doctor123`. The LAN-server **first-run admin setup** is implemented (`POST /api/setup`, loopback-only, closes after the first account); these demo credentials only exist in `OPENWARD_DEMO=1` / the legacy browser app.)
 
 **Patient portal:** MRN `HIS-20260518-00028`, DOB `1981-03-15` (no portal password set yet, so MRN+DOB works — but a patient can now set a password, and it's **required once set**. MRN+DOB alone is wristband-printed *identity*, not authentication, so the portal prompts to set one on first login.)
 

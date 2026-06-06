@@ -182,8 +182,11 @@ async function handleApi(req, res, pathname) {
     return send(res, 200, { ok: true, server: 'openward', https: IS_HTTPS, demo: DEMO, needsSetup: !hasUsers });
   }
 
-  // ---- public: first-run admin setup (only while there are NO users) ----
+  // ---- public: first-run admin setup (only while there are NO users, and only
+  // from the hospital PC itself — otherwise the first person on the LAN could
+  // claim it_admin) ----
   if (pathname === '/api/setup' && req.method === 'POST') {
+    if (!isLoopback(req)) return send(res, 403, { error: 'forbidden', message: 'First-run setup must be done on the hospital PC (loopback) — not over the LAN.' });
     if (get('SELECT user_id FROM users LIMIT 1')) return send(res, 409, { error: 'already_initialized', message: 'Setup is closed — an account already exists.' });
     const username = String(body.username || '').trim();
     const password = String(body.password || '');
@@ -357,9 +360,22 @@ async function handleApi(req, res, pathname) {
 }
 
 // ---- init + listen ----------------------------------------------------------
-async function seedMinimal() {
-  if (get('SELECT user_id FROM users LIMIT 1')) return;        // already seeded
-  run("INSERT INTO departments (name_ar, name_en, type) VALUES ('الطوارئ','Emergency','emergency'), ('الباطنة','Internal Medicine','ward'), ('العناية المركزة','ICU','icu')");
+// Safe, non-credential REFERENCE data (departments + a starter formulary). Seeded
+// on first boot in ANY mode — a fresh production DB still needs departments to
+// admit into and drugs to prescribe; "no default accounts" must not mean "no
+// reference data."
+function seedReference() {
+  if (!get('SELECT dept_id FROM departments LIMIT 1')) {
+    run("INSERT INTO departments (name_ar, name_en, type) VALUES ('الطوارئ','Emergency','emergency'), ('الباطنة','Internal Medicine','ward'), ('العناية المركزة','ICU','icu')");
+  }
+  if (!get('SELECT drug_id FROM drugs LIMIT 1')) {
+    run("INSERT INTO drugs (name_generic, unit, is_high_alert) VALUES ('Paracetamol','mg',0), ('Ceftriaxone','mg',0), ('Regular Insulin','units',1)");
+  }
+}
+
+// DEMO credentials only (OPENWARD_DEMO=1). Never in production.
+async function seedDemoAccounts() {
+  if (get('SELECT user_id FROM users LIMIT 1')) return;
   const mk = async (username, pw, ar, en, role, dept) => {
     const salt = u.generateSalt();
     run('INSERT INTO users (username, password_hash, salt, full_name_ar, full_name_en, role, department_id, is_active, created_at) VALUES (?,?,?,?,?,?,?,1,?)',
@@ -369,10 +385,7 @@ async function seedMinimal() {
   await mk('er.doc', 'doctor123', 'طبيب طوارئ', 'ER Doctor', 'emergency_doctor', 1);
   await mk('nurse', 'nurse123', 'ممرضة', 'Ward Nurse', 'nurse', 2);
   await mk('consultant', 'doctor123', 'استشاري', 'Consultant', 'consultant', 2);
-  // a tiny starter formulary so prescribing works out of the box
-  run("INSERT INTO drugs (name_generic, unit, is_high_alert) VALUES ('Paracetamol','mg',0), ('Ceftriaxone','mg',0), ('Regular Insulin','units',1)");
-  audit(null, 'SERVER_SEED', 'Seeded departments + initial accounts + starter formulary', null);
-  persistNow();
+  audit(null, 'SERVER_SEED', 'Seeded DEMO accounts', null);
 }
 
 async function init() {
@@ -383,18 +396,35 @@ async function init() {
   dbjs.__buildFreshSchemaForTest(db);     // createAllTables + applySchemaMigrations (idempotent on existing DBs)
   try { db.run('PRAGMA secure_delete = ON'); } catch (e) {}
   try { db.run('PRAGMA foreign_keys = ON'); } catch (e) {}   // enforce FKs server-side (clients leave this OFF)
-  if (DEMO) {
-    await seedMinimal();                  // demo accounts ONLY when OPENWARD_DEMO=1
-  } else if (!get('SELECT user_id FROM users LIMIT 1')) {
-    console.log('[setup] No accounts yet — POST /api/setup {username,password} to create the first it_admin (or set OPENWARD_DEMO=1 for demo accounts).');
+  // Existing DBs created before FK clauses won't have them retrofitted (SQLite
+  // can't ALTER-add FKs). Surface any pre-existing violations so operators know to
+  // recreate server/data for a clean FK-enforced DB (a full table-rebuild
+  // migration is deferred — see server/README "FK retrofit").
+  try { const viol = all('PRAGMA foreign_key_check'); if (viol.length) console.warn(`[fk] ${viol.length} foreign-key violation(s) in existing data — consider recreating server/data for a clean FK-enforced DB.`); } catch (e) {}
+  seedReference();                        // departments + formulary, every mode
+  if (DEMO) await seedDemoAccounts();     // demo credentials only when asked
+  else if (!get('SELECT user_id FROM users LIMIT 1')) {
+    console.log('[setup] No accounts yet — from the hospital PC: POST /api/setup {username,password} to create the first it_admin (or OPENWARD_DEMO=1 for demo accounts).');
   }
   persistNow();
   return db;
 }
 
+// loopback check: first-run setup must come from the hospital PC itself.
+function isLoopback(req) {
+  const a = (req && req.socket && req.socket.remoteAddress) || '';
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+}
+// plain HTTP is only allowed on loopback or with an explicit insecure override.
+function plainHttpAllowed(host, insecure) {
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost' || insecure === '1';
+}
+
 function start() {
   const handler = (req, res) => {
-    const pathname = decodeURIComponent((req.url || '/').split('?')[0]);
+    let pathname;
+    try { pathname = decodeURIComponent((req.url || '/').split('?')[0]); }
+    catch (e) { return send(res, 400, { error: 'bad_request', message: 'malformed URL' }); }   // bad %-encoding mustn't crash
     if (pathname.startsWith('/api/')) {
       handleApi(req, res, pathname).catch(e => { try { send(res, 500, { error: 'server', message: e.message }); } catch (_) {} });
     } else {
@@ -405,8 +435,10 @@ function start() {
   if (HTTPS_KEY && HTTPS_CERT) {           // HTTPS when a cert is provided (recommended for real PHI)
     IS_HTTPS = true;
     server = https.createServer({ key: fs.readFileSync(HTTPS_KEY), cert: fs.readFileSync(HTTPS_CERT) }, handler);
+  } else if (!plainHttpAllowed(HOST, process.env.OPENWARD_INSECURE_HTTP)) {
+    throw new Error(`Refusing plain HTTP on ${HOST}: PHI would cross the LAN in cleartext. Provide HTTPS_KEY/HTTPS_CERT, bind HOST=127.0.0.1, or set OPENWARD_INSECURE_HTTP=1 to override (NOT for real PHI).`);
   } else {
-    server = http.createServer(handler);   // plain HTTP (LAN dev only — cleartext)
+    server = http.createServer(handler);   // plain HTTP (loopback dev, or explicit override)
   }
   server.listen(PORT, HOST, () => console.log(`OpenWard LAN server on ${IS_HTTPS ? 'https' : 'http'}://${HOST}:${PORT}  (central DB: ${DB_FILE}${DEMO ? '; DEMO accounts seeded' : ''})`));
   return server;
@@ -416,4 +448,4 @@ if (require.main === module) {
   init().then(start).catch(e => { console.error('server init failed:', e); process.exit(1); });
 }
 
-module.exports = { init, start, _internals: () => ({ all, get, run, audit, can, sessionFromReq }) };
+module.exports = { init, start, _internals: () => ({ all, get, run, audit, can, sessionFromReq, isLoopback, plainHttpAllowed }) };

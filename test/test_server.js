@@ -5,6 +5,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const http = require('http');
 
 // Isolate the DB/key on disk so the test never touches a real server DB, and use
 // a random loopback port so the test never collides with a running server.
@@ -118,6 +119,28 @@ function makeClient(base) {
   assert(trav.status === 403, 'path-traversal request (../../etc/passwd) is rejected with 403');
   const ok = await fetch(base + '/index.html');
   assert(ok.status === 200, 'a normal static file still serves (200)');
+
+  // 10. malformed %-encoding must NOT crash the server (raw request; fetch would reject it)
+  const port = httpServer.address().port;
+  const malformed = await new Promise((resolve) => {
+    const r = http.request({ host: '127.0.0.1', port, path: '/%E0%A4%A', method: 'GET' }, (res) => { res.resume(); resolve(res.statusCode); });
+    r.on('error', () => resolve('error')); r.end();
+  });
+  assert(malformed === 400, 'a malformed encoded URL returns 400, not a crash');
+  assert((await fetch(base + '/index.html')).status === 200, 'server still serving after the malformed request');
+
+  // 11. FK enforcement extends to MAR (orphan med-admin row rejected)
+  let marBlocked = false;
+  try { internals.run("INSERT INTO med_admin_records (prescription_id, admission_id, drug_name, dose, route) VALUES (999, 999, 'X', '1', 'PO')"); }
+  catch (e) { marBlocked = true; }
+  assert(marBlocked, 'FK: an orphan med_admin_records row (bad prescription/admission) is rejected');
+
+  // 12. setup/HTTP guard helpers
+  assert(internals.isLoopback({ socket: { remoteAddress: '127.0.0.1' } }) === true
+    && internals.isLoopback({ socket: { remoteAddress: '192.168.1.9' } }) === false, 'isLoopback() distinguishes loopback from LAN (setup is loopback-only)');
+  assert(internals.plainHttpAllowed('127.0.0.1', '') === true
+    && internals.plainHttpAllowed('0.0.0.0', '') === false
+    && internals.plainHttpAllowed('0.0.0.0', '1') === true, 'plain HTTP allowed only on loopback or with OPENWARD_INSECURE_HTTP=1');
 
   httpServer.close();
   try { fs.rmSync(process.env.OPENWARD_DATA_DIR, { recursive: true, force: true }); } catch (e) {}
