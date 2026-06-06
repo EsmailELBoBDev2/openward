@@ -2800,7 +2800,7 @@ function showDischargeForm(patientId, admissionId) {
             ['dc-chk-referrals', 'dc_chk_referrals'],
             ['dc-chk-transport', 'dc_chk_transport'],
           ].map(([id, key]) => `
-            <label style="display:flex;align-items:center;gap:10px;margin-bottom:8px;cursor:pointer;padding:8px;border-radius:6px;background:#fff;">
+            <label style="display:flex;align-items:center;gap:10px;margin-bottom:8px;cursor:pointer;padding:8px;border-radius:6px;background:var(--white);">
               <input type="checkbox" id="${id}" style="width:18px;height:18px;" required>
               <span>${t(key)}</span>
             </label>
@@ -2934,17 +2934,17 @@ function showQRScanner(onResult) {
   overlay.id = 'qr-scanner-overlay';
   overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;';
   overlay.innerHTML = `
-    <div style="background:#fff;border-radius:12px;padding:24px;max-width:420px;width:95%;text-align:center;">
+    <div style="background:var(--white);border-radius:12px;padding:24px;max-width:420px;width:95%;text-align:center;">
       <h3 style="margin-bottom:12px;">${t('scan_qr')}</h3>
-      <p style="color:#666;font-size:0.85rem;margin-bottom:16px;">${t('qr_scan_hint')}</p>
+      <p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:16px;">${t('qr_scan_hint')}</p>
       <div style="position:relative;width:100%;max-width:360px;margin:0 auto;">
         <video id="qr-video" style="width:100%;border-radius:8px;background:#000;" autoplay playsinline muted></video>
         <canvas id="qr-canvas" style="display:none;"></canvas>
         <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:60%;height:60%;border:2px solid #00c851;border-radius:8px;pointer-events:none;"></div>
       </div>
-      <p id="qr-status" style="margin-top:12px;color:#888;font-size:0.85rem;">${lang === 'ar' ? 'جارٍ تشغيل الكاميرا...' : 'Starting camera...'}</p>
+      <p id="qr-status" style="margin-top:12px;color:var(--text-secondary);font-size:0.85rem;">${lang === 'ar' ? 'جارٍ تشغيل الكاميرا...' : 'Starting camera...'}</p>
       <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;">
-        <input type="text" id="qr-manual-input" placeholder="${lang === 'ar' ? 'أو أدخل MRN يدوياً' : 'Or enter MRN manually'}" style="border:1px solid #ccc;border-radius:6px;padding:8px 12px;width:200px;">
+        <input type="text" id="qr-manual-input" placeholder="${lang === 'ar' ? 'أو أدخل MRN يدوياً' : 'Or enter MRN manually'}" style="border:1px solid var(--border);border-radius:6px;padding:8px 12px;width:200px;">
         <button onclick="handleQRManualInput()" class="btn btn-primary btn-sm">${lang === 'ar' ? 'بحث' : 'Search'}</button>
       </div>
       <button onclick="closeQRScanner()" class="btn btn-secondary mt-2" style="margin-top:12px;">${t('cancel_btn')}</button>
@@ -3104,18 +3104,18 @@ function showNosocomialForm(patientId, admissionId, patientNameEn, patientNameAr
   modal.id = 'nosocomial-modal';
   modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9000;display:flex;align-items:center;justify-content:center;padding:16px;';
   modal.innerHTML = `
-    <div style="background:#fff;border-radius:12px;padding:24px;max-width:600px;width:100%;max-height:90vh;overflow-y:auto;">
+    <div style="background:var(--white);border-radius:12px;padding:24px;max-width:600px;width:100%;max-height:90vh;overflow-y:auto;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
         <h3 style="color:#dc3545;">${t('nosocomial_infections')}</h3>
         <button onclick="document.getElementById('nosocomial-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;">&times;</button>
       </div>
-      <p style="color:#666;font-size:0.85rem;margin-bottom:16px;">${lang === 'ar' ? 'المريض: ' : 'Patient: '}<strong>${lang === 'ar' ? patientNameAr : (patientNameEn || patientNameAr)}</strong></p>
+      <p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:16px;">${lang === 'ar' ? 'المريض: ' : 'Patient: '}<strong>${lang === 'ar' ? patientNameAr : (patientNameEn || patientNameAr)}</strong></p>
 
       ${existing.length > 0 ? `
         <div style="margin-bottom:16px;">
           <h4 style="margin-bottom:8px;">${lang === 'ar' ? 'العدوى المسجّلة' : 'Recorded Infections'}</h4>
           ${existing.map(n => `
-            <div style="background:#fff5f5;border-left:3px solid #dc3545;padding:10px;border-radius:6px;margin-bottom:8px;">
+            <div style="background:#fff5f5;color:#7f1d1d;border-left:3px solid #dc3545;padding:10px;border-radius:6px;margin-bottom:8px;">
               <strong>${NOSOCOMIAL_TYPES[n.infection_type] ? NOSOCOMIAL_TYPES[n.infection_type][lang] : n.infection_type}</strong>
               ${n.pathogen ? ` — ${n.pathogen}` : ''}
               ${n.is_isolated ? ` <span style="background:#dc3545;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.75rem;">${lang === 'ar' ? 'معزول' : 'ISOLATED'}</span>` : ''}
@@ -3124,7 +3124,7 @@ function showNosocomialForm(patientId, admissionId, patientNameEn, patientNameAr
             </div>
           `).join('')}
         </div>
-      ` : `<p style="color:#888;font-style:italic;margin-bottom:16px;">${t('no_nosocomial')}</p>`}
+      ` : `<p style="color:var(--text-secondary);font-style:italic;margin-bottom:16px;">${t('no_nosocomial')}</p>`}
 
       <form id="nosocomial-form" onsubmit="handleNosocomialSave(event, ${patientId}, ${admissionId})">
         <h4 style="margin-bottom:10px;">${t('add_nosocomial')}</h4>
@@ -3134,7 +3134,7 @@ function showNosocomialForm(patientId, admissionId, patientNameEn, patientNameAr
             <select id="hai-type" required>${typeOptions}</select>
           </div>
           <div class="form-group">
-            <label>${t('hai_pathogen')} <span style="font-size:0.8rem;color:#888;">(${lang === 'ar' ? 'اختياري' : 'optional'})</span></label>
+            <label>${t('hai_pathogen')} <span style="font-size:0.8rem;color:var(--text-secondary);">(${lang === 'ar' ? 'اختياري' : 'optional'})</span></label>
             <input type="text" id="hai-pathogen" placeholder="${lang === 'ar' ? 'مثال: Klebsiella, E.coli' : 'e.g. Klebsiella, E.coli'}">
           </div>
         </div>
@@ -3778,18 +3778,18 @@ function renderAttentionWidget(items, lang) {
     </div>`;
   }
   const sevColor = { red: '#dc2626', yellow: '#f59e0b', blue: '#3b82f6' };
-  return `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+  return `<div style="background:var(--white);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
       <span style="font-size:1.2rem;">&#128276;</span>
       <strong style="font-size:1rem;">${lang === 'ar' ? 'ماذا يحتاج انتباهك الآن؟' : 'What needs your attention now?'}</strong>
       <span style="margin-left:auto;background:#fef2f2;color:#991b1b;padding:2px 10px;border-radius:12px;font-size:0.75rem;font-weight:600;">${items.length}</span>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px;">
-      ${items.map(it => `<div style="border-left:4px solid ${sevColor[it.sev] || '#888'};padding:8px 10px;background:#fafafa;border-radius:0 6px 6px 0;display:flex;align-items:center;gap:10px;">
+      ${items.map(it => `<div style="border-left:4px solid ${sevColor[it.sev] || '#888'};padding:8px 10px;background:var(--bg);border-radius:0 6px 6px 0;display:flex;align-items:center;gap:10px;">
         <span style="font-size:1.2rem;">${it.icon}</span>
         <div style="flex:1;min-width:0;">
-          <div style="font-size:0.85rem;font-weight:600;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${it.title}</div>
-          <div style="font-size:0.75rem;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${it.subtitle}</div>
+          <div style="font-size:0.85rem;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${it.title}</div>
+          <div style="font-size:0.75rem;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${it.subtitle}</div>
         </div>
         <button class="btn btn-sm btn-primary" style="flex-shrink:0;font-size:0.75rem;padding:4px 10px;" onclick="${it.action}">${it.actionLabel} &rarr;</button>
       </div>`).join('')}
@@ -4339,11 +4339,11 @@ function renderNRShift(main, lang) {
       <h3 style="color:#7c3aed;margin-bottom:8px;">&#128257; ${lang === 'ar' ? 'تحويل المرضى للمناوبة القادمة' : 'Transfer Patients to Incoming Shift'}</h3>
       <p style="color:#666;font-size:0.85rem;margin-bottom:12px;">${lang === 'ar' ? 'اختر المرضى الذين تريد تحويلهم، ثم الممرضة المستلمة والمناوبة.' : 'Select patients to transfer, then choose receiving nurse and shift.'}</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;margin-bottom:12px;">
-        ${assignments.map(a => `<label style="display:flex;align-items:center;gap:8px;background:#fff;padding:8px 10px;border-radius:6px;cursor:pointer;border:1px solid #e9d5ff;">
+        ${assignments.map(a => `<label style="display:flex;align-items:center;gap:8px;background:var(--white);padding:8px 10px;border-radius:6px;cursor:pointer;border:1px solid var(--border);">
           <input type="checkbox" class="transfer-cb" data-aid="${a.admission_id}" checked>
           <div style="flex:1;min-width:0;">
             <div style="font-size:0.85rem;font-weight:600;">${escapeHtml(lang === 'ar' ? a.full_name_ar : (a.full_name_en || a.full_name_ar))}</div>
-            <div style="font-size:0.72rem;color:#666;">${a.bed_number || '—'} • ${a.mrn}</div>
+            <div style="font-size:0.72rem;color:var(--text-secondary);">${a.bed_number || '—'} • ${a.mrn}</div>
           </div>
         </label>`).join('')}
       </div>
@@ -4418,7 +4418,7 @@ function renderNRShift(main, lang) {
           ['chk-alerts', 'sbar_chk_alerts'],
           ['chk-family', 'sbar_chk_family'],
         ].map(([id, key]) => `
-          <label class="sbar-checklist-item" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;cursor:pointer;padding:8px;border-radius:6px;background:#fff;">
+          <label class="sbar-checklist-item" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;cursor:pointer;padding:8px;border-radius:6px;background:var(--white);">
             <input type="checkbox" id="${id}" style="width:18px;height:18px;" required>
             <span>${t(key)}</span>
           </label>
@@ -5218,12 +5218,12 @@ function showECGResultForm(orderId) {
   modal.id = 'ecg-result-modal';
   modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9000;display:flex;align-items:center;justify-content:center;padding:16px;';
   modal.innerHTML = `
-    <div style="background:#fff;border-radius:12px;padding:24px;max-width:640px;width:100%;max-height:90vh;overflow-y:auto;">
+    <div style="background:var(--white);border-radius:12px;padding:24px;max-width:640px;width:100%;max-height:90vh;overflow-y:auto;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
         <h3 style="color:#dc3545;">&#9829; ${escapeHtml(order.test_name)}</h3>
         <button onclick="document.getElementById('ecg-result-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;">&times;</button>
       </div>
-      <div style="background:#f8f9fa;padding:10px;border-radius:6px;margin-bottom:16px;font-size:0.85rem;">
+      <div style="background:var(--bg);padding:10px;border-radius:6px;margin-bottom:16px;font-size:0.85rem;">
         <strong>${lang === 'ar' ? 'المريض' : 'Patient'}:</strong> ${lang === 'ar' ? escapeHtml(order.full_name_ar) : escapeHtml(order.full_name_en || order.full_name_ar)}
         &nbsp;|&nbsp; <strong>MRN:</strong> ${escapeHtml(order.mrn)}
         &nbsp;|&nbsp; <strong>${lang === 'ar' ? 'الجنس' : 'Gender'}:</strong> ${order.gender || '—'}
@@ -5234,17 +5234,17 @@ function showECGResultForm(orderId) {
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
             ${components.map((c, i) => `
               <div class="form-group" style="margin:0;">
-                <label style="font-size:0.82rem;">${lang === 'ar' ? c.ar : c.en}${c.unit ? ' (' + c.unit + ')' : ''}${c.ref ? ' <span style="color:#888;font-weight:400;">[' + c.ref + ']</span>' : ''}</label>
+                <label style="font-size:0.82rem;">${lang === 'ar' ? c.ar : c.en}${c.unit ? ' (' + c.unit + ')' : ''}${c.ref ? ' <span style="color:var(--text-secondary);font-weight:400;">[' + c.ref + ']</span>' : ''}</label>
                 ${c.en === 'Interpretation' || c.en === 'ST Segment' || c.en === 'T-wave' || c.ar === 'التفسير الكلي'
-                  ? `<textarea class="ecg-component" data-idx="${i}" rows="2" style="width:100%;border:1px solid #ccc;border-radius:4px;padding:6px;" placeholder="${lang === 'ar' ? c.ar : c.en}"></textarea>`
-                  : `<input type="text" class="ecg-component" data-idx="${i}" style="width:100%;border:1px solid #ccc;border-radius:4px;padding:6px;" placeholder="${c.ref || ''}">`}
+                  ? `<textarea class="ecg-component" data-idx="${i}" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:6px;" placeholder="${lang === 'ar' ? c.ar : c.en}"></textarea>`
+                  : `<input type="text" class="ecg-component" data-idx="${i}" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:6px;" placeholder="${c.ref || ''}">`}
               </div>
             `).join('')}
           </div>
         ` : ''}
         <div class="form-group">
           <label>${lang === 'ar' ? 'ملاحظات إضافية' : 'Additional Notes'}</label>
-          <textarea id="ecg-notes" rows="2" style="width:100%;border:1px solid #ccc;border-radius:4px;padding:6px;"></textarea>
+          <textarea id="ecg-notes" rows="2" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:6px;"></textarea>
         </div>
         <div class="form-group">
           <label><input type="checkbox" id="ecg-critical"> ${lang === 'ar' ? 'نتيجة حرجة — يستدعي إبلاغ فوري' : 'Critical Result — Requires immediate notification'}</label>
@@ -9281,21 +9281,21 @@ function renderPPLabs(main, lang) {
         ${labs.map((lo, i) => {
           const interpretation = ppInterpretLab(lo.test_name, lo.result_flag, lo.result_value, lang);
           const borderColor = /critical/i.test(lo.result_flag || '') ? '#dc2626' : /high|low/i.test(lo.result_flag || '') ? '#f59e0b' : '#10b981';
-          return `<div style="background:#fff;border-left:4px solid ${borderColor};border-radius:8px;padding:12px 14px;box-shadow:0 1px 2px rgba(0,0,0,0.05);">
+          return `<div style="background:var(--white);border-left:4px solid ${borderColor};border-radius:8px;padding:12px 14px;box-shadow:0 1px 2px rgba(0,0,0,0.05);">
             <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="document.getElementById('ppi-${i}').style.display = document.getElementById('ppi-${i}').style.display === 'none' ? 'block' : 'none';">
               <div style="flex:1;">
                 <strong>${escapeHtml(lo.test_name)}</strong>
                 ${lo.is_critical ? `<span class="badge badge-danger" style="margin-left:6px;">${lang==='ar'?'حرج':'CRITICAL'}</span>` : ''}
                 <div style="margin-top:4px;font-size:0.95rem;">${escapeHtml(lo.result_value || '—')}${lo.result_unit ? ' ' + escapeHtml(lo.result_unit) : ''}
                   ${lo.result_flag ? `<span class="badge badge-warning" style="margin-left:6px;">${escapeHtml(lo.result_flag)}</span>` : ''}</div>
-                <div style="font-size:0.78rem;color:#888;margin-top:4px;">${(lo.resulted_at || '').substring(0, 16).replace('T', ' ')} • ${escapeHtml(lang === 'ar' ? (lo.ordered_by_ar || '—') : (lo.ordered_by_en || '—'))}</div>
+                <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;">${(lo.resulted_at || '').substring(0, 16).replace('T', ' ')} • ${escapeHtml(lang === 'ar' ? (lo.ordered_by_ar || '—') : (lo.ordered_by_en || '—'))}</div>
               </div>
-              <span style="font-size:1.2rem;color:#666;">▸</span>
+              <span style="font-size:1.2rem;color:var(--text-secondary);">▸</span>
             </div>
-            <div id="ppi-${i}" style="display:none;margin-top:10px;padding-top:10px;border-top:1px dashed #e5e7eb;font-size:0.88rem;line-height:1.5;">
+            <div id="ppi-${i}" style="display:none;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);font-size:0.88rem;line-height:1.5;">
               <strong style="color:#3b82f6;">${lang === 'ar' ? 'ماذا تعني هذه النتيجة؟' : 'What does this mean?'}</strong><br>
               ${interpretation || (lang === 'ar' ? 'النتيجة ضمن النطاق الطبيعي للفحص.' : 'Result is within typical range for this test.')}
-              <p style="margin-top:8px;font-size:0.78rem;color:#888;">${lang === 'ar' ? 'هذا التفسير عام. اسأل طبيبك دائماً للحالة الخاصة بك.' : 'This is a general explanation. Always ask your doctor about your specific case.'}</p>
+              <p style="margin-top:8px;font-size:0.78rem;color:var(--text-secondary);">${lang === 'ar' ? 'هذا التفسير عام. اسأل طبيبك دائماً للحالة الخاصة بك.' : 'This is a general explanation. Always ask your doctor about your specific case.'}</p>
             </div>
           </div>`;
         }).join('')}
