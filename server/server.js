@@ -116,7 +116,7 @@ const CAN = {
   view_beds:        ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'senior_nurse', 'nurse', 'emergency_doctor', 'triage_nurse'],
   prescribe:        ['doctor', 'consultant', 'emergency_doctor'],
   order_labs:       ['doctor', 'consultant', 'emergency_doctor'],
-  view_audit:       ['it_admin', 'hospital_manager', 'consultant'],
+  view_audit:       ['it_admin', 'hospital_manager'],   // full audit log is oversight-only (a consultant would see every dept's PHI access)
 };
 function can(role, action) { return (CAN[action] || []).includes(role); }
 

@@ -1,6 +1,6 @@
 # OpenWard
 
-> **A FOSS hospital information system prototype.** Bilingual (English / العربية), runs entirely in the browser, designed to demonstrate what a thoughtful, fresh-grad-friendly clinical UX could look like.
+> **A FOSS hospital information system prototype.** Bilingual (English / العربية). **Production target: a local LAN server** — one hospital PC owns the database and serves it to staff browsers on the LAN (no cloud, no internet). A legacy 100%-in-browser mode still exists and is being migrated onto the server `/api`. Designed around a thoughtful, fresh-grad-friendly clinical UX.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Status: Educational Demo](https://img.shields.io/badge/Status-Educational%20Demo-orange)]()
@@ -12,17 +12,14 @@
 
 **This is a prototype, not a production HIS.** Do not deploy this to a real hospital, real patients, or real PHI without significant architectural changes. Specifically:
 
-### 1. The browser-only architecture is a deal-breaker for real clinical use
-- Data lives in **IndexedDB on each device**. There is no central database.
-- A nurse who clears her browser cache loses everything.
-- A nurse who walks to a different workstation cannot see her patients.
-- Two nurses on two devices each have their own diverging copy of "the truth."
-- **Hosting the files from one PC over `http://server-ip:port` does NOT fix this.** That centralizes only the HTML/JS; the database is still each browser's own IndexedDB ([MDN: IndexedDB is client-side storage](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API)). A real shared LAN HIS needs a server process that owns the DB and an `/api` the browsers call — see the two production architectures above.
-- The "your data stays on the device" framing is a *privacy demo*, not a real clinical workflow.
+### 1. Architecture: a local LAN server (target) — migration in progress
+**Production target (decided):** one hospital PC runs `server/server.js`, owns **one** SQLite database, and serves a JSON `/api`; every workstation/phone/tablet is just a **browser client** on the LAN. No cloud, no internet. This is what makes a *shared* record possible — see **[server/README.md](server/README.md)**.
 
-**To make this production-ready you would need** one of two architectures, because a browser tab cannot be the security authority over its own user:
-- **Single-machine local use:** a native desktop authority — e.g. Tauri/Electron with SQLite/SQLCipher, key storage in the OS keychain, and OS user isolation (no HTTP server) — with this browser layer as UI only.
-- **Multi-workstation use:** a central server (Postgres + REST/GraphQL API), per-row encryption, the browser as an offline cache only, and conflict resolution for concurrent edits.
+**Legacy browser-only mode (being migrated off):** historically the whole app ran in the browser with sql.js + per-device **IndexedDB**. That is a *single-device* demo, not a shared HIS:
+- Data lives in IndexedDB **on each device** — no central database; clearing the cache loses everything; another workstation can't see it.
+- **Hosting the static files over `http://server-ip:port` does NOT make data shared** — it serves only the HTML/JS; the database is still each browser's own IndexedDB ([MDN: IndexedDB is client-side storage](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API)). A shared record needs the server `/api` (the target above).
+
+**Status:** the server owns the DB and exposes auth/RBAC/audit plus patients/beds/vitals/prescriptions/labs endpoints; **most UI screens still use the legacy in-browser DB and are being moved to `/api` screen-by-screen (login first).** Until a screen is migrated, treat it as single-device. (A browser tab also can't be a security authority over its own user — which is *why* the authority lives in the server.)
 
 ### 2. It does NOT meet HIPAA, GDPR, or any healthcare data regulation
 - Optional AES-GCM encryption at rest now exists (key derived from a device passphrase via PBKDF2-SHA256) — but it's opt-in, guards only data **at rest** (a live unlocked tab is still readable in DevTools), a forgotten passphrase is unrecoverable, and there's still no managed key storage (KMS/HSM)
