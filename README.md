@@ -78,15 +78,21 @@ The patterns it demonstrates are legitimate and worth studying:
 ```bash
 git clone https://github.com/EsmailELBoBDev2/openward.git
 cd openward
-node server/server.js                 # serves the UI + /api on http://0.0.0.0:8080
-# first run has NO accounts — create the first admin once:
-#   curl -X POST localhost:8080/api/setup -H 'Content-Type: application/json' \
-#        -d '{"username":"admin","password":"<strong password>"}'
-# or, to explore with demo accounts:  OPENWARD_DEMO=1 node server/server.js
-# HTTPS (recommended before real PHI): HTTPS_KEY=key.pem HTTPS_CERT=cert.pem node server/server.js
+
+# Local (this PC only) — works out of the box on loopback:
+node server/server.js                 # http://127.0.0.1:8080
+#   First run has NO accounts; it prints a one-time SETUP TOKEN to the console.
+#   Create the admin once (from this PC):
+#   curl -X POST 127.0.0.1:8080/api/setup -H 'Content-Type: application/json' \
+#        -d '{"token":"<printed-token>","username":"admin","password":"<strong password>"}'
+
+# LAN (other workstations) — bind all interfaces. Plain HTTP is REFUSED off-loopback,
+# so provide a cert (recommended before real PHI):
+HOST=0.0.0.0 HTTPS_KEY=key.pem HTTPS_CERT=cert.pem node server/server.js
+#   throwaway demo only: HOST=0.0.0.0 OPENWARD_INSECURE_HTTP=1 OPENWARD_DEMO=1 node server/server.js
 ```
 
-Other devices open `http://<that-pc-ip>:8080`. The one central DB lives in `server/data/` (FK-enforced). See **[server/README.md](server/README.md)**. (Most UI screens are still being migrated onto `/api` — until then they use the browser-local DB; see the architecture note above.)
+For LAN, other devices open `https://<that-pc-ip>:8080`. The one central DB lives in `server/data/` (FK-enforced). See **[server/README.md](server/README.md)**. (Most UI screens are still being migrated onto `/api` — until then they use the browser-local DB; see the architecture note above.)
 
 **Standalone — the legacy single-device demo.** Runs 100% in the browser; data lives in *this* browser's IndexedDB only and is **not** shared with other devices.
 
@@ -96,7 +102,16 @@ python3 serve.py               # any static host works
 
 Open <http://localhost:8080>.
 
-Demo logins (all fictional, no real PHI) — these are the **legacy browser/standalone** seed accounts, and also the **LAN-server demo accounts when started with `OPENWARD_DEMO=1`**. A real LAN-server deployment has **no default accounts**: it starts empty and you create the first admin via `POST /api/setup` (from the hospital PC) — see [server/README.md](server/README.md).
+**LAN server demo accounts** — only seeded with `OPENWARD_DEMO=1`. A real LAN-server deployment has **no default accounts**: it starts empty and you create the first admin with the one-time setup token (above). The server demo set is just four:
+
+| Role | Username | Password |
+|---|---|---|
+| IT Admin | `admin` | `HIS@2024` |
+| ER Doctor | `er.doc` | `doctor123` |
+| Nurse | `nurse` | `nurse123` |
+| Consultant | `consultant` | `doctor123` |
+
+**Legacy browser / standalone demo accounts** — seeded by the in-browser app (`serve.py`), all fictional, no real PHI:
 
 | Role | Username | Password |
 |---|---|---|
@@ -110,8 +125,6 @@ Demo logins (all fictional, no real PHI) — these are the **legacy browser/stan
 | Lab Tech | `lab.nasser` | `lab123` |
 | Dietitian | `diet.amira` | `diet123` |
 | Social Worker | `sw.hessa` | `social123` |
-
-(Server demo accounts include `consultant / doctor123`. The LAN-server **first-run admin setup** is implemented (`POST /api/setup`, loopback-only, closes after the first account); these demo credentials only exist in `OPENWARD_DEMO=1` / the legacy browser app.)
 
 **Patient portal:** MRN `HIS-20260518-00028`, DOB `1981-03-15` (no portal password set yet, so MRN+DOB works — but a patient can now set a password, and it's **required once set**. MRN+DOB alone is wristband-printed *identity*, not authentication, so the portal prompts to set one on first login.)
 

@@ -13,23 +13,30 @@ the **same** data.
 ## Run it (on the hospital PC)
 
 ```bash
-node server/server.js                      # serves http://0.0.0.0:8080 on the LAN
-HOST=127.0.0.1 PORT=9000 node server/server.js   # custom bind
+# Local (this PC) — works out of the box on loopback:
+node server/server.js                      # http://127.0.0.1:8080
+# LAN (other workstations) — bind all interfaces; plain HTTP is REFUSED off-loopback:
+HOST=0.0.0.0 HTTPS_KEY=key.pem HTTPS_CERT=cert.pem node server/server.js
 ```
 
 No `npm install` — it uses only Node built-ins plus the vendored `sql.js`.
-Other workstations open `http://<hospital-pc-ip>:8080`.
+The default bind is **loopback (127.0.0.1)**; for the LAN set `HOST=0.0.0.0` with
+a TLS cert (or `OPENWARD_INSECURE_HTTP=1` for a throwaway demo). LAN clients then
+open `https://<hospital-pc-ip>:8080`.
 
 - **Central DB:** `server/data/openward.sqlite` (created on first run; FK enforcement
   is ON server-side — orphan clinical rows are rejected).
 - **Audit key:** `server/data/audit.key` — the HMAC key for the audit chain,
   stored **outside** the DB so a DB-only edit can't silently forge the chain.
 - **First run (no default accounts):** with no `OPENWARD_DEMO`, the server starts
-  with **zero users** and you create the first admin once:
+  with **zero users** and prints a **one-time setup token** to the console. Create
+  the first admin once, from the hospital PC, with that token:
   ```bash
-  curl -X POST localhost:8080/api/setup -H 'Content-Type: application/json' \
-    -d '{"username":"admin","password":"<a strong password>","full_name_en":"IT Admin"}'
+  curl -X POST 127.0.0.1:8080/api/setup -H 'Content-Type: application/json' \
+    -d '{"token":"<printed-token>","username":"admin","password":"<a strong password>","full_name_en":"IT Admin"}'
   ```
+  `/api/setup` requires the token **and** a loopback connection, and closes after
+  the first account.
   `/api/setup` is refused once any account exists.
 - **Demo accounts (opt-in):** `OPENWARD_DEMO=1 node server/server.js` seeds
   `admin / HIS@2024`, `er.doc / doctor123`, `nurse / nurse123`, `consultant /

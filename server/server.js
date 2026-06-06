@@ -9,8 +9,9 @@
  * the single source of truth.
  *
  * Run it (on the hospital PC):
- *     node server/server.js          # http://0.0.0.0:8080  (LAN)
- *     HOST=127.0.0.1 PORT=9000 node server/server.js
+ *     node server/server.js          # loopback default: http://127.0.0.1:8080
+ *     HOST=0.0.0.0 HTTPS_KEY=k.pem HTTPS_CERT=c.pem node server/server.js   # LAN (TLS)
+ *   (plain HTTP is refused off-loopback unless OPENWARD_INSECURE_HTTP=1)
  *
  * Zero npm dependencies: Node built-ins (http, fs, crypto) + the vendored sql.js.
  * SQLite lives in server/data/openward.sqlite; the HMAC audit key lives in
@@ -35,13 +36,14 @@ const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = process.env.OPENWARD_DATA_DIR || path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'openward.sqlite');
 const KEY_FILE = path.join(DATA_DIR, 'audit.key');
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = process.env.HOST || '127.0.0.1';   // safe default: loopback. Set HOST=0.0.0.0 (+ HTTPS) for LAN.
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';   // only then is X-Forwarded-For believed
 const DEMO = process.env.OPENWARD_DEMO === '1';        // seed demo accounts ONLY when set
 const HTTPS_KEY = process.env.HTTPS_KEY || '';         // path to TLS key (set both to enable HTTPS)
 const HTTPS_CERT = process.env.HTTPS_CERT || '';
 let IS_HTTPS = false;                                  // set in start()
+let setupToken = null;                                  // one-time first-run token (in memory; printed to console)
 
 const initSqlJs = require(path.join(ROOT, 'vendor', 'sql-wasm.js'));
 const dbjs = require(path.join(ROOT, 'js', 'db.js'));     // reuse schema builder (createAllTables + migrations)
@@ -182,18 +184,20 @@ async function handleApi(req, res, pathname) {
     return send(res, 200, { ok: true, server: 'openward', https: IS_HTTPS, demo: DEMO, needsSetup: !hasUsers });
   }
 
-  // ---- public: first-run admin setup (only while there are NO users, and only
-  // from the hospital PC itself — otherwise the first person on the LAN could
-  // claim it_admin) ----
+  // ---- public: first-run admin setup. Requires the one-time TOKEN printed to the
+  // hospital-PC console (so a reverse proxy making every request look like
+  // loopback can't let a LAN user claim it_admin) AND a loopback connection. ----
   if (pathname === '/api/setup' && req.method === 'POST') {
-    if (!isLoopback(req)) return send(res, 403, { error: 'forbidden', message: 'First-run setup must be done on the hospital PC (loopback) — not over the LAN.' });
     if (get('SELECT user_id FROM users LIMIT 1')) return send(res, 409, { error: 'already_initialized', message: 'Setup is closed — an account already exists.' });
+    if (!isLoopback(req)) return send(res, 403, { error: 'forbidden', message: 'First-run setup must be done on the hospital PC (loopback).' });
+    if (!setupToken || String(body.token || '') !== setupToken) return send(res, 403, { error: 'bad_token', message: 'Provide the one-time setup token printed to the server console.' });
     const username = String(body.username || '').trim();
     const password = String(body.password || '');
     if (!username || password.length < 8) return send(res, 400, { error: 'validation', message: 'username and a password of at least 8 chars are required' });
     const salt = u.generateSalt();
     run('INSERT INTO users (username, password_hash, salt, full_name_ar, full_name_en, role, department_id, is_active, created_at) VALUES (?,?,?,?,?,?,?,1,?)',
       [username, await u.hashPassword(password, salt), salt, String(body.full_name_ar || username), String(body.full_name_en || username), 'it_admin', null, new Date().toISOString()]);
+    setupToken = null;   // single use
     audit(null, 'FIRST_RUN_SETUP', `Initial it_admin account "${username}" created`, req);
     persistNow();
     return send(res, 201, { ok: true, username });
@@ -401,13 +405,24 @@ async function init() {
   // recreate server/data for a clean FK-enforced DB (a full table-rebuild
   // migration is deferred — see server/README "FK retrofit").
   try { const viol = all('PRAGMA foreign_key_check'); if (viol.length) console.warn(`[fk] ${viol.length} foreign-key violation(s) in existing data — consider recreating server/data for a clean FK-enforced DB.`); } catch (e) {}
+  // Also detect tables created BEFORE the FK clauses (foreign_key_check can't see a
+  // missing-constraint case); warn so operators recreate server/data.
+  const miss = missingFks();
+  if (miss.length) console.warn(`[fk] tables without FK constraints (pre-FK DB?): ${miss.join(', ')} — recreate server/data for a clean FK-enforced DB.`);
   seedReference();                        // departments + formulary, every mode
   if (DEMO) await seedDemoAccounts();     // demo credentials only when asked
   else if (!get('SELECT user_id FROM users LIMIT 1')) {
-    console.log('[setup] No accounts yet — from the hospital PC: POST /api/setup {username,password} to create the first it_admin (or OPENWARD_DEMO=1 for demo accounts).');
+    setupToken = crypto.randomBytes(16).toString('hex');   // one-time, in memory
+    console.log(`\n[setup] No accounts yet. One-time setup token (use it ONCE, from THIS machine):\n        ${setupToken}\n        POST /api/setup {"token","username","password"}  (or OPENWARD_DEMO=1 for demo accounts)\n`);
   }
   persistNow();
   return db;
+}
+
+// Tables we expect to carry FK constraints; report any that have none.
+const EXPECT_FK = ['admissions', 'vitals_log', 'prescriptions', 'lab_orders', 'med_admin_records', 'patient_conditions', 'patient_allergies'];
+function missingFks() {
+  return EXPECT_FK.filter(t => { try { return all(`PRAGMA foreign_key_list(${t})`).length === 0; } catch (e) { return false; } });
 }
 
 // loopback check: first-run setup must come from the hospital PC itself.
@@ -448,4 +463,4 @@ if (require.main === module) {
   init().then(start).catch(e => { console.error('server init failed:', e); process.exit(1); });
 }
 
-module.exports = { init, start, _internals: () => ({ all, get, run, audit, can, sessionFromReq, isLoopback, plainHttpAllowed }) };
+module.exports = { init, start, _internals: () => ({ all, get, run, audit, can, sessionFromReq, isLoopback, plainHttpAllowed, missingFks, getSetupToken: () => setupToken }) };
