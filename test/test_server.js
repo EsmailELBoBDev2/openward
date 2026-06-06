@@ -11,6 +11,7 @@ const path = require('path');
 process.env.OPENWARD_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ow-srv-'));
 process.env.HOST = '127.0.0.1';
 process.env.PORT = '0';
+process.env.OPENWARD_DEMO = '1';   // this test uses the seeded demo accounts
 
 const server = require('../server/server.js');
 
@@ -42,6 +43,11 @@ function makeClient(base) {
   const A = makeClient(base);   // admin client
   const N = makeClient(base);   // nurse client
   const X = makeClient(base);   // unauthenticated client
+
+  // 0. health probe (public) + setup is closed once accounts exist
+  const health = await X('GET', '/api/health');
+  assert(health.status === 200 && health.json.server === 'openward' && health.json.needsSetup === false, '/api/health reports server present, no setup needed (demo seeded)');
+  assert((await X('POST', '/api/setup', { username: 'x', password: 'longenough' })).status === 409, '/api/setup is closed once an account exists (409)');
 
   // 1. auth
   assert((await A('POST', '/api/login', { username: 'admin', password: 'wrong' })).status === 401, 'wrong password rejected (401)');
@@ -99,6 +105,12 @@ function makeClient(base) {
   const rows = internals.all('SELECT action_type, prev_hash, row_hash FROM audit_log ORDER BY log_id');
   assert(rows.length >= 3 && rows.every(r => r.row_hash) && rows.slice(1).every((r, i) => r.prev_hash === rows[i].row_hash),
     'audit log is a linked HMAC chain (LOGIN/PATIENT_REGISTERED/VITALS_RECORDED, IP recorded server-side)');
+
+  // 8b. foreign keys ON: an orphan clinical row (vitals for a non-existent admission) is rejected
+  let fkBlocked = false;
+  try { internals.run("INSERT INTO vitals_log (admission_id, recorded_by, recorded_at) VALUES (999999, 1, '2026-06-06T00:00:00Z')"); }
+  catch (e) { fkBlocked = true; }
+  assert(fkBlocked, 'foreign keys enforced server-side: an orphan vitals row (bad admission_id) is rejected');
 
   // 9. static path-traversal guard: an encoded ../ escape is rejected (403), not
   //    served. (startsWith(ROOT) used to also accept a sibling like "<root>2".)

@@ -26,6 +26,7 @@
  * before any real PHI; Web Crypto on the client also needs a secure context.
  */
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -37,6 +38,10 @@ const KEY_FILE = path.join(DATA_DIR, 'audit.key');
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';   // only then is X-Forwarded-For believed
+const DEMO = process.env.OPENWARD_DEMO === '1';        // seed demo accounts ONLY when set
+const HTTPS_KEY = process.env.HTTPS_KEY || '';         // path to TLS key (set both to enable HTTPS)
+const HTTPS_CERT = process.env.HTTPS_CERT || '';
+let IS_HTTPS = false;                                  // set in start()
 
 const initSqlJs = require(path.join(ROOT, 'vendor', 'sql-wasm.js'));
 const dbjs = require(path.join(ROOT, 'js', 'db.js'));     // reuse schema builder (createAllTables + migrations)
@@ -58,6 +63,10 @@ let _persistTimer = null;
 function writeDbAtomic() {                  // temp file + rename: a crash mid-write can't corrupt the live DB
   const tmp = DB_FILE + '.tmp-' + process.pid;
   fs.writeFileSync(tmp, Buffer.from(db.export()));
+  // sql.js export() RESETS per-connection pragmas — re-assert them or FK/secure_delete
+  // silently switch off after the first save.
+  try { db.run('PRAGMA foreign_keys = ON'); } catch (e) {}
+  try { db.run('PRAGMA secure_delete = ON'); } catch (e) {}
   fs.renameSync(tmp, DB_FILE);             // rename is atomic on the same filesystem
 }
 function persist() {                       // debounced write-to-disk
@@ -166,6 +175,27 @@ async function handleApi(req, res, pathname) {
   const auth = sessionFromReq(req);
   const body = (req.method === 'POST' || req.method === 'PUT') ? await readBody(req) : {};
 
+  // ---- public: health / server-mode probe (lets the browser detect it's served
+  // by the LAN server vs opened standalone) ----
+  if (pathname === '/api/health' && req.method === 'GET') {
+    const hasUsers = !!get('SELECT user_id FROM users LIMIT 1');
+    return send(res, 200, { ok: true, server: 'openward', https: IS_HTTPS, demo: DEMO, needsSetup: !hasUsers });
+  }
+
+  // ---- public: first-run admin setup (only while there are NO users) ----
+  if (pathname === '/api/setup' && req.method === 'POST') {
+    if (get('SELECT user_id FROM users LIMIT 1')) return send(res, 409, { error: 'already_initialized', message: 'Setup is closed — an account already exists.' });
+    const username = String(body.username || '').trim();
+    const password = String(body.password || '');
+    if (!username || password.length < 8) return send(res, 400, { error: 'validation', message: 'username and a password of at least 8 chars are required' });
+    const salt = u.generateSalt();
+    run('INSERT INTO users (username, password_hash, salt, full_name_ar, full_name_en, role, department_id, is_active, created_at) VALUES (?,?,?,?,?,?,?,1,?)',
+      [username, await u.hashPassword(password, salt), salt, String(body.full_name_ar || username), String(body.full_name_en || username), 'it_admin', null, new Date().toISOString()]);
+    audit(null, 'FIRST_RUN_SETUP', `Initial it_admin account "${username}" created`, req);
+    persistNow();
+    return send(res, 201, { ok: true, username });
+  }
+
   // ---- public: login ----
   if (pathname === '/api/login' && req.method === 'POST') {
     const username = String(body.username || '').trim();
@@ -193,7 +223,7 @@ async function handleApi(req, res, pathname) {
       [sid, user.user_id, user.role, user.department_id || null, now.toISOString(), now.toISOString(), exp.toISOString()]);
     audit(user, 'LOGIN', `${user.full_name_en} logged in`, req);
     persistNow();
-    const secure = (req.headers['x-forwarded-proto'] === 'https');
+    const secure = IS_HTTPS || (TRUST_PROXY && req.headers['x-forwarded-proto'] === 'https');
     return send(res, 200, { user: { user_id: user.user_id, full_name_en: user.full_name_en, full_name_ar: user.full_name_ar, role: user.role, department_id: user.department_id } },
       { 'Set-Cookie': `sid=${sid}; HttpOnly; SameSite=Strict; Path=/${secure ? '; Secure' : ''}` });
   }
@@ -352,21 +382,33 @@ async function init() {
   db = fs.existsSync(DB_FILE) ? new SQL.Database(fs.readFileSync(DB_FILE)) : new SQL.Database();
   dbjs.__buildFreshSchemaForTest(db);     // createAllTables + applySchemaMigrations (idempotent on existing DBs)
   try { db.run('PRAGMA secure_delete = ON'); } catch (e) {}
-  await seedMinimal();
+  try { db.run('PRAGMA foreign_keys = ON'); } catch (e) {}   // enforce FKs server-side (clients leave this OFF)
+  if (DEMO) {
+    await seedMinimal();                  // demo accounts ONLY when OPENWARD_DEMO=1
+  } else if (!get('SELECT user_id FROM users LIMIT 1')) {
+    console.log('[setup] No accounts yet — POST /api/setup {username,password} to create the first it_admin (or set OPENWARD_DEMO=1 for demo accounts).');
+  }
   persistNow();
   return db;
 }
 
 function start() {
-  const server = http.createServer((req, res) => {
+  const handler = (req, res) => {
     const pathname = decodeURIComponent((req.url || '/').split('?')[0]);
     if (pathname.startsWith('/api/')) {
       handleApi(req, res, pathname).catch(e => { try { send(res, 500, { error: 'server', message: e.message }); } catch (_) {} });
     } else {
       serveStatic(req, res, pathname);
     }
-  });
-  server.listen(PORT, HOST, () => console.log(`OpenWard LAN server on http://${HOST}:${PORT}  (central DB: ${DB_FILE})`));
+  };
+  let server;
+  if (HTTPS_KEY && HTTPS_CERT) {           // HTTPS when a cert is provided (recommended for real PHI)
+    IS_HTTPS = true;
+    server = https.createServer({ key: fs.readFileSync(HTTPS_KEY), cert: fs.readFileSync(HTTPS_CERT) }, handler);
+  } else {
+    server = http.createServer(handler);   // plain HTTP (LAN dev only — cleartext)
+  }
+  server.listen(PORT, HOST, () => console.log(`OpenWard LAN server on ${IS_HTTPS ? 'https' : 'http'}://${HOST}:${PORT}  (central DB: ${DB_FILE}${DEMO ? '; DEMO accounts seeded' : ''})`));
   return server;
 }
 

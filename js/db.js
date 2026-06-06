@@ -523,7 +523,7 @@ function createAllTables() {
   db.run(`
     CREATE TABLE IF NOT EXISTS admissions (
       admission_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-      patient_id      INTEGER NOT NULL,
+      patient_id      INTEGER NOT NULL REFERENCES patients(patient_id),
       dept_id         INTEGER NOT NULL,
       bed_number      TEXT,
       admitted_by     INTEGER,
@@ -705,7 +705,7 @@ function createAllTables() {
   db.run(`
     CREATE TABLE IF NOT EXISTS vitals_log (
       vitals_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id INTEGER NOT NULL,
+      admission_id INTEGER NOT NULL REFERENCES admissions(admission_id),
       recorded_by INTEGER NOT NULL,
       recorded_at TEXT NOT NULL,
       bp_systolic INTEGER,
@@ -740,9 +740,9 @@ function createAllTables() {
   db.run(`
     CREATE TABLE IF NOT EXISTS prescriptions (
       rx_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
+      admission_id  INTEGER NOT NULL REFERENCES admissions(admission_id),
       doctor_id     INTEGER NOT NULL,
-      drug_id       INTEGER NOT NULL,
+      drug_id       INTEGER NOT NULL REFERENCES drugs(drug_id),
       drug_name     TEXT NOT NULL,
       dose          TEXT NOT NULL,
       route         TEXT NOT NULL,
@@ -762,7 +762,7 @@ function createAllTables() {
   db.run(`
     CREATE TABLE IF NOT EXISTS lab_orders (
       order_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id INTEGER NOT NULL,
+      admission_id INTEGER NOT NULL REFERENCES admissions(admission_id),
       doctor_id   INTEGER NOT NULL,
       test_name   TEXT NOT NULL,
       test_code   TEXT,

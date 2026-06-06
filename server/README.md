@@ -20,14 +20,31 @@ HOST=127.0.0.1 PORT=9000 node server/server.js   # custom bind
 No `npm install` — it uses only Node built-ins plus the vendored `sql.js`.
 Other workstations open `http://<hospital-pc-ip>:8080`.
 
-- **Central DB:** `server/data/openward.sqlite` (created on first run).
+- **Central DB:** `server/data/openward.sqlite` (created on first run; FK enforcement
+  is ON server-side — orphan clinical rows are rejected).
 - **Audit key:** `server/data/audit.key` — the HMAC key for the audit chain,
   stored **outside** the DB so a DB-only edit can't silently forge the chain.
-- **Seeded logins (dev):** `admin / HIS@2024` (it_admin), `er.doc / doctor123`
-  (emergency_doctor), `nurse / nurse123` (nurse). Change these before real use.
+- **First run (no default accounts):** with no `OPENWARD_DEMO`, the server starts
+  with **zero users** and you create the first admin once:
+  ```bash
+  curl -X POST localhost:8080/api/setup -H 'Content-Type: application/json' \
+    -d '{"username":"admin","password":"<a strong password>","full_name_en":"IT Admin"}'
+  ```
+  `/api/setup` is refused once any account exists.
+- **Demo accounts (opt-in):** `OPENWARD_DEMO=1 node server/server.js` seeds
+  `admin / HIS@2024`, `er.doc / doctor123`, `nurse / nurse123`, `consultant /
+  doctor123` + a starter formulary. Never use demo mode for real data.
+- **HTTPS:** `HTTPS_KEY=key.pem HTTPS_CERT=cert.pem node server/server.js` serves
+  over TLS and marks the session cookie `Secure`. Use a local CA cert before real
+  PHI (LAN HTTP is cleartext).
 
-Quick check it's really central:
+Config env: `HOST`, `PORT`, `OPENWARD_DEMO`, `HTTPS_KEY`/`HTTPS_CERT`,
+`TRUST_PROXY` (believe `X-Forwarded-For` only behind a real proxy),
+`OPENWARD_DATA_DIR`.
+
+Quick check it's really central (demo mode):
 ```bash
+OPENWARD_DEMO=1 node server/server.js &
 curl -i -c jar -X POST localhost:8080/api/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"HIS@2024"}'
 curl -b jar localhost:8080/api/patients
 ```
@@ -43,14 +60,17 @@ curl -b jar localhost:8080/api/patients
 - **Concurrency:** one process owns the DB (Node serializes requests);
   multi-step writes use `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` (e.g. registration
   rejects a double-booked bed atomically).
-- **Endpoints:** `POST /api/login`, `POST /api/logout`, `GET /api/me`,
+- **Endpoints:** `GET /api/health`, `POST /api/setup` (first-run only),
+  `POST /api/login`, `POST /api/logout`, `GET /api/me`,
   `GET/POST /api/patients`, `GET /api/patients/:id`, `GET /api/beds`,
   `POST /api/vitals`, `GET/POST /api/prescriptions` (formulary-only),
   `POST /api/lab-orders`, `GET /api/audit` (role-gated).
 
-Covered by `test/test_server.js` (auth, RBAC denial, transactional bed conflict,
-**a second client seeing the first's write**, formulary-only prescribing, no
-secret leakage in patient detail, role-gated audit, audit chain, path-traversal).
+Covered by `test/test_server.js` + `test/test_setup.js` (auth, RBAC denial,
+transactional bed conflict, **a second client seeing the first's write**,
+formulary-only prescribing, no secret leakage in patient detail, role-gated audit,
+audit chain, **FK enforcement** of orphan rows, path-traversal, **first-run setup
+with no default accounts**).
 
 ## This IS the production target (decision locked)
 
@@ -82,8 +102,8 @@ DB calls are synchronous and `/api` is async, this is done screen-by-screen:
 ## Operational must-dos before real PHI
 
 - **HTTPS.** LAN HTTP is cleartext — passwords/PHI cross the network in the open,
-  and the browser's Web Crypto needs a secure context. Front this with a local CA
-  cert (e.g. a reverse proxy or Node `https`).
+  and the browser's Web Crypto needs a secure context. HTTPS is built in: pass
+  `HTTPS_KEY`/`HTTPS_CERT` (a local CA cert). Until then it runs plain HTTP.
 - **One owner.** Never run two servers against the same file, and never put
   `openward.sqlite` on SMB/NFS — SQLite can corrupt when network file locking
   misbehaves.

@@ -78,10 +78,15 @@ The patterns it demonstrates are legitimate and worth studying:
 ```bash
 git clone https://github.com/EsmailELBoBDev2/openward.git
 cd openward
-node server/server.js          # serves the UI + /api on http://0.0.0.0:8080
+node server/server.js                 # serves the UI + /api on http://0.0.0.0:8080
+# first run has NO accounts — create the first admin once:
+#   curl -X POST localhost:8080/api/setup -H 'Content-Type: application/json' \
+#        -d '{"username":"admin","password":"<strong password>"}'
+# or, to explore with demo accounts:  OPENWARD_DEMO=1 node server/server.js
+# HTTPS (recommended before real PHI): HTTPS_KEY=key.pem HTTPS_CERT=cert.pem node server/server.js
 ```
 
-Other devices open `http://<that-pc-ip>:8080`. The one central DB lives in `server/data/`. See **[server/README.md](server/README.md)**. (Put HTTPS in front before real PHI. Most UI screens are still being migrated onto `/api` — until then they use the browser-local DB; see the architecture note above.)
+Other devices open `http://<that-pc-ip>:8080`. The one central DB lives in `server/data/` (FK-enforced). See **[server/README.md](server/README.md)**. (Most UI screens are still being migrated onto `/api` — until then they use the browser-local DB; see the architecture note above.)
 
 **Standalone — the legacy single-device demo.** Runs 100% in the browser; data lives in *this* browser's IndexedDB only and is **not** shared with other devices.
 
