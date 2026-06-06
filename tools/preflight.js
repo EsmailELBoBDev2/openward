@@ -182,8 +182,12 @@ const TEXT_EXT = new Set(['.html', '.htm', '.js', '.css', '.md', '.json', '.py',
 
 function trackedTextFiles() {
   try {
-    return execFileSync('git', ['ls-files'], { cwd: ROOT })
+    // Tracked files PLUS untracked-but-not-ignored ones, so a not-yet-committed
+    // file (e.g. a new test) is scanned too. (A pre-commit-only run once reported
+    // a false PASS because the offending file wasn't tracked yet.)
+    return execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { cwd: ROOT })
       .toString().split('\n').filter(Boolean)
+      .filter((f, i, a) => a.indexOf(f) === i)              // de-dupe
       .filter(f => TEXT_EXT.has(path.extname(f).toLowerCase()));
   } catch { return []; }
 }

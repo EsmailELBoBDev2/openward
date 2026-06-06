@@ -1,9 +1,19 @@
 'use strict';
-// Proves tools/preflight.js actually CATCHES the exact corruption signatures the
-// external reviews keep citing — so a green pre-flight is a meaningful "clean",
-// not a no-op. Feeds synthetic corrupt inputs and asserts each is flagged, then
-// asserts the real tree on this commit passes.
+// Proves tools/preflight.js actually CATCHES the corruption signatures the
+// external reviews keep citing — so a green pre-flight means a meaningful
+// "clean", not a no-op. It feeds synthetic corrupt inputs, asserts each is
+// flagged, then asserts the real tree on this commit passes.
+//
+// NOTE: every "corrupt" fixture below is BUILT from char codes (BS = backslash,
+// AMP = ampersand) rather than written as a literal. If we wrote the literal
+// mangled bytes here, preflight's own corruption scan would (correctly) flag
+// THIS file. Building them at runtime keeps the scanner fully honest (no file is
+// excluded) while still exercising detection. Do not paste literal mangled
+// sequences into this file.
 const pf = require('../tools/preflight.js');
+
+const BS = String.fromCharCode(92);   // a single backslash
+const AMP = String.fromCharCode(38);  // an ampersand
 
 let pass = 0, fail = 0;
 function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { fail++; console.error('  FAIL- ' + m); } }
@@ -15,11 +25,11 @@ function detect(fn, src) {
   return pf.getFindings();
 }
 
-// 1. Broken <div> with a missing '>' (the line-128/133 complaint).
+// 1. Broken <div> with a missing close-bracket (the line 128/133 complaint).
 {
   const bad = '<body>\n  <div id="x"\n  <div id="y"></div>\n</body>';
   const f = detect(pf.checkHtmlStructure, bad);
-  assert(f.some(x => /unterminated <div/.test(x.msg)), 'catches a <div ...> with a missing ">"');
+  assert(f.some(x => /unterminated <div/.test(x.msg)), 'catches a <div> with a missing close-bracket');
 }
 
 // 2. Well-formed divs do NOT false-alarm.
@@ -36,11 +46,11 @@ function detect(fn, src) {
   assert(f.some(x => /overlapping|unbalanced|never closed/.test(x.msg)), 'catches overlapping/unbalanced tags');
 }
 
-// 4. '<' inside a quoted attribute value is NOT mistaken for a new tag.
+// 4. A close-bracket inside a quoted attribute value is NOT a new tag.
 {
   const good = '<meta content="default-src \'self\'; x>y ok"><div></div>';
   const f = detect(pf.checkHtmlStructure, good);
-  assert(f.length === 0, 'quoted attribute values containing ">" do not break the parser');
+  assert(f.length === 0, 'quoted attribute values containing a close-bracket do not break the parser');
 }
 
 // 5. Template-literal HTML inside <script> must not be parsed as tags.
@@ -50,48 +60,56 @@ function detect(fn, src) {
   assert(f.length === 0, '<script> raw content (HTML in template literals, a<b) is skipped, not tag-parsed');
 }
 
-// 6. Inline <script> that does not parse (the "You\\'re" / Missing } complaint).
+// 6. Inline <script> that does not parse (a mangled string-escape).
 {
-  const bad = "<script>\n  const msg = 'You\\\\'re in';\n</script>";  // -> source contains You\\'re
+  // body becomes a string literal closed early by a doubled backslash before
+  // the apostrophe (the classic paste-mangled escape) -> a syntax error.
+  const body = "const msg = 'You" + BS + BS + "'re in';";
+  const bad = '<script>' + body + '</script>';
   const f = detect(pf.checkInlineScripts, bad);
-  assert(f.some(x => /does not parse/.test(x.msg)), 'catches an inline <script> with a syntax error (e.g. You\\\\\'re)');
+  assert(f.some(x => /does not parse/.test(x.msg)), 'catches an inline <script> with a broken string-escape');
 }
 
 // 7. A valid inline <script> parses clean.
 {
-  const good = "<script>\n  const msg = 'You\\'re in'; function f(){ return `${msg}`; }\n</script>";
+  // body becomes:  const msg = 'You\'re in'; (a correctly escaped apostrophe)
+  const body = "const msg = 'You" + BS + "'re in'; function f(){ return `${msg}`; }";
+  const good = '<script>' + body + '</script>';
   const f = detect(pf.checkInlineScripts, good);
-  assert(!f.some(x => /does not parse/.test(x.msg)), 'valid inline <script> (single-backslash You\\\'re, template literal) parses');
+  assert(!f.some(x => /does not parse/.test(x.msg)), 'valid inline <script> (escaped apostrophe, template literal) parses');
 }
 
-// 8. A literal "<script>" inside an HTML comment must NOT false-alarm as broken.
+// 8. A literal script tag inside an HTML comment must NOT false-alarm as broken.
 {
   const good = '<!-- inline <script> sources are refused by CSP --><script>var a=1;</script>';
   const f = detect(pf.checkInlineScripts, good);
-  // (this checker flags literal <script> in comments on purpose — assert THAT, not a parse error)
+  // this checker flags a literal script tag in a comment ON PURPOSE — assert THAT, not a parse error
   assert(f.some(x => /inside an HTML comment/.test(x.msg)) && !f.some(x => /does not parse/.test(x.msg)),
-    'literal "<script>" in a comment is reported as a footgun, not as a parse failure');
+    'a literal script tag in a comment is reported as a footgun, not as a parse failure');
 }
 
-// 9. Copy-paste corruption fingerprints (&#, &amp;#, You\\'re, <).
+// 9. Copy-paste corruption fingerprints (each fixture built from char codes).
 {
   const cases = [
-    ['\\u0026#127942;', /u0026/],
-    ['&amp;#127942;', /double-escaped/],
-    ['You\\\\\'re officially', /doubled backslash/],
-    ['a \\u003c/div\\u003e b', /u003c/],
+    [BS + 'u0026#127942;', /u0026/],                       // escaped ampersand entity
+    [AMP + 'amp;#127942;', /double-escaped/],              // &amp;#NNN
+    ['You' + BS + BS + "'re officially", /doubled backslash/], // word + 2 backslashes + quote + word
+    ['a ' + BS + 'u003c/div' + BS + 'u003e b', /u003c/],   // escaped angle brackets
   ];
+  let idx = 0;
   for (const [snippet, want] of cases) {
+    idx++;
     const f = detect(pf.checkTextForCorruption, snippet);
-    assert(f.some(x => want.test(x.msg)), `corruption scan flags: ${JSON.stringify(snippet)}`);
+    assert(f.some(x => want.test(x.msg)), `corruption scan flags fingerprint #${idx}`);
   }
 }
 
 // 10. Clean text produces no corruption findings.
 {
-  const clean = "const x = '&#127942;'; const y = 'You\\'re in'; // </div> in a comment is fine";
+  // const x = '&#127942;'; const y = 'You\'re in'; // </div> in a comment is fine
+  const clean = "const x = '" + AMP + "#127942;'; const y = 'You" + BS + "'re in'; // </div> ok";
   const f = detect(pf.checkTextForCorruption, clean);
-  assert(f.length === 0, 'clean source (real &#127942;, single-backslash, plain </div>) is not flagged');
+  assert(f.length === 0, 'clean source (real entity, escaped apostrophe, plain close tag) is not flagged');
 }
 
 // 11. The REAL tree on this commit passes pre-flight end-to-end.
