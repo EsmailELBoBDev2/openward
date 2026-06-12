@@ -495,33 +495,4 @@ document.addEventListener('input', _smartPhraseHandleInput);
 document.addEventListener('keydown', _smartPhraseHandleKey, true);
 document.addEventListener('focusout', _smartPhraseHandleBlur);
 
-// Helper to show available templates (button)
-function showSmartPhrasesHelp() {
-  const lang = _smartPhraseGetLang();
-  const overlay = document.createElement('div');
-  overlay.className = 'alert-overlay';
-  const items = Object.entries(SMART_PHRASES).map(([k, v]) =>
-    `<tr>
-      <td><code>/${k}</code></td>
-      <td>${lang === 'ar' ? v.ar : v.label}</td>
-    </tr>`
-  ).join('');
-  overlay.innerHTML = `
-    <div class="alert-modal" style="max-width:600px;max-height:80vh;overflow-y:auto">
-      <h2>&#9889; ${lang==='ar' ? 'القوالب الذكية' : 'Smart Phrases'}</h2>
-      <p style="color:#6b7280;font-size:0.9rem">
-        ${lang==='ar'
-          ? 'اكتب "/" في أي حقل ثم اسم الاختصار واضغط Enter أو Tab لإدراج القالب.'
-          : 'Type "/" in any text field then the shortcut name, press Enter or Tab to insert.'}
-      </p>
-      <table class="shortcuts-table" style="margin-top:12px">
-        <thead><tr><th>${lang==='ar'?'الاختصار':'Shortcut'}</th><th>${lang==='ar'?'القالب':'Template'}</th></tr></thead>
-        <tbody>${items}</tbody>
-      </table>
-      <div class="alert-buttons" style="margin-top:16px">
-        <button class="btn btn-primary" onclick="this.closest('.alert-overlay').remove()">${lang==='ar'?'حسناً':'Got it'}</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-}
+

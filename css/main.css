@@ -99,17 +99,6 @@ p  { font-size: 1rem; }
 }
 .btn-outline:hover:not(:disabled) { background: var(--primary-light); }
 
-.btn-icon {
-  width: 36px; height: 36px; padding: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--text-secondary);
-  border: none; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-  font-size: 1.125rem;
-}
-.btn-icon:hover { background: #f0f0f0; }
-
 /* ---- Form Elements ---- */
 .form-group {
   margin-bottom: 16px;
@@ -157,27 +146,20 @@ input.error, select.error, textarea.error {
 textarea { resize: vertical; min-height: 80px; }
 select { cursor: pointer; }
 
-.input-group {
-  display: flex;
-  align-items: stretch;
-}
-.input-group input { border-radius: var(--radius) 0 0 var(--radius); }
-.input-group .btn { border-radius: 0 var(--radius) var(--radius) 0; }
-
-.checkbox-group, .radio-group {
+.checkbox-group {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
   margin-top: 6px;
 }
-.checkbox-group label, .radio-group label {
+.checkbox-group label {
   display: flex;
   align-items: center;
   gap: 6px;
   font-weight: 400;
   cursor: pointer;
 }
-.checkbox-group input, .radio-group input {
+.checkbox-group input {
   width: auto;
   margin: 0;
 }
@@ -465,15 +447,6 @@ tbody tr:last-child td { border-bottom: none; }
   flex-shrink: 0;
 }
 
-.sidebar-section {
-  padding: 12px 24px 6px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-  letter-spacing: 0.5px;
-}
-
 /* Main Content */
 .app-main {
   margin-left: var(--sidebar-width);
@@ -633,16 +606,6 @@ tbody tr:last-child td { border-bottom: none; }
 /* ============================================================
    Loading Overlay
    ============================================================ */
-#loading-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(255,255,255,0.85);
-  display: none;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-}
 .spinner {
   width: 40px;
   height: 40px;
@@ -652,11 +615,6 @@ tbody tr:last-child td { border-bottom: none; }
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-#loading-overlay p {
-  margin-top: 12px;
-  color: var(--text-secondary);
-  font-size: 0.9375rem;
-}
 
 /* ============================================================
    Form Layout Helpers
@@ -703,8 +661,6 @@ tbody tr:last-child td { border-bottom: none; }
   color: var(--primary);
   border-bottom-color: var(--primary);
 }
-.tab-content { display: none; }
-.tab-content.active { display: block; }
 
 /* ============================================================
    QR Code
@@ -780,8 +736,6 @@ tbody tr:last-child td { border-bottom: none; }
    Utility
    ============================================================ */
 .text-center { text-align: center; }
-.text-right  { text-align: right; }
-.text-left   { text-align: left; }
 .text-muted  { color: var(--text-secondary); }
 .text-danger { color: var(--danger); }
 .text-success{ color: var(--success); }
@@ -793,7 +747,6 @@ tbody tr:last-child td { border-bottom: none; }
 .mb-2 { margin-bottom: 16px; }
 .mb-3 { margin-bottom: 24px; }
 .gap-1 { gap: 8px; }
-.gap-2 { gap: 16px; }
 .flex { display: flex; }
 .flex-wrap { flex-wrap: wrap; }
 .items-center { align-items: center; }
@@ -806,7 +759,6 @@ tbody tr:last-child td { border-bottom: none; }
    ============================================================ */
 .badge-ordered   { background: #e8eaed; color: #5f6368; }
 .badge-collected { background: #e8f0fe; color: #1a73e8; }
-.badge-received  { background: #fef7e0; color: #e37400; }
 .badge-resulted  { background: #e6f4ea; color: #0d904f; }
 
 /* ============================================================
@@ -935,54 +887,6 @@ tbody tr:last-child td { border-bottom: none; }
 /* ============================================================
    Smart Suggestion Cards
    ============================================================ */
-.smart-suggestion-card {
-  background: var(--info-light);
-  border: 1px solid #c2d9f7;
-  border-radius: var(--radius);
-  padding: 12px 16px;
-  margin-bottom: 10px;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-}
-.smart-suggestion-card .suggestion-icon { font-size: 1.25rem; flex-shrink: 0; }
-.smart-suggestion-card .suggestion-text { flex: 1; font-size: 0.875rem; }
-.smart-suggestion-card .suggestion-action {
-  flex-shrink: 0;
-  align-self: center;
-}
-
-/* ============================================================
-   Workflow Steps (Lab Pipeline)
-   ============================================================ */
-.workflow-pipeline {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.75rem;
-  margin: 8px 0;
-}
-.workflow-step {
-  padding: 4px 10px;
-  border-radius: 12px;
-  background: #e8eaed;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-.workflow-step.step-active {
-  background: var(--primary);
-  color: #fff;
-  font-weight: 600;
-}
-.workflow-step.step-complete {
-  background: var(--success-light);
-  color: var(--success);
-}
-.workflow-arrow {
-  color: var(--border);
-  font-size: 0.875rem;
-}
-
 /* Bed Management */
 .bed-grid {
   display: grid;
@@ -1020,30 +924,6 @@ tbody tr:last-child td { border-bottom: none; }
   margin-top: 4px;
   line-height: 1.3;
 }
-
-/* Critical Lab Value Alert */
-.lab-critical-alert {
-  background: #fef2f2;
-  border: 2px solid #dc2626;
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin-bottom: 12px;
-  animation: criticalPulse 2s ease-in-out infinite;
-}
-.lab-critical-alert strong {
-  color: #dc2626;
-}
-@keyframes criticalPulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0.3); }
-  50% { box-shadow: 0 0 0 8px rgba(220,38,38,0); }
-}
-
-/* Triage level colors */
-.triage-1 { background: #dc2626; color: white; }
-.triage-2 { background: #ea580c; color: white; }
-.triage-3 { background: #ca8a04; color: white; }
-.triage-4 { background: #16a34a; color: white; }
-.triage-5 { background: #2563eb; color: white; }
 
 /* ============================================================
    Surgical / OR Management
@@ -1316,13 +1196,10 @@ tbody tr:last-child td { border-bottom: none; }
   .card { box-shadow: none !important; border: 1px solid #ccc !important; page-break-inside: avoid; }
   table { border-collapse: collapse !important; width: 100% !important; }
   th, td { border: 1px solid #bbb !important; padding: 3px 6px !important; font-size: 9pt; }
-  .print-only { display: block !important; }
   .btn:not(.print-keep) { display: none !important; }
   h2, h3 { page-break-after: avoid; }
   .badge, .tat-ok, .tat-warn, .tat-late { border: 1px solid #666 !important; background: none !important; color: #000 !important; }
 }
-.print-only { display: none; }
-
 /* ============================================================
    SBAR Handover Grid
    ============================================================ */
@@ -1679,7 +1556,6 @@ kbd {
   font-weight: 700;
   font-size: 0.9rem;
 }
-.news2-low    { background: #28a745; color: #fff; }
 .news2-medium { background: #fd7e14; color: #fff; }
 .news2-high   { background: #dc3545; color: #fff; }
 
@@ -1820,30 +1696,6 @@ kbd {
 }
 
 /* ============================================================
-   Sepsis Auto-Alert Banner
-   ============================================================ */
-.sepsis-alert-banner {
-  background: linear-gradient(135deg, #dc2626, #991b1b);
-  color: white;
-  padding: 16px 20px;
-  border-radius: 10px;
-  margin-bottom: 16px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  animation: pulseAlert 2s infinite;
-  box-shadow: 0 4px 12px rgba(220,38,38,0.4);
-}
-@keyframes pulseAlert {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.02); }
-}
-.sepsis-alert-icon { font-size: 2.5rem; }
-.sepsis-alert-body { flex: 1; }
-.sepsis-alert-body h3 { margin: 0 0 4px 0; font-size: 1.1rem; }
-.sepsis-alert-body p { margin: 0; opacity: 0.95; font-size: 0.9rem; }
-
-/* ============================================================
    Smart Phrases popup
    ============================================================ */
 .smart-phrase-popup {
@@ -1898,13 +1750,6 @@ kbd {
   margin: 0 0 8px 0;
   color: #1e40af;
   font-size: 0.95rem;
-}
-.autodose-result {
-  background: white;
-  padding: 8px 12px;
-  border-radius: 6px;
-  margin-top: 8px;
-  font-weight: 500;
 }
 .autodose-warning {
   background: #fef3c7;
@@ -2036,41 +1881,6 @@ body[dir="rtl"] .calc-fab {
 .tour-dot.active { background: #3b82f6; }
 
 /* ============================================================
-   Recently Used / Favorites widget
-   ============================================================ */
-.recent-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0 14px;
-  padding: 10px;
-  background: #eff6ff;
-  border-radius: 8px;
-  border: 1px solid #bfdbfe;
-}
-.recent-strip-label {
-  font-size: 0.8rem;
-  color: #1e40af;
-  font-weight: 600;
-  margin-right: 8px;
-}
-.recent-chip {
-  background: white;
-  border: 1px solid #bfdbfe;
-  border-radius: 14px;
-  padding: 4px 10px;
-  font-size: 0.8rem;
-  cursor: pointer;
-  transition: all 0.15s;
-  color: #1e40af;
-}
-.recent-chip:hover {
-  background: #3b82f6;
-  color: white;
-  border-color: #3b82f6;
-}
-
-/* ============================================================
    Mobile-friendly overflow fixes (added after audit)
    ============================================================ */
 @media (max-width: 640px) {
@@ -2145,4 +1955,54 @@ body[dir="rtl"] .calc-fab {
     overflow-wrap: anywhere;
     word-break: break-word;
   }
+}
+
+/* ============================================================
+   Accessibility & theming
+   ============================================================ */
+
+/* Keyboard-only focus indicator. Inputs keep their box-shadow (input:focus is
+   more specific); buttons, links and selects get a clear outline on KEYBOARD
+   focus without one appearing on a mouse click. */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Respect "reduce motion" — matters in a clinical UI (vestibular sensitivity,
+   and no distracting animation during time-critical charting). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Dark mode (night shift). The structural surfaces all use
+   var(--white)/--bg/--text/--border, so overriding the palette flips the whole
+   chrome coherently. Accent hues (primary/success/warning/danger) stay saturated
+   because they are button backgrounds with white text; only the *-light tints,
+   plain links and a few hardcoded light greys are remapped. QR codes stay white
+   (scanners need a light background). Opt-in via the OS preference. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --primary-light: #1c2a3d;
+    --success-light: #17271c;
+    --warning-light: #2b2410;
+    --danger-light:  #2c1715;
+    --info-light:    #1c2a3d;
+    --text:          #e8eaed;
+    --text-secondary:#9aa0a6;
+    --border:        #3c4043;
+    --bg:            #16171b;
+    --white:         #1f2125;
+    --shadow:        0 1px 3px rgba(0,0,0,0.6), 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-lg:     0 6px 16px rgba(0,0,0,0.7);
+  }
+  a { color: #8ab4f8; }                       /* brighter links on dark; buttons keep white-on-blue */
+  .btn-secondary { background: #2a2c33; color: var(--text); }
+  .btn-secondary:hover:not(:disabled) { background: #34373f; }
+  tbody tr:hover { background: #26282e; }
 }

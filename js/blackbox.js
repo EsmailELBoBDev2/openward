@@ -25,14 +25,100 @@
  * @param {string} entry.action_detail  — full English sentence
  * @param {string} [entry.action_detail_ar]
  */
-async function logToBlackbox(entry) {
+// Clock-tamper detection. A client-only app can't trust the device clock, but
+// two signals expose backdating without a server:
+//   (1) a record whose time is BEHIND the most recent record, and
+//   (2) the wall clock disagreeing with a MONOTONIC clock (performance.now(),
+//       which the user can't move) since the session started — this catches a
+//       clock change DURING the session in either direction, including the
+//       "set the clock to just after the last record" trick that (1) alone misses.
+// Neither is preventable in-sandbox; we make the attempt visible & tamper-evident.
+const CLOCK_ANOMALY_TOLERANCE_MS = 120000; // 2 minutes (absorbs NTP/drift/suspend)
+
+function _humanizeDuration(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 90) return s + 's';
+  const m = Math.round(s / 60);
+  if (m < 90) return m + 'm';
+  const h = Math.floor(m / 60), rem = m % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
+}
+
+// Monotonic session anchor (performance.now() is immune to system-clock changes).
+let _clockAnchorWall = null;
+let _clockAnchorMono = null;
+function _monoNow() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
+function _computeDrift(anchorWall, anchorMono, nowWall, nowMono) {
+  return nowWall - (anchorWall + (nowMono - anchorMono));  // ~0 if the clock only advanced normally
+}
+function _sessionClockDrift() {
+  const nowWall = Date.now(), nowMono = _monoNow();
+  if (_clockAnchorWall === null) { _clockAnchorWall = nowWall; _clockAnchorMono = nowMono; return 0; }
+  return _computeDrift(_clockAnchorWall, _clockAnchorMono, nowWall, nowMono);
+}
+
+// Returns a human description of any clock anomaly, or '' if none. Pure: the
+// in-session monotonic drift (ms) is passed in.
+function _clockAnomalyNote(timestamp, lastTimestamp, drift) {
+  const notes = [];
+  if (lastTimestamp) {
+    const backMs = Date.parse(lastTimestamp) - Date.parse(timestamp);
+    if (backMs > CLOCK_ANOMALY_TOLERANCE_MS) notes.push(`${_humanizeDuration(backMs)} behind the previous record at ${lastTimestamp}`);
+  }
+  if (typeof drift === 'number' && Math.abs(drift) > CLOCK_ANOMALY_TOLERANCE_MS) {
+    notes.push(`clock jumped ${drift < 0 ? 'back' : 'forward'} ${_humanizeDuration(Math.abs(drift))} during this session`);
+  }
+  return notes.join('; ');
+}
+
+// ---- Canonical hash input (delimiter-injection-proof) -----------------------
+// The old format joined fields with '|', so moving a '|' between fields (e.g.
+// action_type "LOGIN" + detail "SUCCESS"  ->  "LOGIN|S" + "UCCESS") produced an
+// identical string and an identical hash — letting an attacker shift data
+// between columns while keeping every row_hash (and thus an integrity receipt)
+// intact. JSON-encoding the field array escapes any delimiter inside a field, so
+// distinct field-tuples can never collide. 'v2' is a domain separator; log_id is
+// deliberately NOT in the input so the hash can be computed BEFORE the insert.
+function _canonicalHashInput(timestamp, userId, actionType, actionDetail, prevHash) {
+  return JSON.stringify(['v2', timestamp, userId, actionType, actionDetail, prevHash]);
+}
+// Pre-v2 rows were hashed with this ambiguous '|' join (incl. log_id). Kept ONLY
+// so existing chains still verify after the upgrade; never used for new writes.
+function _legacyHashInput(logId, timestamp, userId, actionType, actionDetail, prevHash) {
+  return `${logId}|${timestamp}|${userId}|${actionType}|${actionDetail}|${prevHash}`;
+}
+
+// Audit writes form a hash chain, so they MUST be serialized: if two writes
+// interleaved at the `await sha256` below, both would read the same prev_hash and
+// fork the chain. This promise chain runs them strictly one at a time.
+let _bbLock = Promise.resolve();
+function logToBlackbox(entry) {
+  const run = _bbLock.then(() => _logToBlackboxInner(entry));
+  _bbLock = run.then(() => {}, () => {});   // keep the lock alive even if a write throws
+  return run;
+}
+
+async function _logToBlackboxInner(entry) {
   const timestamp = nowISO();
 
-  // Get previous hash
-  const lastRow = dbGet('SELECT row_hash FROM audit_log ORDER BY log_id DESC LIMIT 1');
+  const lastRow = dbGet('SELECT row_hash, timestamp FROM audit_log ORDER BY log_id DESC LIMIT 1');
   const prevHash = lastRow ? lastRow.row_hash : 'GENESIS';
 
-  // Insert with placeholder hash first to get log_id
+  // Fold any clock anomaly into action_detail — it is part of the signed row_hash,
+  // so a backdated entry can't be made to look clean without breaking verification.
+  let action_detail = entry.action_detail;
+  let action_detail_ar = entry.action_detail_ar || null;
+  const anomaly = _clockAnomalyNote(timestamp, lastRow ? lastRow.timestamp : null, _sessionClockDrift());
+  if (anomaly) {
+    action_detail += ` [⚠ CLOCK ANOMALY: ${anomaly}]`;
+    if (action_detail_ar) action_detail_ar += ` [⚠ خلل بالساعة: ${anomaly}]`;
+  }
+
+  // Compute the hash BEFORE writing, so a half-hashed row ('COMPUTING') can never
+  // be persisted by a concurrent save during the await. Single INSERT with the
+  // final hash — no placeholder, no follow-up UPDATE.
+  const rowHash = await sha256(_canonicalHashInput(timestamp, entry.user_id, entry.action_type, action_detail, prevHash));
+
   dbRun(`INSERT INTO audit_log (
     timestamp, user_id, user_name_en, user_name_ar, user_role,
     dept_id, dept_name_en, dept_name_ar,
@@ -52,26 +138,33 @@ async function logToBlackbox(entry) {
     entry.patient_name || null,
     entry.patient_mrn || null,
     entry.action_type,
-    entry.action_detail,
-    entry.action_detail_ar || null,
+    action_detail,
+    action_detail_ar,
     null, // ip_address not available in browser
     prevHash,
-    'COMPUTING'
+    rowHash
   ]);
 
   const logId = dbLastId();
-
-  // Compute row_hash = SHA256(log_id|timestamp|user_id|action_type|action_detail|prev_hash)
-  const hashInput = `${logId}|${timestamp}|${entry.user_id}|${entry.action_type}|${entry.action_detail}|${prevHash}`;
-  const rowHash = await sha256(hashInput);
-
-  // Update ONLY the row_hash field of this specific row
-  dbRun('UPDATE audit_log SET row_hash = ? WHERE log_id = ?', [rowHash, logId]);
-
-  // Save DB after every blackbox write
-  saveDBToIndexedDB();
-
+  _scheduleBlackboxFlush();
   return logId;
+}
+
+// Persisting per audit row forced a FULL db.export() (+ AES-GCM re-encrypt when
+// device encryption is on) on every PHI-view navigation — the single hottest
+// idle-path cost in browser mode. Audit rows ride dbRun's dirty flag, so they
+// are flushed by the explicit saves every clinical handler already does, by the
+// 30s timer, and by the visibilitychange/pagehide flush. This short debounce
+// only narrows the crash window for READ-audits (navigations that trigger no
+// other save) to ~5s while collapsing a click-burst into one export.
+let _bbFlushTimer = null;
+function _scheduleBlackboxFlush() {
+  if (_bbFlushTimer) return;
+  _bbFlushTimer = setTimeout(() => {
+    _bbFlushTimer = null;
+    try { saveDBToIndexedDB(); } catch (e) { /* save path reports its own errors */ }
+  }, 5000);
+  if (_bbFlushTimer && typeof _bbFlushTimer.unref === 'function') _bbFlushTimer.unref();   // Node tests: don't hold the process open
 }
 
 /**
@@ -90,11 +183,15 @@ async function verifyBlackboxIntegrity() {
       return { valid: false, brokenAt: row.log_id, totalRows: rows.length, reason: 'prev_hash mismatch' };
     }
 
-    // Recompute hash
-    const hashInput = `${row.log_id}|${row.timestamp}|${row.user_id}|${row.action_type}|${row.action_detail}|${row.prev_hash}`;
-    const expected = await sha256(hashInput);
-
-    if (row.row_hash !== expected) {
+    // Accept the canonical (v2) hash; fall back to the legacy '|' format so chains
+    // written before the canonicalization upgrade still verify.
+    const canonical = await sha256(_canonicalHashInput(row.timestamp, row.user_id, row.action_type, row.action_detail, row.prev_hash));
+    let ok = (row.row_hash === canonical);
+    if (!ok) {
+      const legacy = await sha256(_legacyHashInput(row.log_id, row.timestamp, row.user_id, row.action_type, row.action_detail, row.prev_hash));
+      ok = (row.row_hash === legacy);
+    }
+    if (!ok) {
       return { valid: false, brokenAt: row.log_id, totalRows: rows.length, reason: 'row_hash mismatch' };
     }
 
@@ -102,6 +199,46 @@ async function verifyBlackboxIntegrity() {
   }
 
   return { valid: true, brokenAt: null, totalRows: rows.length };
+}
+
+// ---- External-anchor integrity receipt --------------------------------------
+// A keyless SHA-256 hash chain is tamper-EVIDENT only against PARTIAL edits: an
+// insider with DB write access can rewrite a row AND recompute every downstream
+// hash, after which verifyBlackboxIntegrity() passes (there is no secret key to
+// forge). The only client-side defense is to record this receipt OUT OF BAND
+// (print it, email compliance, write it down). verifyAgainstReceipt() later
+// detects a recompute — the head hash at the receipt's log_id will have changed —
+// or a truncation (the row count dropped).
+function getIntegrityReceipt() {
+  const head = dbGet('SELECT log_id, row_hash FROM audit_log ORDER BY log_id DESC LIMIT 1');
+  const c = dbGet('SELECT COUNT(*) AS c FROM audit_log');
+  return {
+    head_log_id: head ? head.log_id : 0,
+    head_hash: head ? head.row_hash : 'GENESIS',
+    log_count: c ? c.c : 0,
+    generated_at: nowISO()
+  };
+}
+
+// Internal chain check PLUS comparison against a previously-recorded receipt —
+// the only way to catch a full recompute. Returns the internal result extended
+// with { matchesReceipt, receiptReason }.
+async function verifyAgainstReceipt(receipt) {
+  const internal = await verifyBlackboxIntegrity();
+  let matchesReceipt = null, receiptReason = null;
+  if (receipt && typeof receipt.head_log_id === 'number') {
+    matchesReceipt = true;
+    const c = dbGet('SELECT COUNT(*) AS c FROM audit_log');
+    const count = c ? c.c : 0;
+    if (count < receipt.log_count) {
+      matchesReceipt = false; receiptReason = 'rows removed since the receipt (truncation)';
+    } else {
+      const at = dbGet('SELECT row_hash FROM audit_log WHERE log_id = ?', [receipt.head_log_id]);
+      if (!at) { matchesReceipt = false; receiptReason = 'the receipt head row is missing'; }
+      else if (at.row_hash !== receipt.head_hash) { matchesReceipt = false; receiptReason = 'history at/before the receipt was rewritten'; }
+    }
+  }
+  return Object.assign({}, internal, { matchesReceipt, receiptReason });
 }
 
 /**
@@ -117,7 +254,21 @@ async function verifyBlackboxIntegrity() {
  * @param {number} [filters.offset]
  * @returns {object[]}
  */
+// The audit trail is oversight-only. In a browser-only app this gate is advisory
+// (a determined user can bypass client JS — the real fix is a native authority,
+// see README), but it removes the trivially-open read and records denied attempts.
+const AUDIT_READ_ROLES = ['it_admin', 'hospital_manager'];   // full audit log is oversight-only
+function canReadAudit() {
+  const u = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (u && AUDIT_READ_ROLES.includes(u.role)) return true;
+  if (typeof logAction === 'function') {
+    try { const r = logAction('AUDIT_ACCESS_DENIED', `Blocked audit-log read by ${u ? u.full_name_en + ' (' + u.role + ')' : 'unauthenticated user'}`); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+  }
+  return false;
+}
+
 function queryBlackbox(filters = {}) {
+  if (!canReadAudit()) return [];
   let sql = 'SELECT * FROM audit_log WHERE 1=1';
   const params = [];
 
@@ -165,6 +316,7 @@ function queryBlackbox(filters = {}) {
  * Get total count for pagination
  */
 function queryBlackboxCount(filters = {}) {
+  if (!canReadAudit()) return 0;
   let sql = 'SELECT COUNT(*) as cnt FROM audit_log WHERE 1=1';
   const params = [];
 
@@ -216,4 +368,13 @@ async function logAction(actionType, actionDetail, actionDetailAr, patientId, pa
   if (entry) {
     return await logToBlackbox(entry);
   }
+}
+
+// Node test harness only (the browser has no `module`):
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    _clockAnomalyNote, _humanizeDuration, _computeDrift, CLOCK_ANOMALY_TOLERANCE_MS,
+    _canonicalHashInput, _legacyHashInput,
+    logToBlackbox, verifyBlackboxIntegrity, getIntegrityReceipt, verifyAgainstReceipt
+  };
 }

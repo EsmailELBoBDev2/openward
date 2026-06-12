@@ -120,16 +120,30 @@ const DRUG_DOSE_HINTS = {
 };
 
 // ---- Diet suggestion rules based on diagnosis keywords ----
+// Keywords include common clinical abbreviations. Short ASCII abbreviations
+// (dm, mi, chf, htn...) are matched on word boundaries by keywordMatches() so
+// they don't false-trigger inside words like "admission"; Arabic keywords are
+// matched as substrings. NOTE: this is a lightweight heuristic, not a clinical
+// terminology service (SNOMED CT / ICD) — needs clinician review for real use.
 const DIET_SUGGEST_RULES = [
-  { keywords: ['diabetes', 'diabetic', 'hyperglycemia', 'dka', 'سكري', 'سكر'],              diet: 'Diabetic' },
-  { keywords: ['cardiac', 'heart failure', 'coronary', 'myocardial', 'قلب', 'قصور القلب'],  diet: 'Cardiac' },
-  { keywords: ['renal', 'kidney', 'nephropathy', 'كلى', 'كلوي', 'فشل كلوي'],               diet: 'Renal' },
-  { keywords: ['liver', 'hepatic', 'cirrhosis', 'hepatitis', 'كبد', 'تليف'],               diet: 'Hepatic' },
+  { keywords: ['diabetes', 'diabetic', 'hyperglycemia', 'hyperglycaemia', 'dka', 't1dm', 't2dm', 'dm1', 'dm2', 'niddm', 'iddm', 'dm', 'سكري', 'سكر'], diet: 'Diabetic' },
+  { keywords: ['cardiac', 'heart failure', 'coronary', 'myocardial', 'chf', 'cad', 'ihd', 'acs', 'stemi', 'nstemi', 'angina', 'mi', 'قلب', 'قصور القلب'], diet: 'Cardiac' },
+  { keywords: ['renal', 'kidney', 'nephropathy', 'ckd', 'aki', 'esrd', 'dialysis', 'hemodialysis', 'haemodialysis', 'كلى', 'كلوي', 'فشل كلوي'], diet: 'Renal' },
+  { keywords: ['liver', 'hepatic', 'cirrhosis', 'hepatitis', 'nafld', 'nash', 'ascites', 'كبد', 'تليف'], diet: 'Hepatic' },
   { keywords: ['npo', 'nil by mouth', 'pre-op', 'preoperative', 'nothing by mouth', 'صائم'], diet: 'NPO' },
-  { keywords: ['hypertension', 'blood pressure', 'ضغط', 'high bp'],                         diet: 'Low_Sodium' },
-  { keywords: ['dysphagia', 'swallow', 'stroke', 'صعوبة البلع', 'سكتة', 'بلع'],            diet: 'Soft' },
-  { keywords: ['cancer', 'chemotherapy', 'malnutrition', 'سرطان', 'كيماوي', 'سوء التغذية'], diet: 'High_Calorie' },
+  { keywords: ['hypertension', 'blood pressure', 'htn', 'high bp', 'ضغط'], diet: 'Low_Sodium' },
+  { keywords: ['dysphagia', 'swallow', 'stroke', 'cva', 'صعوبة البلع', 'سكتة', 'بلع'], diet: 'Soft' },
+  { keywords: ['cancer', 'chemotherapy', 'malnutrition', 'malignancy', 'cachexia', 'سرطان', 'كيماوي', 'سوء التغذية'], diet: 'High_Calorie' },
 ];
+
+// Word-boundary-aware keyword match. ASCII keywords match as whole tokens so
+// short abbreviations (dm, mi) don't fire inside "admission"/"family"; non-ASCII
+// (Arabic) keywords use substring matching (\b is ASCII-only in JS regex).
+function keywordMatches(text, kw) {
+  if (/[^\x00-\x7f]/.test(kw)) return text.includes(kw);
+  const esc = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('(?:^|[^a-z0-9])' + esc + '(?:$|[^a-z0-9])').test(text);
+}
 
 
 // ============================================================
@@ -150,6 +164,14 @@ function createAutocomplete(inputEl, items, opts) {
   const dropdown = document.createElement('ul');
   dropdown.className = 'suggest-dropdown';
   dropdown.style.display = 'none';
+  // a11y: expose the combobox/listbox relationship to screen readers
+  const acId = 'ac-' + Math.random().toString(36).slice(2, 9);
+  dropdown.id = acId;
+  dropdown.setAttribute('role', 'listbox');
+  inputEl.setAttribute('role', 'combobox');
+  inputEl.setAttribute('aria-autocomplete', 'list');
+  inputEl.setAttribute('aria-expanded', 'false');
+  inputEl.setAttribute('aria-controls', acId);
 
   const parent = inputEl.parentNode;
   parent.style.position = 'relative';
@@ -157,13 +179,30 @@ function createAutocomplete(inputEl, items, opts) {
 
   let activeIdx = -1;
 
+  function setActive(idx, els) {
+    activeIdx = idx;
+    els.forEach((el, i) => {
+      const on = i === idx;
+      el.classList.toggle('active', on);
+      el.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    if (idx >= 0 && els[idx]) inputEl.setAttribute('aria-activedescendant', els[idx].id);
+    else inputEl.removeAttribute('aria-activedescendant');
+  }
+
+  function setExpanded(open) {
+    inputEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (!open) inputEl.removeAttribute('aria-activedescendant');
+  }
+
   function renderDropdown(matches) {
     dropdown.innerHTML = matches.slice(0, maxResults).map((item, i) => `
-      <li class="suggest-item${i === activeIdx ? ' active' : ''}" data-idx="${i}">
+      <li class="suggest-item${i === activeIdx ? ' active' : ''}" id="${acId}-opt-${i}" role="option" aria-selected="${i === activeIdx ? 'true' : 'false'}" data-idx="${i}">
         <span class="suggest-item-main">${escapeHtml(item.label)}</span>
         ${item.sublabel ? `<span class="suggest-item-sub">${escapeHtml(item.sublabel)}</span>` : ''}
       </li>`).join('');
     dropdown.style.display = matches.length ? 'block' : 'none';
+    setExpanded(matches.length > 0);
 
     dropdown.querySelectorAll('.suggest-item').forEach((el, i) => {
       el.addEventListener('mousedown', (e) => {
@@ -177,6 +216,7 @@ function createAutocomplete(inputEl, items, opts) {
     inputEl.value = item.value;
     dropdown.style.display = 'none';
     activeIdx = -1;
+    setExpanded(false);
     if (onSelect) onSelect(item);
     inputEl.dispatchEvent(new Event('change', { bubbles: true }));
   }
@@ -198,22 +238,21 @@ function createAutocomplete(inputEl, items, opts) {
     if (!visible) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      activeIdx = Math.min(activeIdx + 1, els.length - 1);
-      els.forEach((el, i) => el.classList.toggle('active', i === activeIdx));
+      setActive(Math.min(activeIdx + 1, els.length - 1), els);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      activeIdx = Math.max(activeIdx - 1, 0);
-      els.forEach((el, i) => el.classList.toggle('active', i === activeIdx));
+      setActive(Math.max(activeIdx - 1, 0), els);
     } else if (e.key === 'Enter' && activeIdx >= 0) {
       e.preventDefault();
       els[activeIdx].dispatchEvent(new MouseEvent('mousedown'));
     } else if (e.key === 'Escape') {
       dropdown.style.display = 'none';
+      setExpanded(false);
     }
   });
 
   inputEl.addEventListener('blur', () => {
-    setTimeout(() => { dropdown.style.display = 'none'; activeIdx = -1; }, 150);
+    setTimeout(() => { dropdown.style.display = 'none'; activeIdx = -1; setExpanded(false); }, 150);
   });
 
   return {
@@ -462,7 +501,7 @@ function getDietSuggestionChip(admissionId, onApply) {
   const text = ((admission.initial_diagnosis || '') + ' ' + (admission.chief_complaint || '')).toLowerCase();
   if (!text.trim()) return null;
 
-  const rule = DIET_SUGGEST_RULES.find(r => r.keywords.some(k => text.includes(k)));
+  const rule = DIET_SUGGEST_RULES.find(r => r.keywords.some(k => keywordMatches(text, k)));
   if (!rule) return null;
 
   const dietLabel = rule.diet.replace(/_/g, ' ');
@@ -502,4 +541,9 @@ function tatBadge(hours) {
   if (hours <= 4)  return `<span class="badge tat-ok">${h}h</span>`;
   if (hours <= 8)  return `<span class="badge tat-warn">${h}h</span>`;
   return `<span class="badge tat-late">${h}h</span>`;
+}
+
+// Node test harness only (the browser has no `module`):
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { keywordMatches, DIET_SUGGEST_RULES };
 }

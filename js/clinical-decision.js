@@ -62,8 +62,12 @@ const DRUG_DOSING = {
     max_daily_dose_mg: 200,
     frequency: 'every_12h',
     renal_adjustments: [
-      { min_egfr: 30, max_egfr: 99, factor: 1.0,  note: '1 mg/kg q12h' },
-      { min_egfr: 0,  max_egfr: 29, factor: 1.0,  note: '1 mg/kg q24h (renal adjustment)' }
+      { min_egfr: 30, max_egfr: 999, factor: 1.0, note: '1 mg/kg q12h' },
+      { min_egfr: 15, max_egfr: 29,  factor: 1.0, note: '1 mg/kg q24h (renal adjustment)' },
+      // The notes said "avoid if eGFR <15" but the table still applied full dose
+      // down to 0 — so the calculator suggested a normal therapeutic dose in
+      // severe renal failure. factor:0 makes the widget mark it CONTRAINDICATED.
+      { min_egfr: 0,  max_egfr: 14,  factor: 0,   note: 'AVOID at eGFR <15 — accumulates; use unfractionated heparin (UFH) instead' }
     ],
     notes: 'Avoid if eGFR < 15. Consider UFH instead.'
   },
@@ -260,6 +264,7 @@ const DRUG_DOSING = {
   'heparin': {
     name: 'Heparin (unfractionated)', name_ar: 'هيبارين',
     default_dose_per_kg: 80, max_single_dose_mg: 10000, max_daily_dose_mg: 40000,
+    unit: 'units',
     frequency: 'continuous',
     renal_adjustments: [{ min_egfr: 0, max_egfr: 999, factor: 1.0, note: 'No renal adjustment. aPTT-guided.' }]
   },
@@ -365,7 +370,7 @@ const DRUG_DOSING = {
   // ---- Diabetes ----
   'insulin_regular': {
     name: 'Insulin Regular', name_ar: 'إنسولين عادي',
-    fixed_dose_mg: 10, max_daily_dose_mg: 100, frequency: 'every_6h',
+    fixed_dose_mg: 10, max_daily_dose_mg: 100, unit: 'units', frequency: 'every_6h',
     renal_adjustments: [
       { min_egfr: 50, max_egfr: 999, factor: 1.0, note: 'Standard dosing' },
       { min_egfr: 10, max_egfr: 49, factor: 0.75, note: 'Reduce 25% — slower clearance' },
@@ -374,7 +379,7 @@ const DRUG_DOSING = {
   },
   'glargine': {
     name: 'Insulin Glargine', name_ar: 'إنسولين جلارجين',
-    fixed_dose_mg: 20, max_daily_dose_mg: 100, frequency: 'once_daily',
+    fixed_dose_mg: 20, max_daily_dose_mg: 100, unit: 'units', frequency: 'once_daily',
     renal_adjustments: [
       { min_egfr: 50, max_egfr: 999, factor: 1.0, note: 'Standard dosing' },
       { min_egfr: 10, max_egfr: 49, factor: 0.75, note: 'Reduce 25%' },
@@ -576,7 +581,7 @@ const DRUG_DOSING = {
   },
   'vitamin_d': {
     name: 'Vitamin D3 (Cholecalciferol)', name_ar: 'فيتامين د3',
-    fixed_dose_mg: 1000, max_daily_dose_mg: 5000, frequency: 'once_daily',
+    fixed_dose_mg: 1000, max_daily_dose_mg: 5000, unit: 'IU', frequency: 'once_daily',
     renal_adjustments: [{ min_egfr: 0, max_egfr: 999, factor: 1.0, note: 'No renal adjustment, but use calcitriol if severe CKD' }]
   },
   'calcium_carbonate': {
@@ -602,12 +607,30 @@ const DRUG_DOSING = {
   }
 };
 
+// ISMP high-alert medication classes present in this formulary. For these, the
+// calculator does NOT offer one-click auto-fill — a decision-support tool must
+// not auto-populate a high-risk order; the clinician types the dose after an
+// independent double-check. (Cf. FDA CDS guidance / ISMP high-alert list.)
+const HIGH_ALERT_DRUGS = new Set([
+  'insulin_regular', 'glargine', 'gliclazide',                 // insulin / hypoglycemics
+  'morphine', 'fentanyl', 'tramadol',                          // opioids
+  'enoxaparin', 'heparin', 'warfarin', 'rivaroxaban', 'apixaban', 'clopidogrel', // anticoagulant/antiplatelet
+  'digoxin', 'amiodarone', 'phenytoin',                        // narrow therapeutic index
+  'lorazepam', 'diazepam',                                     // sedatives
+  'potassium_chloride', 'magnesium_sulfate',                   // concentrated electrolytes
+]);
+
 /**
  * Calculate recommended dose for a drug given patient parameters.
  * @param {string} drugKey - lowercase key in DRUG_DOSING
  * @param {number} weightKg - patient weight in kg
  * @param {number} egfr - estimated GFR (mL/min/1.73m²); null = unknown (assume normal)
  * @returns {object|null} { single_dose_mg, daily_dose_mg, frequency, warnings, raw_dose, factor }
+ *
+ * NOTE: uses TOTAL body weight for mg/kg drugs. It does NOT adjust for ideal /
+ * adjusted body weight (obesity), pediatric weight bands, or non-renal organ
+ * function — so it can over-estimate for some agents (e.g. vancomycin, heparin)
+ * in obese patients. Estimate only; needs clinician verification (see README).
  */
 function calcRecommendedDose(drugKey, weightKg, egfr) {
   const drug = DRUG_DOSING[drugKey.toLowerCase()];
@@ -629,60 +652,64 @@ function calcRecommendedDose(drugKey, weightKg, egfr) {
     }
   }
 
-  let rawSingle, rawDaily;
+  let rawSingle;
+  let weightMissing = false;
   if (drug.default_dose_per_kg && weightKg) {
     rawSingle = drug.default_dose_per_kg * weightKg;
     if (drug.max_single_dose_mg) rawSingle = Math.min(rawSingle, drug.max_single_dose_mg);
   } else if (drug.fixed_dose_mg) {
     rawSingle = drug.fixed_dose_mg;
   } else if (drug.default_dose_per_kg && !weightKg) {
-    // Weight-based drug but weight unknown — use max as conservative default with warning
-    rawSingle = drug.max_single_dose_mg || (drug.default_dose_per_kg * 70); // 70kg fallback
-    return {
-      drug_name: drug.name,
-      drug_name_ar: drug.name_ar,
-      single_dose_mg: Math.round(rawSingle * 10) / 10,
-      daily_dose_mg: Math.round(rawSingle * 10) / 10,
-      frequency: drug.frequency,
-      raw_dose: rawSingle,
-      renal_factor: 1,
-      warnings: ['Weight UNKNOWN — using 70kg default. ENTER WEIGHT for accurate dose.'],
-      contraindicated: false,
-      weight_missing: true
-    };
+    // Weight-based drug but weight unknown: estimate from 70 kg (capped at the max
+    // single dose) and FALL THROUGH to the common path below. The previous code
+    // early-returned here with renal_factor:1 / contraindicated:false — throwing
+    // away the renal contraindication computed above (e.g. ibuprofen at eGFR 25 is
+    // factor 0 "AVOID — risk of AKI") and letting the widget render its one-click
+    // autofill for a contraindicated dose whenever the weight field was blank. It
+    // also used max_single_dose_mg as the "default" while the warning text claimed
+    // 70 kg (for heparin that displayed 10,000 units — a ~125 kg bolus, not 70 kg)
+    // and reported daily_dose_mg equal to ONE dose despite a q8h/q12h frequency.
+    weightMissing = true;
+    rawSingle = drug.default_dose_per_kg * 70;
+    if (drug.max_single_dose_mg) rawSingle = Math.min(rawSingle, drug.max_single_dose_mg);
   } else {
     return null;
   }
 
   const adjustedSingle = renalFactor === 0 ? 0 : rawSingle * renalFactor;
-  // Estimate daily dose based on frequency
+  // Estimate daily dose based on frequency. Frequencies with NO defined
+  // doses/day (continuous infusion, PRN, anything unrecognized) yield daily
+  // null → rendered as '—'. The old `|| 1` fallback understated the daily
+  // total by up to 24× (every_1h) and showed one "dose" for an infusion.
   const freqMap = {
     once_daily: 1, every_24h: 1, qd: 1,
     twice_daily: 2, every_12h: 2, bid: 2,
     three_times_daily: 3, every_8h: 3, tid: 3,
     every_6h: 4, qid: 4,
-    every_4h: 6
+    every_4h: 6, every_3h: 8, every_2h: 12, every_1h: 24
   };
-  const dosesPerDay = freqMap[drug.frequency] || 1;
-  let adjustedDaily = adjustedSingle * dosesPerDay;
-  if (drug.max_daily_dose_mg && renalFactor !== 0) adjustedDaily = Math.min(adjustedDaily, drug.max_daily_dose_mg);
+  const dosesPerDay = freqMap[drug.frequency] != null ? freqMap[drug.frequency] : null;
+  let adjustedDaily = dosesPerDay == null ? null : adjustedSingle * dosesPerDay;
+  if (adjustedDaily != null && drug.max_daily_dose_mg && renalFactor !== 0) adjustedDaily = Math.min(adjustedDaily, drug.max_daily_dose_mg);
 
   const warnings = [];
+  if (weightMissing) warnings.push('Weight UNKNOWN — estimate uses a 70 kg default. ENTER WEIGHT for an accurate dose.');
   if (renalFactor === 0) warnings.push('CONTRAINDICATED: ' + (renalNote || 'Severe renal impairment'));
   if (renalFactor > 0 && renalFactor < 1) warnings.push('Renal dose reduction: ' + renalNote);
-  if (!weightKg && drug.default_dose_per_kg) warnings.push('Weight unknown — using fixed dose');
   if (drug.notes) warnings.push(drug.notes);
 
   return {
     drug_name: drug.name,
     drug_name_ar: drug.name_ar,
     single_dose_mg: Math.round(adjustedSingle * 10) / 10,
-    daily_dose_mg: Math.round(adjustedDaily * 10) / 10,
+    daily_dose_mg: adjustedDaily == null ? null : Math.round(adjustedDaily * 10) / 10,
+    unit: drug.unit || 'mg',   // unit-dosed drugs (insulin/heparin: units, vit D: IU) are NOT mg
     frequency: drug.frequency,
     raw_dose: Math.round(rawSingle * 10) / 10,
     renal_factor: renalFactor,
     warnings,
-    contraindicated: renalFactor === 0
+    contraindicated: renalFactor === 0,
+    weight_missing: weightMissing
   };
 }
 
@@ -724,15 +751,15 @@ function renderAutoDoseWidget(containerId, opts) {
 
     container.innerHTML = `
       <div class="autodose-widget">
-        <h4>&#129524; ${lang==='ar'?'حاسبة الجرعة الذكية':'Smart Dose Calculator'}: ${escapeHtml(drugLabel)}</h4>
+        <h4>&#129524; ${lang==='ar'?'حاسبة الجرعة (استشارية)':'Dose Estimator (advisory)'}: ${escapeHtml(drugLabel)}</h4>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
           <div>
             <div style="color:#1e40af;font-size:0.8rem">${lang==='ar'?'جرعة مفردة موصى بها':'Recommended single dose'}</div>
-            <div style="font-size:1.2rem;font-weight:700">${result.single_dose_mg} mg</div>
+            <div style="font-size:1.2rem;font-weight:700">${result.single_dose_mg} ${escapeHtml(result.unit)}</div>
           </div>
           <div>
             <div style="color:#1e40af;font-size:0.8rem">${lang==='ar'?'إجمالي يومي مقدر':'Estimated daily dose'}</div>
-            <div style="font-size:1.2rem;font-weight:700">${result.daily_dose_mg} mg</div>
+            <div style="font-size:1.2rem;font-weight:700">${result.daily_dose_mg != null ? result.daily_dose_mg + ' ' + escapeHtml(result.unit) : '—'}</div>
           </div>
         </div>
         <div style="font-size:0.85rem;color:#6b7280;margin-top:6px">
@@ -740,12 +767,23 @@ function renderAutoDoseWidget(containerId, opts) {
           ${result.renal_factor < 1 ? ` • <span style="color:#dc2626">${lang==='ar'?'مع تعديل كلوي':'with renal adjustment'}</span>` : ''}
         </div>
         ${warnHtml}
-        ${!result.contraindicated && opts.doseInputId ? `
-          <button type="button" class="btn btn-sm btn-primary" style="margin-top:8px"
-                  onclick="document.getElementById('${opts.doseInputId}').value='${result.single_dose_mg}mg'; ${opts.freqInputId?`document.getElementById('${opts.freqInputId}').value='${result.frequency}';`:''}">
-            ${lang==='ar'?'استخدم هذه الجرعة':'Use this dose'}
-          </button>
-        ` : ''}
+        <div style="font-size:0.75rem;color:#92400e;background:#fffbeb;border-radius:6px;padding:6px 8px;margin-top:6px">
+          ${lang==='ar'
+            ? '⚠️ تقدير مبدئي بحسب وزن الجسم الكلي. تحقّق من الجرعة حسب الوزن المثالي/المعدّل في حالات السمنة، وجرعات الأطفال، ووظيفة الكلى، ودليل المستشفى قبل الوصف.'
+            : '⚠️ Rough estimate using total body weight. Verify against ideal/adjusted body weight (obesity), pediatric dosing, renal function, and your formulary before prescribing.'}
+        </div>
+        ${!result.contraindicated && !result.weight_missing && opts.doseInputId ? (
+          HIGH_ALERT_DRUGS.has(drug)
+          ? `<div style="font-size:0.78rem;color:#7f1d1d;background:#fee2e2;border-radius:6px;padding:6px 8px;margin-top:8px;font-weight:600">
+               ${lang==='ar'
+                 ? '⛔ دواء عالي الخطورة — لا يوجد إدخال تلقائي للجرعة. أدخلها يدوياً بعد تحقّق مستقل (تدقيق مزدوج).'
+                 : '⛔ High-alert medication — auto-fill disabled. Enter the dose manually after an independent double-check.'}
+             </div>`
+          : `<button type="button" class="btn btn-sm btn-primary" style="margin-top:8px"
+                  onclick="autoDoseApply('${opts.doseInputId}', '${opts.freqInputId || ''}', '${result.single_dose_mg}${result.unit}', '${result.frequency}')">
+               ${lang==='ar'?'استخدم هذه الجرعة':'Use this dose'}
+             </button>`
+        ) : ''}
       </div>
     `;
   }
@@ -763,18 +801,34 @@ function renderAutoDoseWidget(containerId, opts) {
   update();
 }
 
-// Helper: build datalist of available drugs for autocomplete
-function autoDoseAvailableDrugs() {
-  return Object.entries(DRUG_DOSING).map(([k, v]) => ({ key: k, name: v.name, name_ar: v.name_ar }));
+// 'Use this dose' click target. The frequency is only written when the target
+// <select> actually OFFERS that value — assigning a missing value cleared the
+// select to blank, silently dropping the doctor's earlier frequency choice.
+function autoDoseApply(doseInputId, freqInputId, doseText, freq) {
+  const doseEl = document.getElementById(doseInputId);
+  if (doseEl) doseEl.value = doseText;
+  if (!freqInputId) return;
+  const freqEl = document.getElementById(freqInputId);
+  if (!freqEl) return;
+  if (freqEl.tagName === 'SELECT') {
+    if (Array.from(freqEl.options).some(o => o.value === freq)) freqEl.value = freq;
+  } else {
+    freqEl.value = freq;
+  }
 }
 
 // ============================================================
-// SEPSIS AUTO-ALERT
+// SEPSIS AUTO-ALERT  (SCREENING ONLY — not a diagnosis)
 // ============================================================
-// Triggered when vitals are recorded.
-// Sepsis criteria (Sepsis-3):
-//   - qSOFA ≥ 2 (resp_rate ≥ 22, SBP ≤ 100, AVPU not "alert")
-//   - OR temp ≥ 38°C or ≤ 36°C with HR ≥ 90 and RR ≥ 20
+// Triggered when vitals are recorded. This is a bedside *screen* that prompts
+// review; it does NOT diagnose sepsis.
+//   - qSOFA ≥ 2 (resp_rate ≥ 22, SBP ≤ 100, AVPU not "alert") — Sepsis-3 screen
+//   - SIRS (temp; HR ≥ 90; RR ≥ 20) is shown as a legacy adjunct signal only.
+//     SIRS was REMOVED from the Sepsis-3 definition (Singer et al., JAMA 2016);
+//     qSOFA is a screening prompt, NOT a diagnostic criterion. True Sepsis-3 =
+//     suspected infection + an acute rise in the full SOFA score ≥ 2.
+// TODO(clinical): full SOFA + infection-suspicion gating needs MD / clinical
+//   informaticist sign-off before any real use (see README "Read this first").
 // ============================================================
 
 /**
@@ -857,6 +911,11 @@ function maybeShowSepsisAlert(admissionId, vitalsId, vitalsObj) {
           <li>${lang==='ar'?'قياس مستوى اللاكتات':'Check serum lactate'}</li>
           <li>${lang==='ar'?'قياس ساعي للبول (foley)':'Monitor hourly urine output (foley)'}</li>
         </ol>
+        <div style="font-size:0.72rem;color:#92400e;margin-top:6px">
+          ${lang==='ar'
+            ? 'استشاري — بروتوكول Sepsis-6 (UK Sepsis Trust). دعم قرار لا يُغني عن حكم الطبيب؛ يُسجَّل الإقرار.'
+            : 'Advisory — Sepsis-6 (UK Sepsis Trust). Decision support, not a substitute for clinician judgement; acknowledgement is logged.'}
+        </div>
       </div>
       <div class="alert-buttons" style="margin-top:14px">
         <button class="btn btn-primary" onclick="acknowledgeSepsisAlert(${admissionId}); this.closest('.alert-overlay').remove()">
@@ -879,17 +938,25 @@ async function acknowledgeSepsisAlert(admissionId) {
 }
 
 // ============================================================
-// READMISSION RISK SCORE (HOSPITAL Score - simplified)
+// READMISSION RISK FLAG — OpenWard local heuristic (NOT a validated score)
 // ============================================================
-// Factors:
-//   - Hemoglobin <12: +1
-//   - Discharge from oncology service: +2
-//   - Length of stay ≥5 days: +2
-//   - Procedure during stay: +1
-//   - Number of ED visits in past 12mo: +1 each (max 4)
+// This is *inspired by* the HOSPITAL score (Donzé et al., JAMA Intern Med 2013)
+// but it is NOT the HOSPITAL score: it omits hemoglobin, oncology discharge,
+// procedure-during-stay, and ED-visit counts, and adds homegrown factors
+// (critical labs, code-blue events, ICU stay, polypharmacy). Its discrimination
+// has NOT been validated against readmission outcomes. The factors actually
+// implemented below:
 //   - Age ≥65: +1
+//   - Length of stay ≥5 days: +2
 //   - Chronic conditions ≥2: +2
-// Risk levels:  0-4 Low, 5-8 Medium, 9+ High
+//   - Critical lab values during stay: +2
+//   - Code Blue event during admission: +3
+//   - ICU stay (department of type 'icu'): +2
+//   - Active prescriptions ≥5 (polypharmacy): +1
+// Banding: 0-4 Low, 5-8 Medium, 9+ High (heuristic, unvalidated).
+// TODO(clinical): have a clinician either sign off on this factor set or replace
+// it with the real HOSPITAL factors (hemoglobin/oncology/procedure/ED visits are
+// derivable from existing tables) before relying on it for discharge planning.
 // ============================================================
 
 /**
@@ -946,8 +1013,16 @@ function calcReadmissionRisk(admissionId) {
     factors.push({ factor: 'code_blue', label_en: 'Code Blue event during admission', label_ar: 'حدث Code Blue أثناء الإدخال', points: 3 });
   }
 
-  // High-risk department (ICU)
-  if (adm.dept_id === 4) {
+  // High-risk department (ICU). Look the department up instead of hardcoding
+  // dept_id === 4 — that magic number matched the client demo seed only; the LAN
+  // server seeds ICU as dept 3, and any real deployment numbers departments
+  // however it likes, silently mis-scoring every patient. Matched by type='icu'
+  // (server seed) OR name (client seed types ICU as 'clinical').
+  const dept = adm.dept_id ? dbGet('SELECT type, name_en, name_ar FROM departments WHERE dept_id = ?', [adm.dept_id]) : null;
+  const isIcu = !!dept && (dept.type === 'icu'
+    || /\bicu\b|intensive care/i.test(dept.name_en || '')
+    || (dept.name_ar || '').includes('عناية مركزة') || (dept.name_ar || '').includes('العناية المركزة'));
+  if (isIcu) {
     score += 2;
     factors.push({ factor: 'icu_stay', label_en: 'ICU admission', label_ar: 'إقامة في العناية المركزة', points: 2 });
   }
@@ -983,9 +1058,9 @@ function renderReadmissionRiskWidget(admissionId, lang) {
     <div class="readmit-risk-card ${cls}">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
         <div>
-          <h4>${lang==='ar'?'مؤشر خطر إعادة الإدخال خلال 30 يوماً':'30-Day Readmission Risk Score'}</h4>
+          <h4>${lang==='ar'?'مؤشر خطر إعادة الإدخال (تقديري)':'Readmission Risk Flag (heuristic)'}</h4>
           <div style="font-size:0.85rem;color:#6b7280;margin-top:2px">
-            ${lang==='ar'?'محسوب آلياً بناءً على عوامل المريض':'Computed automatically based on patient factors'}
+            ${lang==='ar'?'تقدير محلي غير مُتحقَّق سريرياً — ليس مقياس HOSPITAL المنشور':'Local unvalidated heuristic — not the published HOSPITAL score'}
           </div>
         </div>
         <div style="text-align:center">

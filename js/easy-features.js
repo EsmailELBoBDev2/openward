@@ -1,6 +1,6 @@
 // ============================================================
 // HIS — Easy Features (5-year-old friendly)
-// Code Status banner | Drug Reference | Vaccinations | Recently Used | Welcome Tour
+// Code Status banner | Vaccinations | Welcome Tour
 // All built with plain JS, no dependencies, simple logic.
 // ============================================================
 
@@ -80,117 +80,6 @@ function saveCodeStatus(admissionId) {
 }
 
 // ============================================================
-// DRUG REFERENCE — Quick info panel for any drug
-// ============================================================
-const DRUG_REFERENCE = {
-  // Brief reference for common drugs — indication, key SE, monitoring
-  'amoxicillin':  { class: 'Beta-lactam antibiotic',     indication: 'Bacterial infections (URI, otitis, UTI, dental)', se: 'Diarrhea, rash, C. diff, allergic reactions', monitor: 'Watch for allergic reaction first 30 min' },
-  'ceftriaxone':  { class: '3rd-gen cephalosporin',      indication: 'Severe infections, meningitis, gonorrhea',         se: 'Diarrhea, rash, biliary sludge in neonates', monitor: 'Renal function in CKD' },
-  'vancomycin':   { class: 'Glycopeptide antibiotic',    indication: 'MRSA, severe Gram-positive infections, C. diff',  se: 'Red man syndrome, nephrotoxicity, ototoxicity', monitor: 'Trough level (15-20 for serious infx), renal function' },
-  'azithromycin': { class: 'Macrolide antibiotic',       indication: 'CAP, atypical pneumonia, STIs, COPD exacerbation', se: 'GI upset, QT prolongation', monitor: 'ECG if other QT-prolonging drugs' },
-  'metronidazole':{ class: 'Nitroimidazole antibiotic',  indication: 'Anaerobic infections, C. diff, BV',                se: 'Metallic taste, nausea, disulfiram reaction with alcohol', monitor: 'No alcohol during treatment' },
-  'piperacillin_tazobactam': { class: 'Anti-pseudomonal beta-lactam', indication: 'Sepsis, hospital pneumonia, intra-abdominal',  se: 'Diarrhea, AKI when combined with vanc', monitor: 'Renal function, watch for AKI' },
-  'meropenem':    { class: 'Carbapenem',                 indication: 'Severe Gram-neg infections, neutropenic fever',    se: 'Seizures (esp renal failure), AKI', monitor: 'Renal function, neuro status' },
-  'ciprofloxacin':{ class: 'Fluoroquinolone',            indication: 'UTI, pyelonephritis, intra-abdominal, anthrax',    se: 'Tendon rupture, QT, C. diff, peripheral neuropathy', monitor: 'Tendons, ECG, blood glucose' },
-  'levofloxacin': { class: 'Fluoroquinolone',            indication: 'CAP, sinusitis, complicated UTI',                  se: 'Tendon rupture, QT, hypoglycemia in DM',     monitor: 'ECG, glucose, tendons' },
-
-  'aspirin':      { class: 'Antiplatelet',               indication: 'CAD, post-MI, post-stroke prevention',             se: 'GI bleed, increased bleeding, Reye syndrome in kids', monitor: 'Bleeding signs, GI symptoms' },
-  'clopidogrel':  { class: 'P2Y12 antiplatelet',         indication: 'Post-PCI, post-stroke, ACS',                       se: 'Bleeding, TTP (rare)',                       monitor: 'Bleeding, CBC' },
-  'atorvastatin': { class: 'HMG-CoA reductase inhibitor (statin)', indication: 'Hyperlipidemia, ASCVD prevention',     se: 'Myopathy, hepatotoxicity, new-onset DM',     monitor: 'LFTs at baseline + as indicated, CK if myalgia' },
-  'rosuvastatin': { class: 'Statin',                     indication: 'Hyperlipidemia (more potent)',                     se: 'Myopathy, hepatotoxicity',                   monitor: 'Same as atorvastatin' },
-
-  'lisinopril':   { class: 'ACE inhibitor',              indication: 'HTN, CHF, post-MI, diabetic nephropathy',          se: 'Cough, hyperkalemia, AKI, angioedema',       monitor: 'BP, K+, Cr (esp first week)' },
-  'enalapril':    { class: 'ACE inhibitor',              indication: 'HTN, CHF',                                          se: 'Cough, hyperkalemia, angioedema',            monitor: 'BP, K+, Cr' },
-  'losartan':     { class: 'ARB',                        indication: 'HTN, CHF, diabetic nephropathy (ACE intolerant)',  se: 'Hyperkalemia, AKI (less cough than ACE)',    monitor: 'BP, K+, Cr' },
-  'amlodipine':   { class: 'CCB (dihydropyridine)',      indication: 'HTN, angina',                                      se: 'Pedal edema, gingival hyperplasia, headache', monitor: 'BP, edema' },
-  'metoprolol':   { class: 'Cardioselective beta-blocker', indication: 'HTN, CHF, post-MI, angina, AFib rate control', se: 'Bradycardia, fatigue, mask hypoglycemia',    monitor: 'HR, BP, CHF symptoms' },
-  'bisoprolol':   { class: 'Beta-blocker',               indication: 'HTN, CHF',                                         se: 'Bradycardia, fatigue',                       monitor: 'HR, BP' },
-  'carvedilol':   { class: 'Non-selective BB + alpha-blocker', indication: 'CHF, HTN, post-MI',                       se: 'Hypotension, dizziness, bronchospasm',       monitor: 'BP, HR, CHF symptoms' },
-  'furosemide':   { class: 'Loop diuretic',              indication: 'CHF, edema, hypertension',                         se: 'Hypokalemia, hyponatremia, ototoxicity, AKI', monitor: 'K+, Mg, Cr, weight, I/O' },
-  'spironolactone': { class: 'K-sparing diuretic / aldosterone antagonist', indication: 'CHF, ascites, primary aldosteronism', se: 'Hyperkalemia, gynecomastia', monitor: 'K+, Cr' },
-  'hydrochlorothiazide': { class: 'Thiazide diuretic',   indication: 'HTN (first-line per JNC8)',                        se: 'Hypokalemia, hyperuricemia, hyperglycemia',  monitor: 'K+, glucose, uric acid' },
-  'digoxin':      { class: 'Cardiac glycoside',          indication: 'AFib (rate), CHF',                                 se: 'GI, vision changes (yellow halos), arrhythmias', monitor: 'Level (0.5-2 ng/mL), K+, Cr' },
-  'amiodarone':   { class: 'Class III antiarrhythmic',   indication: 'AFib, V-tach',                                     se: 'Pulmonary fibrosis, hepatic, thyroid (both hyper/hypo), corneal deposits, blue skin', monitor: 'TFT, LFT, PFT, ophthalm annually' },
-
-  'warfarin':     { class: 'Vitamin K antagonist',       indication: 'AFib, DVT/PE, mech valve',                         se: 'Bleeding, skin necrosis, teratogen',          monitor: 'INR weekly initially, target 2-3 (2.5-3.5 mech valve)' },
-  'rivaroxaban':  { class: 'DOAC (Factor Xa inhibitor)', indication: 'AFib (CrCl > 15), DVT/PE',                         se: 'Bleeding (less ICH than warfarin)',          monitor: 'Renal function, no routine INR' },
-  'apixaban':     { class: 'DOAC (Factor Xa inhibitor)', indication: 'AFib, DVT/PE',                                     se: 'Bleeding (lowest of DOACs)',                 monitor: 'Renal function' },
-  'enoxaparin':   { class: 'Low-MW heparin',             indication: 'DVT/PE prophylaxis & treatment, ACS',              se: 'Bleeding, HIT (lower than UFH)',             monitor: 'Anti-Xa if obesity/CKD/preg, platelet for HIT' },
-  'heparin':      { class: 'Unfractionated heparin',     indication: 'ACS, PE, bridging anticoag',                       se: 'Bleeding, HIT, osteoporosis (long-term)',    monitor: 'aPTT (1.5-2.5x control), platelets, anti-Xa' },
-
-  'metformin':    { class: 'Biguanide (oral hypoglycemic)', indication: 'T2DM (first-line)',                            se: 'GI upset, lactic acidosis (rare), B12 deficiency', monitor: 'eGFR (>30 to use), B12 annually if long-term' },
-  'insulin_regular':{ class: 'Short-acting insulin',     indication: 'DKA, hyperglycemia, surgical patients',            se: 'Hypoglycemia, weight gain, hypokalemia',     monitor: 'Glucose q1-6h, K+ if drip' },
-  'glargine':     { class: 'Long-acting insulin',        indication: 'Basal insulin in T1/T2DM',                         se: 'Hypoglycemia',                               monitor: 'Glucose, target individualized' },
-  'gliclazide':   { class: 'Sulfonylurea',               indication: 'T2DM',                                             se: 'Hypoglycemia, weight gain',                  monitor: 'Glucose, avoid in CKD' },
-  'sitagliptin':  { class: 'DPP-4 inhibitor',            indication: 'T2DM',                                             se: 'Pancreatitis (rare), arthralgia',            monitor: 'Renal function' },
-  'empagliflozin':{ class: 'SGLT2 inhibitor',            indication: 'T2DM, CHF (regardless of DM)',                     se: 'UTI, genital mycotic, euglycemic DKA, volume depletion', monitor: 'Renal function, ketones if symptoms' },
-
-  'omeprazole':   { class: 'PPI',                        indication: 'GERD, PUD, stress ulcer prophylaxis',              se: 'Long-term: B12 def, hypomagnesemia, fractures, C. diff', monitor: 'Mg, B12 if long-term' },
-  'pantoprazole': { class: 'PPI',                        indication: 'Same as omeprazole, IV use ICU',                   se: 'Same as omeprazole',                         monitor: 'Same' },
-  'ondansetron':  { class: '5-HT3 antagonist (antiemetic)', indication: 'Chemotherapy, post-op N/V',                    se: 'Headache, constipation, QT prolongation',    monitor: 'ECG if other QT drugs' },
-
-  'salbutamol':   { class: 'Short-acting beta-2 agonist (SABA)', indication: 'Asthma rescue, COPD',                    se: 'Tremor, tachycardia, hypokalemia',           monitor: 'HR, K+ if frequent' },
-  'budesonide':   { class: 'Inhaled corticosteroid',     indication: 'Asthma maintenance',                                se: 'Oral candidiasis, hoarseness',               monitor: 'Rinse mouth after use' },
-  'prednisone':   { class: 'Systemic corticosteroid',    indication: 'Inflammatory conditions, asthma exacerbation',     se: 'Hyperglycemia, HTN, infection, osteoporosis, mood changes', monitor: 'Glucose, BP, bone (long-term)' },
-
-  'paracetamol':  { class: 'Analgesic / antipyretic',    indication: 'Pain, fever',                                      se: 'Hepatotoxicity (overdose)',                  monitor: 'Max 4g/day (3g if liver disease)' },
-  'ibuprofen':    { class: 'NSAID',                      indication: 'Pain, inflammation, fever',                        se: 'GI bleed, AKI, HTN, increased CV events',    monitor: 'Avoid in CKD, peptic ulcer, pregnancy 3rd tri' },
-  'morphine':     { class: 'Opioid agonist',             indication: 'Severe pain',                                      se: 'Respiratory depression, sedation, constipation, addiction', monitor: 'RR, sedation, pain score, bowel function' },
-  'tramadol':     { class: 'Atypical opioid + SNRI activity', indication: 'Moderate pain',                              se: 'Seizures, serotonin syndrome with SSRIs, addiction', monitor: 'Avoid with SSRI/SNRI without caution' },
-
-  'lorazepam':    { class: 'Benzodiazepine (intermediate)', indication: 'Anxiety, status epilepticus, alcohol withdrawal', se: 'Sedation, respiratory depression, dependence', monitor: 'RR, sedation' },
-  'haloperidol':  { class: 'Typical antipsychotic',      indication: 'Acute agitation, delirium',                        se: 'EPS, dystonia, NMS, QT prolongation',        monitor: 'EPS, ECG' },
-  'levetiracetam':{ class: 'Antiepileptic',              indication: 'Seizures (focal & generalized)',                   se: 'Mood changes, agitation, fatigue',           monitor: 'Mood, behavior' }
-};
-
-function getDrugReference(drugKey) {
-  if (!drugKey) return null;
-  return DRUG_REFERENCE[drugKey.toLowerCase()] || null;
-}
-
-function showDrugReference(drugKey, drugLabel) {
-  const ref = getDrugReference(drugKey);
-  const lang = currentLanguage();
-  const isAr = lang === 'ar';
-  const label = drugLabel || drugKey;
-
-  if (!ref) {
-    showModal(`
-      <div>
-        <h2>💊 ${escapeHtml(label)}</h2>
-        <p style="color:#9ca3af">${isAr?'لا توجد معلومات مرجعية':'No reference info available'}</p>
-        <button class="btn btn-secondary" onclick="closeModal()">${t('cancel_btn')||'Close'}</button>
-      </div>
-    `);
-    return;
-  }
-
-  showModal(`
-    <div style="max-width:560px">
-      <h2>💊 ${escapeHtml(label)}</h2>
-      <p style="color:#3b82f6;margin:0 0 14px;font-weight:500">${escapeHtml(ref.class)}</p>
-      <div style="display:grid;gap:12px">
-        <div style="padding:10px;background:#f0fdf4;border-left:4px solid #10b981;border-radius:6px">
-          <strong style="color:#065f46;font-size:0.8rem;text-transform:uppercase">${isAr?'الاستطباب':'Indication'}</strong>
-          <div style="margin-top:4px">${escapeHtml(ref.indication)}</div>
-        </div>
-        <div style="padding:10px;background:#fef2f2;border-left:4px solid #dc2626;border-radius:6px">
-          <strong style="color:#7f1d1d;font-size:0.8rem;text-transform:uppercase">${isAr?'الآثار الجانبية':'Side Effects'}</strong>
-          <div style="margin-top:4px">${escapeHtml(ref.se)}</div>
-        </div>
-        <div style="padding:10px;background:#eff6ff;border-left:4px solid #3b82f6;border-radius:6px">
-          <strong style="color:#1e40af;font-size:0.8rem;text-transform:uppercase">${isAr?'المراقبة':'Monitoring'}</strong>
-          <div style="margin-top:4px">${escapeHtml(ref.monitor)}</div>
-        </div>
-      </div>
-      <div style="display:flex;justify-content:flex-end;margin-top:16px">
-        <button class="btn btn-primary" onclick="closeModal()">${isAr?'حسناً':'Got it'}</button>
-      </div>
-    </div>
-  `);
-}
-
-// ============================================================
 // VACCINATIONS — Track vaccines per patient
 // ============================================================
 const COMMON_VACCINES = [
@@ -235,7 +124,7 @@ function showVaccinationsForm(patientId, patientName) {
 
   const vaccineOptions = COMMON_VACCINES.map(v => `<option value="${escapeHtml(isAr ? v.name_ar : v.name_en)}">${escapeHtml(isAr ? v.name_ar : v.name_en)}</option>`).join('');
 
-  const today = new Date().toISOString().substring(0, 10);
+  const today = todayISO();
 
   showModal(`
     <div style="max-width:680px;width:90vw">
@@ -284,71 +173,40 @@ function showVaccinationsForm(patientId, patientName) {
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
         <button class="btn btn-secondary" onclick="closeModal()">${t('cancel_btn')}</button>
-        <button class="btn btn-primary" onclick="saveVaccination(${patientId}, '${escapeHtml(patientName).replace(/'/g, '&apos;')}')">${isAr?'حفظ':'Save Vaccine'}</button>
+        <button class="btn btn-primary" onclick="saveVaccination(${patientId}, '${jsAttr(patientName)}')">${isAr?'حفظ':'Save Vaccine'}</button>
       </div>
     </div>
   `);
 }
 
-function saveVaccination(patientId, patientName) {
+async function saveVaccination(patientId, patientName) {
+  const ar = currentLanguage()==='ar';
   const user = getCurrentUser();
   const name = (document.getElementById('vac-name')?.value || '').trim();
-  if (!name) { showError(currentLanguage()==='ar'?'اسم اللقاح مطلوب':'Vaccine name required'); return; }
+  if (!name) { showError(ar?'اسم اللقاح مطلوب':'Vaccine name required'); return; }
   const dose = parseInt(document.getElementById('vac-dose')?.value) || 1;
   const date = document.getElementById('vac-date')?.value;
   const site = document.getElementById('vac-site')?.value;
   const lot  = document.getElementById('vac-lot')?.value || null;
   const next = document.getElementById('vac-next')?.value || null;
 
-  dbRun(`INSERT INTO vaccinations (patient_id, vaccine_name, dose_number, administered_at, site, lot_number, administered_by, next_due_date)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [patientId, name, dose, date + 'T' + new Date().toTimeString().substring(0,8), site, lot, user.user_id, next]);
-  saveDBToIndexedDB();
-  showSuccess(currentLanguage()==='ar' ? 'تم حفظ التطعيم' : 'Vaccination saved');
+  // Wrap the write: if the INSERT throws (constraint, quota, etc.) the clinician
+  // must see a failure, NOT a "saved" toast that hides a dropped vaccine record
+  // (which risks a double-dose later). Await the persist so the row is durable
+  // before we report success.
+  try {
+    dbRun(`INSERT INTO vaccinations (patient_id, vaccine_name, dose_number, administered_at, site, lot_number, administered_by, next_due_date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [patientId, name, dose, date + 'T' + new Date().toTimeString().substring(0,8), site, lot, user.user_id, next]);
+    await saveDBToIndexedDB();
+  } catch (e) {
+    console.error('Vaccination save failed:', e);
+    showError(ar ? 'فشل حفظ التطعيم — لم يُسجَّل' : 'Failed to save vaccination — NOT recorded');
+    return;
+  }
+  showSuccess(ar ? 'تم حفظ التطعيم' : 'Vaccination saved');
   closeModal();
   setTimeout(() => showVaccinationsForm(patientId, patientName), 200);
-}
-
-// ============================================================
-// RECENTLY USED / FAVORITES — localStorage based
-// ============================================================
-function _recentKey(category) {
-  const user = getCurrentUser();
-  return `his_recent_${category}_${user?user.user_id:'anon'}`;
-}
-
-function addToRecent(category, item) {
-  if (!item) return;
-  const key = _recentKey(category);
-  let list = [];
-  try { list = JSON.parse(localStorage.getItem(key) || '[]'); } catch(e) {}
-  // Remove if already present
-  list = list.filter(i => (typeof i === 'string' ? i : i.value) !== (typeof item === 'string' ? item : item.value));
-  // Add to front
-  list.unshift(item);
-  // Keep top 10
-  list = list.slice(0, 10);
-  try { localStorage.setItem(key, JSON.stringify(list)); } catch(e) {}
-}
-
-function getRecent(category) {
-  const key = _recentKey(category);
-  try { return JSON.parse(localStorage.getItem(key) || '[]'); } catch(e) { return []; }
-}
-
-function renderRecentStrip(category, label, onClickFn) {
-  const items = getRecent(category);
-  if (items.length === 0) return '';
-  return `
-    <div class="recent-strip">
-      <span class="recent-strip-label">${escapeHtml(label)}:</span>
-      ${items.map(it => {
-        const display = typeof it === 'string' ? it : it.label;
-        const value   = typeof it === 'string' ? it : it.value;
-        return `<button class="recent-chip" onclick="${onClickFn}('${escapeHtml(value).replace(/'/g, '&apos;')}')">${escapeHtml(display)}</button>`;
-      }).join('')}
-    </div>
-  `;
 }
 
 // ============================================================
@@ -455,9 +313,4 @@ function dismissWelcomeTour() {
   document.querySelectorAll('.tour-overlay').forEach(o => o.remove());
 }
 
-// Allow user to manually re-open the tour from help menu
-function restartWelcomeTour() {
-  const user = getCurrentUser();
-  if (user) localStorage.removeItem(`his_tour_seen_${user.user_id}`);
-  showWelcomeTour();
-}
+

@@ -5,65 +5,83 @@
 const SESSION_KEY = 'his_session_id';
 const SESSION_DURATION_MS = 8 * 60 * 60 * 1000; // 8 hours
 
+// ---- Server-mode session cache --------------------------------------------
+// In shared server-DB mode (see js/db.js) staff authenticate against the server
+// (/api/login → HttpOnly cookie) instead of reading the users table in the
+// browser. getCurrentUser()/getCurrentSession() are called synchronously all
+// over the app, so we keep the logged-in staff user in a cache the server fills
+// on login and restoreServerSession() refills from the cookie after a reload.
+let _serverUser = null;
+
+function restoreServerSession() {
+  if (typeof SERVER_MODE === 'undefined' || !SERVER_MODE) return null;
+  try {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/me', false);
+    xhr.send();
+    if (xhr.status === 200) {
+      const d = JSON.parse(xhr.responseText);
+      if (d.user && d.user.role && d.user.role !== 'patient') { _serverUser = d.user; return getCurrentSession(); }
+    }
+  } catch (e) {}
+  _serverUser = null;
+  return null;
+}
+
 // ============================================================
 // Brute-force protection
-// 5 failed attempts within 5 min → lockout for 5 min per username
-// PERSISTED to localStorage so F5/new tab doesn't reset the counter (G1 fix)
-// GLOBAL cap: 30 failures across all usernames in 5 min → blocked
-// (defeats username-cycling: admin1, admin2, admin3... bypass)
+// 5 failed attempts within 5 min → lockout for 5 min per account
+// GLOBAL cap: 30 failures across all accounts in 5 min → blocked
+// (defeats account-cycling: admin1, admin2, admin3... bypass)
+//
+// Attempts live in the DB (table login_attempts), NOT localStorage: a
+// localStorage.clear() in DevTools no longer resets the counter, and the
+// lockout survives a page refresh because it is persisted with the database.
+// `account` namespaces staff usernames from patient-portal logins, which use
+// the key 'patient:<MRN>' (see loginPatient).
+// NOTE: this is still a client-only app — a determined user can edit the
+// IndexedDB SQLite blob directly — but the cheap localStorage reset is closed.
 // ============================================================
-const ATTEMPTS_KEY = 'his_login_attempts';
 const MAX_FAILED_ATTEMPTS = 5;
 const MAX_GLOBAL_ATTEMPTS = 30;
 const LOCKOUT_WINDOW_MS = 5 * 60 * 1000;
 const LOCKOUT_DURATION_MS = 5 * 60 * 1000;
 
-function _loadAttempts() {
-  try { return JSON.parse(localStorage.getItem(ATTEMPTS_KEY) || '{}'); } catch(e) { return {}; }
-}
-function _saveAttempts(obj) {
-  try { localStorage.setItem(ATTEMPTS_KEY, JSON.stringify(obj)); } catch(e) {}
+function _pruneOldAttempts(now) {
+  try { dbRun('DELETE FROM login_attempts WHERE attempt_ms < ?', [now - LOCKOUT_WINDOW_MS]); } catch (e) {}
 }
 
-function _isLockedOut(username) {
+// Returns seconds remaining on the lockout, or 0 if not locked.
+function _isLockedOut(account) {
   const now = Date.now();
-  const data = _loadAttempts();
-  const userAttempts = (data[username] || []).filter(t => now - t < LOCKOUT_WINDOW_MS);
-  data[username] = userAttempts;
+  _pruneOldAttempts(now);
 
-  // Per-username lockout
-  if (userAttempts.length >= MAX_FAILED_ATTEMPTS) {
-    const lastFail = userAttempts[userAttempts.length - 1];
+  // Per-account lockout
+  const rows = dbAll('SELECT attempt_ms FROM login_attempts WHERE account = ? ORDER BY attempt_ms', [account]);
+  if (rows.length >= MAX_FAILED_ATTEMPTS) {
+    const lastFail = rows[rows.length - 1].attempt_ms;
     if (now - lastFail < LOCKOUT_DURATION_MS) {
-      _saveAttempts(data);
       return Math.ceil((LOCKOUT_DURATION_MS - (now - lastFail)) / 1000);
     }
   }
 
-  // Global cap — prevents username-cycling (admin, admin1, admin2, ...)
-  let globalCount = 0;
-  for (const u of Object.keys(data)) {
-    data[u] = (data[u] || []).filter(t => now - t < LOCKOUT_WINDOW_MS);
-    globalCount += data[u].length;
-  }
-  _saveAttempts(data);
-  if (globalCount >= MAX_GLOBAL_ATTEMPTS) {
+  // Global cap — defeats account-cycling (admin, admin1, admin2, ...)
+  const g = dbGet('SELECT COUNT(*) AS c FROM login_attempts', []);
+  if (g && g.c >= MAX_GLOBAL_ATTEMPTS) {
     return Math.ceil(LOCKOUT_DURATION_MS / 1000);
   }
   return 0;
 }
 
-function _recordFailedLogin(username) {
-  const data = _loadAttempts();
-  if (!data[username]) data[username] = [];
-  data[username].push(Date.now());
-  _saveAttempts(data);
+// async: persists immediately so the counter can't be bypassed by refreshing
+// before the next autosave fires.
+async function _recordFailedLogin(account) {
+  try { dbRun('INSERT INTO login_attempts (account, attempt_ms) VALUES (?, ?)', [account, Date.now()]); } catch (e) {}
+  await saveDBToIndexedDB();
 }
 
-function _clearFailedAttempts(username) {
-  const data = _loadAttempts();
-  delete data[username];
-  _saveAttempts(data);
+function _clearFailedAttempts(account) {
+  try { dbRun('DELETE FROM login_attempts WHERE account = ?', [account]); } catch (e) {}
 }
 
 /**
@@ -73,6 +91,19 @@ function _clearFailedAttempts(username) {
  * @returns {Promise<{success: boolean, error?: string, errorKey?: string}>}
  */
 async function login(username, password) {
+  // Server mode: authenticate against the central server. It enforces its own
+  // lockout, sets an HttpOnly session cookie, and never returns a password hash.
+  if (typeof SERVER_MODE !== 'undefined' && SERVER_MODE) {
+    try {
+      const res = await api.login(username, password);
+      _serverUser = res.user;
+      return { success: true, user: res.user };
+    } catch (e) {
+      const key = e.status === 429 ? 'login_locked' : (e.status === 403 ? 'login_error_disabled' : 'login_error_cred');
+      return { success: false, errorKey: key };
+    }
+  }
+
   // ---- Brute-force protection ----
   const lockedSec = _isLockedOut(username);
   if (lockedSec > 0) {
@@ -82,15 +113,19 @@ async function login(username, password) {
   const user = dbGet('SELECT * FROM users WHERE username = ?', [username]);
 
   if (!user) {
-    _recordFailedLogin(username);
+    await _recordFailedLogin(username);
     return { success: false, errorKey: 'login_error_cred' };
   }
 
-  // Check password
-  const hash = await hashPassword(password, user.salt);
-  if (hash !== user.password_hash) {
-    _recordFailedLogin(username);
+  // Check password (verifyPassword accepts legacy salted-SHA-256 hashes and
+  // signals when the stored hash should be upgraded to PBKDF2).
+  const v = await verifyPassword(password, user.salt, user.password_hash);
+  if (!v.ok) {
+    await _recordFailedLogin(username);
     return { success: false, errorKey: 'login_error_cred' };
+  }
+  if (v.needsUpgrade) {
+    try { const nh = await hashPassword(password, user.salt); dbRun('UPDATE users SET password_hash = ? WHERE user_id = ?', [nh, user.user_id]); } catch (e) {}
   }
 
   // Check if active
@@ -101,8 +136,11 @@ async function login(username, password) {
   // Successful login — clear failed attempts
   _clearFailedAttempts(username);
 
-  // G7 fix: notify if user already has active sessions elsewhere
-  const existingSessions = dbAll(`SELECT session_id, login_time FROM sessions WHERE user_id = ? AND expires_at > ?`, [user.user_id, nowISO()]);
+  // G7 fix: notify if user already has active sessions elsewhere.
+  // role != 'patient': portal sessions store a PATIENT id in user_id, so a
+  // colliding numeric id counted a patient's portal session as this staff
+  // member's concurrent login.
+  const existingSessions = dbAll(`SELECT session_id, login_time FROM sessions WHERE user_id = ? AND role != 'patient' AND expires_at > ?`, [user.user_id, nowISO()]);
   const concurrentCount = existingSessions.length;
 
   // Create session
@@ -147,11 +185,56 @@ async function login(username, password) {
  * Log out the current user
  */
 async function logout() {
+  // Server mode: drop the server session (clears the cookie) and the local cache.
+  if (typeof SERVER_MODE !== 'undefined' && SERVER_MODE) {
+    try { await api.logout(); } catch (e) {}
+    _serverUser = null;
+    localStorage.removeItem(SESSION_KEY);
+    if (typeof _inboxRefreshTimer !== 'undefined' && _inboxRefreshTimer) { clearInterval(_inboxRefreshTimer); _inboxRefreshTimer = null; }
+    const ib = document.getElementById('staff-inbox-wrap'); if (ib) ib.style.display = 'none';
+    const dd = document.getElementById('staff-inbox-dropdown'); if (dd) dd.style.display = 'none';
+    return;
+  }
+
   const session = getCurrentSession();
   if (session) {
-    const user = dbGet('SELECT * FROM users WHERE user_id = ?', [session.user_id]);
     const loginTime = new Date(session.login_time);
     const minutes = Math.round((Date.now() - loginTime.getTime()) / 60000);
+
+    // Patient-portal sessions store the PATIENT id in sessions.user_id (with
+    // role='patient'). Looking that id up in users misattributed the LOGOUT
+    // audit row to whichever STAFF member happened to share the numeric id.
+    if (session.role === 'patient') {
+      const patient = dbGet('SELECT * FROM patients WHERE patient_id = ?', [session.user_id]);
+      if (patient) {
+        await logToBlackbox({
+          user_id: patient.patient_id,
+          user_name_en: patient.full_name_en || patient.full_name_ar,
+          user_name_ar: patient.full_name_ar,
+          user_role: 'patient',
+          dept_id: null,
+          dept_name_en: 'Patient Portal',
+          dept_name_ar: 'بوابة المرضى',
+          action_type: 'PORTAL_LOGOUT',
+          action_detail: `Patient ${patient.full_name_en || patient.full_name_ar} (MRN ${patient.mrn}) logged out of Patient Portal after ${minutes} minutes`,
+          action_detail_ar: `المريض ${patient.full_name_ar} (الرقم الطبي ${patient.mrn}) خرج من بوابة المرضى بعد ${minutes} دقيقة`
+        });
+      }
+      dbRun('DELETE FROM sessions WHERE session_id = ?', [session.session_id]);
+      localStorage.removeItem(SESSION_KEY);
+      // Same teardown contract as staff logout: flush the audit + session
+      // delete while the encryption key still exists, THEN purge it.
+      await saveDBToIndexedDB();
+      if (typeof encIsActive === 'function' && encIsActive()) {
+        encDisable();
+        if (typeof location !== 'undefined' && typeof location.reload === 'function') {
+          location.reload();
+        }
+      }
+      return;
+    }
+
+    const user = dbGet('SELECT * FROM users WHERE user_id = ?', [session.user_id]);
 
     // Log to blackbox before destroying session
     if (user) {
@@ -185,7 +268,25 @@ async function logout() {
   if (ib) ib.style.display = 'none';
   const dd = document.getElementById('staff-inbox-dropdown');
   if (dd) dd.style.display = 'none';
-  saveDBToIndexedDB();
+
+  // Flush the LOGOUT audit + session delete to disk. Awaited on purpose: when
+  // device encryption is on, this final save must run while the key is still
+  // in memory (saveDBToIndexedDB encrypts the blob with it).
+  await saveDBToIndexedDB();
+
+  // Shared-workstation safety: purge the device-encryption key on logout and
+  // reload onto the boot unlock prompt, so the next person at the keyboard
+  // must re-enter the device passphrase instead of inheriting a decrypting
+  // app. The idle-timeout auto-logout takes this same path. encDisable() runs
+  // before the reload so the key is unreachable during page teardown; nothing
+  // dirties the DB after the awaited save above, so the disabled state cannot
+  // produce a plaintext save.
+  if (typeof encIsActive === 'function' && encIsActive()) {
+    encDisable();
+    if (typeof location !== 'undefined' && typeof location.reload === 'function') {
+      location.reload();
+    }
+  }
 }
 
 /**
@@ -193,6 +294,13 @@ async function logout() {
  * @returns {object|null} session row
  */
 function getCurrentSession() {
+  // Server mode: the session lives in the HttpOnly cookie; expose a thin
+  // session-shaped view of the cached staff user (the server re-checks the
+  // cookie — incl. disabled-user invalidation — on every /api call).
+  if (typeof SERVER_MODE !== 'undefined' && SERVER_MODE) {
+    return _serverUser ? { user_id: _serverUser.user_id, role: _serverUser.role, dept_id: _serverUser.department_id, session_id: 'server' } : null;
+  }
+
   const sessionId = localStorage.getItem(SESSION_KEY);
   if (!sessionId) return null;
 
@@ -209,8 +317,25 @@ function getCurrentSession() {
     return null;
   }
 
-  // Update last_active
-  dbRun('UPDATE sessions SET last_active = ? WHERE session_id = ?', [nowISO(), sessionId]);
+  // Staff accounts: re-check the account is still active, so disabling a user
+  // immediately invalidates their existing sessions instead of trusting the
+  // session row until it expires.
+  if (session.role && session.role !== 'patient') {
+    const u = dbGet('SELECT is_active FROM users WHERE user_id = ?', [session.user_id]);
+    if (!u || !u.is_active) {
+      dbRun('DELETE FROM sessions WHERE session_id = ?', [sessionId]);
+      localStorage.removeItem(SESSION_KEY);
+      return null;
+    }
+  }
+
+  // Update last_active, at most once per minute. Writing it on EVERY call
+  // dirtied the DB on idle navigation, forcing a full db.export() (and AES-GCM
+  // re-encrypt when device encryption is on) of the whole PHI DB at the next
+  // flush. 60s granularity is far finer than the 15-min idle logout it feeds.
+  if (!session.last_active || (Date.now() - new Date(session.last_active).getTime()) > 60000) {
+    dbRun('UPDATE sessions SET last_active = ? WHERE session_id = ?', [nowISO(), sessionId]);
+  }
 
   return session;
 }
@@ -220,6 +345,7 @@ function getCurrentSession() {
  * @returns {object|null}
  */
 function getCurrentUser() {
+  if (typeof SERVER_MODE !== 'undefined' && SERVER_MODE) return _serverUser;
   const session = getCurrentSession();
   if (!session) return null;
   return dbGet('SELECT * FROM users WHERE user_id = ?', [session.user_id]);
@@ -230,7 +356,9 @@ function getCurrentUser() {
  * @returns {number}
  */
 function getActiveSessionsCount() {
-  const row = dbGet('SELECT COUNT(*) as cnt FROM sessions WHERE expires_at > ?', [nowISO()]);
+  // Staff stat (IT dashboard): patient-portal sessions share the table but
+  // must not inflate the "active staff sessions" number.
+  const row = dbGet("SELECT COUNT(*) as cnt FROM sessions WHERE expires_at > ? AND role != 'patient'", [nowISO()]);
   return row ? row.cnt : 0;
 }
 
@@ -240,6 +368,15 @@ function getActiveSessionsCount() {
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 async function createUser(userData) {
+  // Enforce "IT Admin only". Advisory in a browser-only app (a determined user
+  // can bypass client JS — the real fix is a native authority), but no longer a
+  // no-op: non-admin callers are refused and the attempt is logged.
+  const actor = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (!actor || actor.role !== 'it_admin') {
+    try { const r = logAction('USER_CREATE_DENIED', `Blocked account creation by ${actor ? actor.full_name_en + ' (' + actor.role + ')' : 'unauthenticated user'}`); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+    return { success: false, errorKey: 'not_authorized' };
+  }
+
   // Check username uniqueness
   const existing = dbGet('SELECT user_id FROM users WHERE username = ?', [userData.username]);
   if (existing) {
@@ -281,6 +418,13 @@ async function createUser(userData) {
  * Update user account (IT Admin only)
  */
 async function updateUser(userId, userData) {
+  // Enforce "IT Admin only" (advisory in a browser-only app; authoritative on the
+  // server). Mirrors createUser so account edits can't be made by other roles.
+  const actor = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (!actor || actor.role !== 'it_admin') {
+    try { const r = logAction('USER_UPDATE_DENIED', `Blocked account edit by ${actor ? actor.full_name_en + ' (' + actor.role + ')' : 'unauthenticated user'}`); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+    return { success: false, errorKey: 'not_authorized' };
+  }
   const existingUser = dbGet('SELECT * FROM users WHERE user_id = ?', [userId]);
   if (!existingUser) return { success: false, error: 'User not found' };
 
@@ -321,7 +465,7 @@ async function updateUser(userId, userData) {
  * @param {string} dob  - Date of birth in YYYY-MM-DD format
  * @returns {Promise<{success: boolean, errorKey?: string}>}
  */
-async function loginPatient(mrn, dob) {
+async function loginPatient(mrn, dob, password) {
   // Normalize MRN (uppercase, trim)
   mrn = (mrn || '').trim().toUpperCase();
   dob = (dob || '').trim();
@@ -330,13 +474,25 @@ async function loginPatient(mrn, dob) {
     return { success: false, errorKey: 'error_required' };
   }
 
+  // ---- Brute-force protection (same throttle as staff login) ----
+  // MRN + DOB are guessable (often printed on wristbands), so the portal must
+  // throttle guessing too. Account key is namespaced to avoid colliding with
+  // staff usernames.
+  const acct = 'patient:' + mrn;
+  const lockedSec = _isLockedOut(acct);
+  if (lockedSec > 0) {
+    return { success: false, errorKey: 'login_locked', lockedSec };
+  }
+
   const patient = dbGet('SELECT * FROM patients WHERE UPPER(mrn) = ?', [mrn]);
   if (!patient) {
+    await _recordFailedLogin(acct);
     return { success: false, errorKey: 'patient_login_error' };
   }
 
   // Verify DOB matches (defense against MRN-only enumeration)
   if (!patient.date_of_birth || patient.date_of_birth !== dob) {
+    await _recordFailedLogin(acct);
     return { success: false, errorKey: 'patient_login_error' };
   }
 
@@ -344,6 +500,26 @@ async function loginPatient(mrn, dob) {
   if (patient.portal_enabled === 0) {
     return { success: false, errorKey: 'patient_portal_disabled' };
   }
+
+  // MRN + DOB are IDENTITY (printed on the wristband), NOT authentication. If the
+  // patient has set a portal password, REQUIRE it. If none is set, MRN+DOB grants
+  // access but the caller is told to prompt for setup (mustSetPassword).
+  if (patient.portal_password_hash) {
+    if (!password) {
+      return { success: false, errorKey: 'patient_password_required', needsPassword: true };
+    }
+    const v = await verifyPassword(password, patient.portal_salt || '', patient.portal_password_hash);
+    if (!v.ok) {
+      await _recordFailedLogin(acct);
+      return { success: false, errorKey: 'patient_login_error', needsPassword: true };
+    }
+    if (v.needsUpgrade) {
+      try { const nh = await hashPassword(password, patient.portal_salt || ''); dbRun('UPDATE patients SET portal_password_hash = ? WHERE patient_id = ?', [nh, patient.patient_id]); } catch (e) {}
+    }
+  }
+
+  // Successful login — clear failed attempts
+  _clearFailedAttempts(acct);
 
   // Create patient "session" (uses same sessions table with role='patient' and dept_id=null)
   // user_id stores patient_id, role='patient' marks this as a portal session
@@ -373,7 +549,30 @@ async function loginPatient(mrn, dob) {
   });
 
   saveDBToIndexedDB();
-  return { success: true, patient, sessionId };
+  return { success: true, patient, sessionId, mustSetPassword: !patient.portal_password_hash };
+}
+
+/**
+ * Set/change the current patient's portal password — real authentication layered
+ * on top of the MRN+DOB identity check. Salted SHA-256 (same as staff accounts).
+ */
+async function setPatientPortalPassword(patientId, newPassword) {
+  if (!newPassword || newPassword.length < 8) {
+    return { success: false, errorKey: 'password_too_short' };
+  }
+  const salt = generateSalt();
+  const hash = await hashPassword(newPassword, salt);
+  dbRun('UPDATE patients SET portal_password_hash = ?, portal_salt = ? WHERE patient_id = ?', [hash, salt, patientId]);
+  await logToBlackbox({
+    user_id: patientId, user_role: 'patient',
+    user_name_en: 'Patient', user_name_ar: 'مريض',
+    dept_name_en: 'Patient Portal', dept_name_ar: 'بوابة المرضى',
+    action_type: 'PORTAL_PASSWORD_SET',
+    action_detail: 'Patient set or updated their portal password',
+    action_detail_ar: 'قام المريض بتعيين أو تحديث كلمة مرور البوابة'
+  });
+  saveDBToIndexedDB();
+  return { success: true };
 }
 
 /**
@@ -395,6 +594,9 @@ async function toggleUserActive(userId) {
 
   const newStatus = user.is_active ? 0 : 1;
   dbRun('UPDATE users SET is_active = ? WHERE user_id = ?', [newStatus, userId]);
+  // Disabling must also terminate live sessions, otherwise the session row keeps
+  // the disabled user logged in until it expires.
+  if (!newStatus) dbRun('DELETE FROM sessions WHERE user_id = ?', [userId]);
 
   const actionType = newStatus ? 'USER_ENABLED' : 'USER_DISABLED';
   const admin = getCurrentUser();

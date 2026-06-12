@@ -9,10 +9,13 @@
  * @returns {Promise<string>} hex string
  */
 async function sha256(message) {
-  if (window.crypto && window.crypto.subtle) {
+  // Use the global Web Crypto (browser: window.crypto; Node: globalThis.crypto)
+  // when available; fall back to the pure-JS implementation on any origin.
+  const c = (typeof crypto !== 'undefined') ? crypto : null;
+  if (c && c.subtle) {
     try {
       const msgBuffer = new TextEncoder().encode(message);
-      const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgBuffer);
+      const hashBuffer = await c.subtle.digest('SHA-256', msgBuffer);
       const hashArray = Array.from(new Uint8Array(hashBuffer));
       return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
     } catch (e) {
@@ -80,13 +83,54 @@ function _sha256Pure(message) {
 }
 
 /**
- * Hash a password with a salt using SHA-256
- * @param {string} password
- * @param {string} salt
+ * PBKDF2-HMAC-SHA256 password hashing (Web Crypto). Replaces the old fast salted
+ * SHA-256, which is unsuitable for passwords (NIST/OWASP want a slow, salted KDF
+ * resistant to offline cracking). The result is self-describing —
+ * "pbkdf2$<iterations>$<hex>" — so verifyPassword() can read the iteration count
+ * back and can recognise (and upgrade) legacy salted-SHA-256 hashes.
  * @returns {Promise<string>}
  */
+const PW_HASH_ITERATIONS = 210000; // OWASP 2023 minimum for PBKDF2-HMAC-SHA256
+
+async function pbkdf2Hex(password, salt, iterations) {
+  const enc = new TextEncoder();
+  const km = await crypto.subtle.importKey('raw', enc.encode(String(password)), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: enc.encode(String(salt)), iterations, hash: 'SHA-256' }, km, 256);
+  return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 async function hashPassword(password, salt) {
-  return await sha256(salt + ':' + password);
+  return `pbkdf2$${PW_HASH_ITERATIONS}$${await pbkdf2Hex(password, salt, PW_HASH_ITERATIONS)}`;
+}
+
+// Length-constant hex compare (no early-exit timing leak).
+function timingSafeEqualHex(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+
+/**
+ * Verify a password against a stored hash, supporting BOTH the new PBKDF2 format
+ * and the legacy salted-SHA-256 format. Returns { ok, needsUpgrade }; on a
+ * successful verify of a legacy (or weaker-iteration) hash, callers should
+ * re-hash with hashPassword() and persist, so old hashes migrate to PBKDF2 on the
+ * next successful login.
+ * @returns {Promise<{ok:boolean, needsUpgrade:boolean}>}
+ */
+async function verifyPassword(password, salt, storedHash) {
+  if (typeof storedHash !== 'string' || !storedHash) return { ok: false, needsUpgrade: false };
+  if (storedHash.startsWith('pbkdf2$')) {
+    const parts = storedHash.split('$');
+    const iter = parseInt(parts[1], 10) || PW_HASH_ITERATIONS;
+    const ok = timingSafeEqualHex(await pbkdf2Hex(password, salt, iter), parts[2] || '');
+    return { ok, needsUpgrade: ok && iter !== PW_HASH_ITERATIONS };
+  }
+  // Legacy: salted SHA-256 = sha256(salt + ':' + password). Upgrade on success.
+  const ok = timingSafeEqualHex(await sha256(String(salt) + ':' + String(password)), storedHash);
+  return { ok, needsUpgrade: ok };
 }
 
 /**
@@ -120,17 +164,20 @@ function nowISO() {
 }
 
 /**
- * Format ISO date for display
- * @param {string} isoStr
+ * Get today's date as YYYY-MM-DD (UTC, same convention as nowISO)
  * @returns {string}
  */
-function formatDate(isoStr) {
-  if (!isoStr) return '—';
-  const d = new Date(isoStr);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Standard empty-state block used by list/table views
+ * @param {string} [msg] defaults to t('no_data')
+ * @returns {string} HTML
+ */
+function emptyState(msg) {
+  return `<div class="empty-state"><p>${msg || t('no_data')}</p></div>`;
 }
 
 /**
@@ -173,7 +220,34 @@ function escapeHtml(str) {
   if (str === null || str === undefined) return '';
   const div = document.createElement('div');
   div.appendChild(document.createTextNode(String(str)));
-  return div.innerHTML;
+  // textContent→innerHTML escapes < > & but NOT quotes; also escape " so the
+  // output is safe inside double-quoted attributes, e.g. value="${escapeHtml(x)}".
+  return div.innerHTML.replace(/"/g, '&quot;');
+}
+
+/**
+ * Escape a value for safe embedding inside a SINGLE-QUOTED JavaScript string that
+ * itself sits inside a DOUBLE-QUOTED HTML attribute, e.g.
+ *     onclick="doThing('${jsAttr(name)}')"
+ *
+ * escapeHtml() ALONE is not safe here: it leaves the single quote untouched, so a
+ * real name like  O'Brien  — or a malicious  ');evil()//  typed into a patient
+ * field — breaks out of the JS string. Encoding the quote as &#39; / &apos; is
+ * WORSE: the HTML parser decodes it back to ' BEFORE the JS runs, so the name
+ * neither renders correctly nor stays contained. The only correct fix is a real
+ * backslash escape (which the HTML parser leaves alone) layered on top of the
+ * HTML-attribute escaping escapeHtml() already does.
+ * @param {string} str
+ * @returns {string}
+ */
+function jsAttr(str) {
+  return String(str === null || str === undefined ? '' : str)
+    .replace(/&/g, '&amp;')     // HTML-escape first (entities introduce no \ or ')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')    // keeps the surrounding "..." attribute from closing
+    .replace(/\\/g, '\\\\')     // then JS-escape: backslashes for the string literal
+    .replace(/'/g, "\\'");      // and the single quote that delimits the JS string
 }
 
 // ============================================================
@@ -214,6 +288,10 @@ function showToast(message, type) {
   if (!container) {
     container = document.createElement('div');
     container.id = 'toast-container';
+    // a11y: announce toasts to screen readers via a live region
+    container.setAttribute('role', 'status');
+    container.setAttribute('aria-live', 'polite');
+    container.setAttribute('aria-atomic', 'true');
     document.body.appendChild(container);
   }
   const toast = document.createElement('div');
@@ -619,8 +697,23 @@ function runPIE(patient, conditions, allergies, currentMeds, admissionData) {
   if (admissionData && admissionData.diet_code === 'NPO') {
     nurseWarnings.push({severity:'red', en:'NPO patient: Absolutely nothing by mouth. Verify IV fluids running. Post NPO sign at bedside.', ar:'مريض NPO: ممنوع أي شيء بالفم تماماً. تأكد من السوائل الوريدية. ضع لافتة NPO عند السرير.'});
   }
-  // Fall risk
-  if (patient && (parseInt(patient.date_of_birth) < 1961 || conditions.includes('stroke_history'))) {
+  // Fall risk — age >= 65 (CDC STEADI / AHRQ inpatient screening) computed from
+  // the actual DOB. The old gate was a frozen literal birth-year (< 1961, i.e.
+  // 65 at the time it was written): patients born in 1961 were never flagged,
+  // and the effective threshold drifted up by one year every calendar year, so
+  // the unflagged-elderly window silently widened forever.
+  const FALL_RISK_AGE = 65;
+  let fallRiskAge = false;
+  if (patient && patient.date_of_birth) {
+    const dob = new Date(patient.date_of_birth);
+    if (!isNaN(dob)) {
+      const now = new Date();
+      let age = now.getFullYear() - dob.getFullYear();
+      if (now.getMonth() < dob.getMonth() || (now.getMonth() === dob.getMonth() && now.getDate() < dob.getDate())) age--;
+      fallRiskAge = age >= FALL_RISK_AGE;
+    }
+  }
+  if (fallRiskAge || conditions.includes('stroke_history')) {
     nurseWarnings.push({severity:'yellow', en:'Fall risk: Bed in lowest position. Side rails up. Call bell within reach. Non-slip footwear.', ar:'خطر سقوط: السرير في أدنى وضع. حواجز السرير مرفوعة. جرس الاستدعاء في متناول اليد.'});
   }
   // Allergy warnings
@@ -742,11 +835,15 @@ function renderSafetyBanner(patientId, admissionId, lang) {
 
   // Code status (from admissions)
   const codeStatus = admission && admission.code_status;
+  // Keys MUST match the values written by the code-status picker in
+  // easy-features.js (full / dnr / dni / limited / unknown). They previously
+  // read full_code/comfort, so Full-Code and Limited patients showed NO badge —
+  // a patient editor could set "Full Code" yet the safety bar stayed blank.
   const codeStatusLbl = {
-    full_code: { ar:'كود كامل', en:'FULL CODE', color:'#10b981' },
-    dnr:       { ar:'لا إنعاش (DNR)', en:'DNR', color:'#dc2626' },
-    dni:       { ar:'لا تنبيب (DNI)', en:'DNI', color:'#dc2626' },
-    comfort:   { ar:'رعاية ملطفة', en:'COMFORT CARE', color:'#7c3aed' },
+    full:    { ar:'كود كامل', en:'FULL CODE', color:'#10b981' },
+    dnr:     { ar:'لا إنعاش (DNR)', en:'DNR', color:'#dc2626' },
+    dni:     { ar:'لا تنبيب (DNI)', en:'DNI', color:'#dc2626' },
+    limited: { ar:'رعاية محدودة', en:'LIMITED', color:'#d97706' },
   }[codeStatus];
 
   return `<div class="sticky-patient-bar no-print">
@@ -959,48 +1056,6 @@ function requireReasonToDecline(alertHtml, contextKey, onAccept, onDecline) {
   };
 }
 
-/**
- * Render lab workflow pipeline HTML
- */
-function renderLabPipeline(status, lang) {
-  const steps = [
-    {key:'ordered', en:'Ordered', ar:'مطلوب'},
-    {key:'collected', en:'Collected', ar:'مسحوب'},
-    {key:'received', en:'Received', ar:'مُستلم'},
-    {key:'resulted', en:'Resulted', ar:'نتيجة'},
-  ];
-  const idx = steps.findIndex(s => s.key === status);
-  return '<div class="workflow-pipeline">' +
-    steps.map((s, i) => {
-      let cls = 'workflow-step';
-      if (i < idx) cls += ' step-complete';
-      else if (i === idx) cls += ' step-active';
-      return `<span class="${cls}">${lang === 'ar' ? s.ar : s.en}</span>` +
-        (i < steps.length - 1 ? '<span class="workflow-arrow">&#8594;</span>' : '');
-    }).join('') +
-    '</div>';
-}
-
-// ============================================================
-// Loading spinner
-// ============================================================
-
-function showLoading() {
-  let el = document.getElementById('loading-overlay');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'loading-overlay';
-    el.innerHTML = '<div class="spinner"></div><p>' + t('loading') + '</p>';
-    document.body.appendChild(el);
-  }
-  el.style.display = 'flex';
-}
-
-function hideLoading() {
-  const el = document.getElementById('loading-overlay');
-  if (el) el.style.display = 'none';
-}
-
 // ============================================================
 // Generic Modal helper (overlay)
 // Used by Care Plan, Assessment forms, etc.
@@ -1027,4 +1082,66 @@ function showModal(innerHtml, opts) {
 
 function closeModal() {
   document.querySelectorAll('.alert-overlay.generic-modal').forEach(m => m.remove());
+}
+
+// ============================================================
+// Modal accessibility (a11y): focus trap + focus restore
+// Covers BOTH showModal() generic modals and the ad-hoc `.alert-overlay`
+// modals (they are all appended as direct children of <body>). When a modal
+// opens, focus moves into it; Tab / Shift+Tab cycle within the topmost overlay
+// so a keyboard user can't reach the page behind it; when the last modal
+// closes, focus returns to whatever had it before the modal opened.
+// ============================================================
+(function installModalFocusTrap() {
+  const MODAL_SEL = '.alert-overlay, .generic-modal';
+  let lastFocused = null;
+
+  function topOverlay() {
+    const all = document.querySelectorAll(MODAL_SEL);
+    return all.length ? all[all.length - 1] : null;
+  }
+  function focusables(container) {
+    return Array.from(container.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter(el => el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement);
+  }
+
+  function start() {
+    // Move focus into a modal when it appears; restore it when the last closes.
+    const obs = new MutationObserver(() => {
+      const top = topOverlay();
+      if (top && !top.contains(document.activeElement)) {
+        if (!lastFocused) lastFocused = document.activeElement;
+        const f = focusables(top);
+        if (f[0]) f[0].focus();
+      } else if (!top && lastFocused) {
+        try { lastFocused.focus(); } catch (e) {}
+        lastFocused = null;
+      }
+    });
+    obs.observe(document.body, { childList: true });
+
+    // Trap Tab within the topmost overlay (capture phase, before app handlers).
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab') return;
+      const overlay = topOverlay();
+      if (!overlay) return;
+      const f = focusables(overlay);
+      if (!f.length) { e.preventDefault(); return; }
+      const first = f[0], last = f[f.length - 1];
+      if (!overlay.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }, true);
+  }
+
+  if (typeof document !== 'undefined') {
+    if (document.body) start();
+    else document.addEventListener('DOMContentLoaded', start);
+  }
+})();
+
+// Node test harness only (browser has no `module`): expose the pure helpers.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { sha256, hashPassword, verifyPassword, pbkdf2Hex, timingSafeEqualHex, generateSalt, escapeHtml, jsAttr, PW_HASH_ITERATIONS };
 }

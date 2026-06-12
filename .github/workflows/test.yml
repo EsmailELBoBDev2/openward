@@ -1,0 +1,21 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # No dependencies to install — tests use Node built-ins + vendored sql.js.
+      - name: Pre-flight (HTML structure, inline scripts, JS syntax, paste-corruption)
+        run: npm run preflight
+      - name: Run unit tests
+        run: npm test
+      - name: Syntax-check all JS
+        run: for f in js/*.js; do node --check "$f"; done
