@@ -2054,3 +2054,20 @@ body[dir="rtl"] .calc-fab {
 @media (prefers-reduced-motion: reduce) {
   .tour-spot { animation: none; }
 }
+
+/* Autoplay simulated cursor */
+#tour-cursor {
+  position: fixed;
+  z-index: 10003;
+  font-size: 26px;
+  pointer-events: none;
+  transform: translate(-40%, -10%);
+  transition: left 0.65s cubic-bezier(0.25, 0.8, 0.4, 1), top 0.65s cubic-bezier(0.25, 0.8, 0.4, 1);
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.35));
+}
+#tour-cursor.tour-cursor-click { animation: tourCursorClick 0.28s ease-out; }
+@keyframes tourCursorClick {
+  0% { transform: translate(-40%, -10%) scale(1); }
+  50% { transform: translate(-40%, -10%) scale(0.72); }
+  100% { transform: translate(-40%, -10%) scale(1); }
+}

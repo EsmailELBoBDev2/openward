@@ -95,7 +95,16 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   assert(/tourIsDemoInstall/.test(tour) && /dr\.omar/.test(tour) && /SERVER_MODE/.test(tour), 'tour refuses to run outside demo installs (dr.omar + SERVER_MODE gates)');
   assert(/handleVerifyRx/.test(tour) && /showMARLogForm|mar-save-btn/.test(tour) && /requestSubmit/.test(tour), 'tour drives the REAL handlers (register form, verify, MAR), not mocks');
   assert(/amoxicillin/i.test(tour) && /paracetamol/i.test(tour), 'tour includes the blocked-unsafe-order beat and the safe alternative');
-  assert(/demo-tour\.js/.test(idx) && /demoTourMaybeResume/.test(idx) && /demoTourStart/.test(idx), 'index.html loads the tour, resumes it at boot, and offers it in the demo picker');
+  assert(/demo-tour\.js/.test(idx) && /demoTourMaybeResume/.test(idx) && /demoTourOffer\(true\)/.test(idx), 'index.html loads the tour, resumes it at boot, and the picker button opens the autoplay/manual choice');
+  // The full clinical story: workup ordered, critical potassium, X-ray report, ack
+  assert(/addSuggestedLab\('LYTE'\)/.test(tour) && /addSuggestedLab\('CXR'\)/.test(tour), 'tour orders the stat electrolytes panel AND the chest X-ray through the real lab form');
+  assert(/handleLabReceive/.test(tour) && /critical_high/.test(tour) && /comp-val/.test(tour), 'tour walks the lab pipeline (receive -> component result entry -> critical potassium)');
+  assert(/showRadResultForm/.test(tour) && /rad-submit/.test(tour), 'tour includes the radiologist report beat');
+  assert(/critical-banner-/.test(tour) && /showCriticalAckModal/.test(tour) && /ack-confirm-btn/.test(tour) && /lab_critical_acks/.test(tour), 'tour shows the doctor the critical-lab banner and drives the on-the-record acknowledgement');
+  // Autoplay engine: opt-in, paced by text length, pausable, yields to real clicks
+  assert(/demoTourStart\(true\)/.test(tour) && /demoTourStart\(false\)/.test(tour), 'offer popup gives both sit-back autoplay and hands-on start');
+  assert(/_tourReadMs/.test(tour) && /tour-cursor/.test(tour), 'autoplay paces by text length and drives a simulated cursor');
+  assert(/demoTourToggleAuto/.test(tour) && /pointerdown/.test(tour) && /isTrusted/.test(tour) && /visibilitychange/.test(tour), 'autoplay is pausable, yields to real user clicks, and pauses in hidden tabs');
   assert(/demoTourOffer/.test(tour) && /ow_tour_offered/.test(tour) && (idx.match(/demoTourOffer/g) || []).length >= 2, 'tour auto-OFFERS itself once: right after Demo first-run AND at the login screen of an un-toured demo install');
   assert(/setupShowcaseLogin\(\);\s*\/\/ picker \+ demo notice appear without a reload/.test(idx), 'persona picker appears immediately after choosing Demo (no reload needed)');
   assert(/targets:/.test(tour) && /_tourSpotIdx/.test(tour) && /code-blue-fab/.test(tour) && /ph-inventory/.test(tour) && /hm-analytics/.test(tour), 'tour includes rotating-spotlight "look around" beats for ER/pharmacy/nurse/manager features');
