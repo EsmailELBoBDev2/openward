@@ -46,19 +46,26 @@
       has(key) { const e = state.get(key); return !!(e && !e.del); },
       // live values only (tombstones hidden)
       entries() { const o = {}; for (const [k, e] of state) if (!e.del) o[k] = e.v; return o; },
-      // merge one incoming register; returns true iff our state changed
+      // merge one incoming register; returns true iff our state changed.
+      // Wire data is untrusted: a malformed entry must not throw, and a
+      // far-future e.t must not wedge our clock (every later tick() would
+      // inherit it, permanently stamping our writes with the poisoned time).
+      // The entry itself still merges by its own t — all replicas apply the
+      // same dominates() rule, so clamping only OUR clock keeps convergence.
       mergeEntry(key, e) {
+        if (!e || typeof e !== 'object' || typeof e.t !== 'number' || !isFinite(e.t)) return false;
         const cur = state.get(key);
         if (dominates(e, cur)) {
           state.set(key, { v: e.v, t: e.t, n: e.n, del: !!e.del });
-          if (e.t > lastT) lastT = e.t;            // keep our clock monotonic vs peers
+          // keep our clock monotonic vs peers, but never more than 5 min ahead of wall time
+          if (e.t > lastT) lastT = Math.min(e.t, Date.now() + 300000);
           return true;
         }
         return false;
       },
       // full state (incl. tombstones) for catch-up; and merge of same
       snapshot() { const o = {}; for (const [k, e] of state) o[k] = e; return o; },
-      mergeSnapshot(snap) { let changed = false; for (const k in snap) if (this.mergeEntry(k, snap[k])) changed = true; return changed; },
+      mergeSnapshot(snap) { if (!snap || typeof snap !== 'object') return false; let changed = false; for (const k in snap) if (this.mergeEntry(k, snap[k])) changed = true; return changed; },
     };
   }
 
@@ -78,6 +85,14 @@
   // Cross-device on the LAN. REQUIRES a signaling server URL (the unavoidable
   // rendezvous). Left as an explicit factory so the dependency is obvious; wire a
   // real Yjs y-webrtc provider or a minimal WebRTC mesh here.
+  //
+  // SECURITY: the protocol above has NO peer authentication — any party that can
+  // reach the transport can read the full snapshot (the 'hello' reply) and inject
+  // winning writes. That is tolerable for BroadcastChannel (same browser, same
+  // origin — that context can already read IndexedDB directly) but NOT for a
+  // network transport. Any cross-device implementation MUST add a room pre-shared
+  // key: HMAC every message, reject unauthenticated ones, and bound replay with a
+  // per-sender sequence number. Do not wire this up without that.
   function webrtcTransport(/* room, signalingUrl */) {
     throw new Error('LANSync.webrtcTransport: cross-device sync needs a signaling server URL. ' +
       'Run a LAN signaling rendezvous (or drop in Yjs y-webrtc) and implement this transport. ' +
@@ -98,10 +113,14 @@
     }
     function notify() { const snap = store.entries(); subs.forEach((cb) => { try { cb(snap); } catch (e) {} }); }
     transport.onMessage((msg) => {
-      if (!msg) return;
-      if (msg.type === 'op' && msg.key) { if (store.mergeEntry(msg.key, msg.entry)) notify(); }
-      else if (msg.type === 'hello') { transport.send({ type: 'state', from: nodeId, snap: store.snapshot() }); }
-      else if (msg.type === 'state' && msg.snap) { if (store.mergeSnapshot(msg.snap)) notify(); }
+      // Wire messages are untrusted; a malformed one must not throw out of the
+      // BroadcastChannel dispatch and wedge this client's sync intake.
+      try {
+        if (!msg) return;
+        if (msg.type === 'op' && msg.key) { if (store.mergeEntry(msg.key, msg.entry)) notify(); }
+        else if (msg.type === 'hello') { transport.send({ type: 'state', from: nodeId, snap: store.snapshot() }); }
+        else if (msg.type === 'state' && msg.snap) { if (store.mergeSnapshot(msg.snap)) notify(); }
+      } catch (e) { /* drop malformed message */ }
     });
     transport.send({ type: 'hello', from: nodeId });   // ask peers for their state
     return {

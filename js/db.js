@@ -4,10 +4,96 @@
 
 let db = null; // single SQLite database instance
 
+// ============================================================
+// Shared server-DB mode
+// ------------------------------------------------------------
+// When the page is served by the OpenWard LAN server (server/server.js), the UI
+// runs every dbGet/dbRun/dbAll against that server's ONE central SQLite file
+// (via /api/db/*) instead of this browser's private IndexedDB copy — so two or
+// more workstations read and write the SAME database in real time ("host the
+// app on the PC, staff log in and edit one shared DB like a normal local app").
+// The browser is still the UI; the server process stays the single file owner.
+//
+// Detected once at boot. OFF for file:// and the static dev server (serve.py) —
+// those keep the original browser-local IndexedDB behavior, fully unchanged.
+// Synchronous XMLHttpRequest is used deliberately: it lets the thousands of
+// existing synchronous dbGet/dbRun call sites work untouched, and the server is
+// on the LAN/loopback so round-trips are fast.
+// ============================================================
+let SERVER_MODE = false;
+let _serverLastId = null;   // last_insert_rowid() from the most recent server exec
+
+function detectServerMode() {
+  try {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/health', false);
+    xhr.send();
+    if (xhr.status === 200) {
+      const h = JSON.parse(xhr.responseText);
+      return !!(h && h.server === 'openward');
+    }
+  } catch (e) { /* no server -> browser-local mode */ }
+  return false;
+}
+
+function _serverSql(endpoint, sql, params) {
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/db/' + endpoint, false);
+  xhr.setRequestHeader('Content-Type', 'application/json');
+  xhr.send(JSON.stringify({ sql: sql, params: params || [] }));
+  if (xhr.status !== 200) {
+    let msg = 'server DB error (' + xhr.status + ')';
+    try { msg = JSON.parse(xhr.responseText).message || msg; } catch (e) {}
+    throw new Error(msg);
+  }
+  return JSON.parse(xhr.responseText);
+}
+
+// True while the install has no user accounts yet (set by initDB). The boot
+// script in index.html shows the Demo/Production chooser and clears it via
+// completeFirstRun().
+let DB_NEEDS_FIRST_RUN = false;
+
+// Called by the first-run chooser. 'demo' seeds the full sample hospital
+// (demo logins + fake patients). 'production' seeds ONLY reference data
+// (departments, formulary, supplies, interaction table) and creates the
+// IT-admin account the operator just typed — no default credentials exist.
+async function completeFirstRun(mode, admin) {
+  if (!DB_NEEDS_FIRST_RUN) return;
+  if (mode === 'production') {
+    await seedData({ demo: false });
+    await createFirstAdmin(admin && admin.username, admin && admin.password);
+  } else {
+    await seedData();
+  }
+  DB_NEEDS_FIRST_RUN = false;
+  await saveDBToIndexedDB();
+}
+
+async function createFirstAdmin(username, password) {
+  username = String(username || '').trim().toLowerCase();
+  if (!/^[a-z0-9._-]{3,32}$/.test(username)) throw new Error('Username must be 3-32 characters (letters, digits, . _ -)');
+  if (String(password || '').length < 10) throw new Error('Admin password must be at least 10 characters');
+  if (dbGet('SELECT user_id FROM users WHERE username = ?', [username])) throw new Error('Username already exists');
+  const salt = generateSalt();
+  const hash = await hashPassword(password, salt);
+  db.run(`INSERT INTO users (username, password_hash, salt, full_name_ar, full_name_en, role, department_id, is_active, created_at)
+    VALUES (?, ?, ?, ?, ?, 'it_admin', 12, 1, ?)`,
+    [username, hash, salt, 'مدير النظام', 'System Administrator', nowISO()]);
+}
+
 /**
  * Initialize the database: load sql.js WASM, create or restore DB
  */
 async function initDB() {
+  // Server mode: the central server owns the schema, seed, and persistence —
+  // skip all local sql.js / IndexedDB setup. dbGet/dbRun/dbAll proxy to /api/db.
+  SERVER_MODE = detectServerMode();
+  if (SERVER_MODE) {
+    console.log('[DB] Server mode — using the central shared database at /api/db (no browser-local copy)');
+    return;
+  }
+
   const SQL = await initSqlJs({
     locateFile: file => `vendor/${file}`
   });
@@ -32,13 +118,22 @@ async function initDB() {
   // every column/table the router uses (vitals NEWS2 fields, drugs.is_high_alert,
   // lab rejection columns, MAR witness columns) instead of crashing at runtime.
   applySchemaMigrations();
-  if (_freshDb) await seedData();
 
-  // Data remanence: SQLite leaves deleted-row bytes in free pages, which
-  // db.export() then encrypts and persists — so "deleted" PHI lingers on disk.
-  // secure_delete zeroes freed content on every future DELETE; a one-time VACUUM
-  // (gated by user_version so it runs once) purges any pre-existing remnants.
-  try { db.run('PRAGMA secure_delete = ON'); } catch (e) {}
+  // First-run gate: a database with NO user accounts (brand-new install, or a
+  // first run interrupted before a mode was chosen) must not silently seed demo
+  // credentials. The boot script shows a Demo-vs-Production chooser and calls
+  // completeFirstRun(); login stays gated until then. Detection is "no users",
+  // not "no DB blob", so a refresh mid-choice can't brick the install — the
+  // schema-only DB simply re-enters first-run on the next boot.
+  if (_freshDb || !dbGet('SELECT user_id FROM users LIMIT 1')) {
+    DB_NEEDS_FIRST_RUN = true;
+    console.log('[DB] First run — waiting for Demo/Production choice');
+  }
+
+  // Connection pragmas + one-time VACUUM (gated by user_version) to purge any
+  // pre-existing free-page remnants. See _reassertConnectionPragmas for why the
+  // pragmas must be re-applied after every db.export().
+  _reassertConnectionPragmas();
   try {
     const uv = db.exec('PRAGMA user_version');
     const ver = (uv && uv[0]) ? uv[0].values[0][0] : 0;
@@ -47,6 +142,22 @@ async function initDB() {
 
   // Auto-save every 30 seconds
   setInterval(() => saveDBToIndexedDB(), 30000);
+
+  // Flush pending writes when the tab is hidden or closing. Without this, a write
+  // made between two 30s ticks (a nurse records vitals, then the tab is closed,
+  // crashes, or the laptop sleeps) lives only in the in-memory DB and is LOST on
+  // next boot — the old IndexedDB blob is restored instead. 'visibilitychange ->
+  // hidden' is the reliable signal (it fires on tab switch, minimize, and most
+  // closes); 'pagehide' is the belt-and-braces fallback. The save is async and a
+  // hard kill can still truncate it, but this closes the common-case data loss.
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') { try { saveDBToIndexedDB(); } catch (e) {} }
+    });
+  }
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('pagehide', () => { try { saveDBToIndexedDB(); } catch (e) {} });
+  }
 }
 
 // Idempotent schema migrations, applied to BOTH fresh and restored databases
@@ -223,6 +334,14 @@ function applySchemaMigrations() {
     try { db.run("ALTER TABLE admissions ADD COLUMN code_status_set_by INTEGER"); } catch(e) {}
     try { db.run("ALTER TABLE admissions ADD COLUMN code_status_set_at TEXT"); } catch(e) {}
     try { db.run("ALTER TABLE admissions ADD COLUMN news2_scale INTEGER DEFAULT 1"); } catch(e) {}
+    // Real nurse-selected ESI (1-5). In CREATE TABLE for fresh installs; this
+    // guarded ALTER retrofits databases created before the column existed.
+    try { db.run("ALTER TABLE admissions ADD COLUMN triage_level INTEGER"); } catch(e) {}
+    // One-time PHI-leak repair: staff STEMI/stroke pages used to be stored in
+    // portal_messages keyed by the STAFF user_id; a patient with a colliding
+    // patient_id could read the incoming patient's clinical page in their own
+    // portal inbox. Re-key existing page rows to the sentinel 0 (idempotent).
+    try { db.run("UPDATE portal_messages SET patient_id = 0 WHERE from_type='system' AND subject LIKE '%[→ user:%'"); } catch(e) {}
     // ---- Communicable diseases & enhanced emergency contact ----
     try { db.run('ALTER TABLE patient_conditions ADD COLUMN category TEXT DEFAULT \'chronic\''); } catch(e) {}
     try { db.run('ALTER TABLE patients ADD COLUMN emergency_contact_name TEXT'); } catch(e) {}
@@ -243,6 +362,48 @@ function applySchemaMigrations() {
     try { db.run('CREATE INDEX IF NOT EXISTS idx_lab_admission_status ON lab_orders(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_rx_admission_status ON prescriptions(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_audit_action_ts ON audit_log(action_type, timestamp DESC)'); } catch(e) {}
+    // Hot-path indices for per-render worklist/chart queries (profiled against the
+    // actual WHERE/ORDER-BY shapes in router.js):
+    //  - vitals chart + "latest vitals" + NEWS2 trend: WHERE admission_id ORDER BY recorded_at
+    //  - nurse task lists / "overdue": WHERE admission_id AND status
+    //  - patient-portal unread badge + inbox: WHERE patient_id AND from_type
+    //  - admissions worklists by department: WHERE status AND dept_id
+    //  - MAR due/given lookups: WHERE admission_id (+ status)
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_vitals_adm_time ON vitals_log(admission_id, recorded_at DESC)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_nursing_adm_status ON nursing_tasks(admission_id, status)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_portal_msg_patient ON portal_messages(patient_id, from_type)'); } catch(e) {}
+    try { db.run("CREATE INDEX IF NOT EXISTS idx_admissions_dept_status ON admissions(dept_id, status)"); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_mar_admission ON med_admin_records(admission_id, status)'); } catch(e) {}
+    // Hot-path indices, round 2 (verified against the WHERE/JOIN/ORDER-BY
+    // shapes actually used in router.js):
+    //  - consultations: last/first note per admission (rounds, chart, discharge)
+    //  - case_assignments: doctor worklists (WHERE doctor_id) + joins ON admission_id
+    //  - nurse_assignments: my-patients (WHERE nurse_id, shift_date) + joins ON admission_id
+    //  - med_admin_records: "last administration" per prescription (MAR view + correlated subqueries)
+    //  - appointments: date-range lists, per-doctor schedule, per-patient lookups
+    //  - sw_contacts / fluid_balance / lab_critical_acks: per-row joins batched in render views
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_consult_adm_time ON consultations(admission_id, created_at DESC)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_case_assign_doctor ON case_assignments(doctor_id, admission_id)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_case_assign_adm ON case_assignments(admission_id)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_nurse_assign_nurse_date ON nurse_assignments(nurse_id, shift_date)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_nurse_assign_adm ON nurse_assignments(admission_id, shift_date)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_mar_rx_time ON med_admin_records(prescription_id, administered_at DESC)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_appt_date ON appointments(appt_date)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_appt_doctor_date ON appointments(doctor_id, appt_date)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_appt_natid ON appointments(national_id)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_sw_contacts_case ON sw_contacts(case_id, contact_date DESC)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_fluid_adm ON fluid_balance(admission_id)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_lca_order ON lab_critical_acks(order_id)'); } catch(e) {}
+    // Round 3 (EXPLAIN QUERY PLAN sweep over all 286 SQL literals): the only
+    // full scans left on GROWTH tables that a one-line index fixes. Verified
+    // each flips SCAN -> SEARCH against the seeded schema.
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_patients_natid ON patients(national_id)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_rx_status ON prescriptions(status)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_adm_admitted ON admissions(admitted_at)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_adm_discharged ON admissions(discharged_at)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_mar_status_time ON med_admin_records(status, administered_at)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_patients_dupcheck ON patients(full_name_ar, phone)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_lab_critical_time ON lab_orders(is_critical, resulted_at)'); } catch(e) {}
 
     // Triggers (CHECK constraints can't be added via ALTER in SQLite; use triggers)
     try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_vitals_plausible BEFORE INSERT ON vitals_log FOR EACH ROW
@@ -277,22 +438,67 @@ function applySchemaMigrations() {
       BEGIN
         SELECT RAISE(ABORT, 'lab_orders.resulted_at cannot precede ordered_at');
       END`); } catch(e) {}
-    // D2 fix: block new orders on discharged admissions (schema defense)
+    // D2 fix: block new orders on discharged admissions (schema defense).
+    // COALESCE closes the NULL-skip: a NONEXISTENT admission_id made the status
+    // subquery NULL, and NULL = 'discharged' is NULL (not true), so a dangling
+    // order slipped through wherever FKs are off (browser mode). A missing
+    // admission now reads as '' which is <> 'active' → ABORT. DROP first so
+    // existing databases get the replacement (CREATE IF NOT EXISTS never would).
+    try { db.run('DROP TRIGGER IF EXISTS trg_rx_block_discharged'); } catch(e) {}
     try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_rx_block_discharged BEFORE INSERT ON prescriptions FOR EACH ROW
-      WHEN (SELECT status FROM admissions WHERE admission_id = NEW.admission_id) = 'discharged'
+      WHEN COALESCE((SELECT status FROM admissions WHERE admission_id = NEW.admission_id), '') <> 'active'
       BEGIN
-        SELECT RAISE(ABORT, 'Cannot create prescription on a discharged admission');
+        SELECT RAISE(ABORT, 'Cannot create prescription on a discharged or nonexistent admission');
       END`); } catch(e) {}
+    try { db.run('DROP TRIGGER IF EXISTS trg_lab_block_discharged'); } catch(e) {}
     try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_lab_block_discharged BEFORE INSERT ON lab_orders FOR EACH ROW
-      WHEN (SELECT status FROM admissions WHERE admission_id = NEW.admission_id) = 'discharged'
+      WHEN COALESCE((SELECT status FROM admissions WHERE admission_id = NEW.admission_id), '') <> 'active'
       BEGIN
-        SELECT RAISE(ABORT, 'Cannot order lab on a discharged admission');
+        SELECT RAISE(ABORT, 'Cannot order lab on a discharged or nonexistent admission');
       END`); } catch(e) {}
     // G5 fix: enforce doctor role on prescriptions at DB level
+    // COALESCE closes the NULL hole: a NONEXISTENT doctor_id made the subquery
+    // return NULL, and NULL NOT IN (...) is NULL (not true), so the trigger
+    // silently allowed the insert. Missing user now reads as role '' → ABORT.
+    // DROP first: CREATE IF NOT EXISTS never replaces the pre-fix trigger on
+    // existing databases (idempotent — runs every boot).
+    try { db.run('DROP TRIGGER IF EXISTS trg_rx_doctor_role'); } catch(e) {}
     try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_rx_doctor_role BEFORE INSERT ON prescriptions FOR EACH ROW
-      WHEN (SELECT role FROM users WHERE user_id = NEW.doctor_id) NOT IN ('doctor','consultant','emergency_doctor','resident')
+      WHEN COALESCE((SELECT role FROM users WHERE user_id = NEW.doctor_id), '') NOT IN ('doctor','consultant','emergency_doctor','resident')
       BEGIN
         SELECT RAISE(ABORT, 'doctor_id must reference a user with a doctor role');
+      END`); } catch(e) {}
+    // RBAC at the data layer (role-alignment pass): the browser gates views by
+    // role and the server gates /api by its CAN matrix, but the shared SQL
+    // bridge is coarse-trust by design — these triggers make the highest-
+    // stakes actor columns refuse a wrong-role user id in BOTH modes
+    // (server/server.js reuses this exact schema builder). Same COALESCE
+    // pattern as trg_rx_doctor_role: a NONEXISTENT user id reads as role ''
+    // and aborts instead of NULL-skipping.
+    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_lab_doctor_role BEFORE INSERT ON lab_orders FOR EACH ROW
+      WHEN COALESCE((SELECT role FROM users WHERE user_id = NEW.doctor_id), '') NOT IN ('doctor','consultant','emergency_doctor','resident')
+      BEGIN
+        SELECT RAISE(ABORT, 'lab_orders.doctor_id must reference a user with a doctor role');
+      END`); } catch(e) {}
+    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_rx_verify_pharmacist BEFORE UPDATE OF verified_by ON prescriptions FOR EACH ROW
+      WHEN NEW.verified_by IS NOT NULL AND COALESCE((SELECT role FROM users WHERE user_id = NEW.verified_by), '') <> 'pharmacist'
+      BEGIN
+        SELECT RAISE(ABORT, 'prescriptions.verified_by must reference a pharmacist');
+      END`); } catch(e) {}
+    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_rx_verify_pharmacist_ins BEFORE INSERT ON prescriptions FOR EACH ROW
+      WHEN NEW.verified_by IS NOT NULL AND COALESCE((SELECT role FROM users WHERE user_id = NEW.verified_by), '') <> 'pharmacist'
+      BEGIN
+        SELECT RAISE(ABORT, 'prescriptions.verified_by must reference a pharmacist');
+      END`); } catch(e) {}
+    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_dispense_pharmacist BEFORE INSERT ON dispensing_log FOR EACH ROW
+      WHEN COALESCE((SELECT role FROM users WHERE user_id = NEW.dispensed_by), '') <> 'pharmacist'
+      BEGIN
+        SELECT RAISE(ABORT, 'dispensing_log.dispensed_by must reference a pharmacist');
+      END`); } catch(e) {}
+    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_mar_clinical_role BEFORE INSERT ON med_admin_records FOR EACH ROW
+      WHEN NEW.administered_by IS NOT NULL AND COALESCE((SELECT role FROM users WHERE user_id = NEW.administered_by), '') NOT IN ('nurse','senior_nurse','triage_nurse','doctor','consultant','emergency_doctor')
+      BEGIN
+        SELECT RAISE(ABORT, 'med_admin_records.administered_by must reference clinical staff');
       END`); } catch(e) {}
     // D4 fix: limit lab result_value text length (prevent garbage / overflow)
     try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_lab_result_len BEFORE UPDATE ON lab_orders FOR EACH ROW
@@ -377,6 +583,15 @@ function applySchemaMigrations() {
       attempt_ms INTEGER NOT NULL
     )`); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_login_attempts_acct ON login_attempts(account, attempt_ms)'); } catch(e) {}
+
+    // ---- Patient-portal self-booked appointments ----
+    try { db.run('ALTER TABLE appointments ADD COLUMN mrn TEXT'); } catch(e) {}
+    // Patient-originated rows have no staff user: created_by stays NOT NULL
+    // with sentinel 0, and the real requester is recorded here.
+    try { db.run('ALTER TABLE appointments ADD COLUMN requested_by_patient_id INTEGER'); } catch(e) {}
+    // Must come AFTER the ALTER above — an index on a not-yet-added column
+    // fails silently in the try/catch and never gets created on fresh DBs.
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_appt_req_patient ON appointments(requested_by_patient_id, created_at)'); } catch(e) {}
 }
 
 // ============================================================
@@ -414,7 +629,7 @@ function createAllTables() {
       full_name_ar  TEXT NOT NULL,
       full_name_en  TEXT NOT NULL,
       role          TEXT NOT NULL,
-      department_id INTEGER,
+      department_id INTEGER REFERENCES departments(dept_id),
       specialization TEXT,
       is_active     INTEGER DEFAULT 1,
       created_by    INTEGER,
@@ -524,7 +739,7 @@ function createAllTables() {
     CREATE TABLE IF NOT EXISTS admissions (
       admission_id    INTEGER PRIMARY KEY AUTOINCREMENT,
       patient_id      INTEGER NOT NULL REFERENCES patients(patient_id),
-      dept_id         INTEGER NOT NULL,
+      dept_id         INTEGER NOT NULL REFERENCES departments(dept_id),
       bed_number      TEXT,
       admitted_by     INTEGER,
       admitted_at     TEXT NOT NULL,
@@ -609,9 +824,9 @@ function createAllTables() {
   db.run(`
     CREATE TABLE IF NOT EXISTS dispensing_log (
       dispense_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-      prescription_id INTEGER,
-      drug_id       INTEGER NOT NULL,
-      patient_id    INTEGER NOT NULL,
+      prescription_id INTEGER REFERENCES prescriptions(rx_id),
+      drug_id       INTEGER NOT NULL REFERENCES drugs(drug_id),
+      patient_id    INTEGER NOT NULL REFERENCES patients(patient_id),
       qty_dispensed REAL NOT NULL,
       dispensed_by  INTEGER NOT NULL,
       dispensed_at  TEXT NOT NULL,
@@ -660,19 +875,8 @@ function createAllTables() {
     );
   `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS supply_transactions (
-      txn_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-      item_id     INTEGER NOT NULL,
-      dept_id     INTEGER NOT NULL,
-      txn_type    TEXT NOT NULL,
-      qty_change  REAL NOT NULL,
-      patient_id  INTEGER,
-      performed_by INTEGER NOT NULL,
-      performed_at TEXT NOT NULL,
-      notes       TEXT
-    );
-  `);
+  // (supply_transactions was created here for years but no code path ever
+  // read or wrote it — removed; existing DBs keep the empty table harmlessly.)
 
   // ---- Nursing ----
   db.run(`
@@ -1181,7 +1385,10 @@ function createAllTables() {
 // Seed Data
 // ============================================================
 
-async function seedData() {
+async function seedData(opts) {
+  // demo=false (production install): reference data ONLY — departments, supplies,
+  // formulary, interaction table. No default admin, no demo staff, no patients.
+  const demo = !(opts && opts.demo === false);
   // ---- Departments ----
   const depts = [
     [1, 'الطوارئ',           'Emergency',                'clinical'],
@@ -1216,9 +1423,10 @@ async function seedData() {
     db.run('INSERT OR IGNORE INTO departments (dept_id, name_ar, name_en, type) VALUES (?, ?, ?, ?)', d);
   }
 
-  // ---- Default Admin Account ----
+  // ---- Default Admin Account (DEMO installs only — production creates its
+  // own admin via createFirstAdmin, so no well-known credential ever exists) ----
   const existingAdmin = dbGet('SELECT user_id FROM users WHERE username = ?', ['admin']);
-  if (!existingAdmin) {
+  if (demo && !existingAdmin) {
     const salt = generateSalt();
     const hash = await hashPassword('HIS@2024', salt);
     db.run(`INSERT INTO users (username, password_hash, salt, full_name_ar, full_name_en, role, department_id, is_active, created_at)
@@ -1373,10 +1581,10 @@ async function seedData() {
   // SEED DATA — Realistic accounts, patients, clinical data
   // ============================================================
 
-  await seedHospitalData();
+  if (demo) await seedHospitalData();
 
   await saveDBToIndexedDB();
-  console.log('[DB] Seed data loaded');
+  console.log(`[DB] Seed data loaded (${demo ? 'demo' : 'production: reference data only'})`);
 }
 
 async function seedHospitalData() {
@@ -1411,6 +1619,7 @@ async function seedHospitalData() {
   const doctorId2   = await mkUser('dr.majed',      'doctor123',   'د. ماجد التميمي',       'Dr. Majed Al-Tamimi',     'doctor',            3, 'General Surgery');
   const erDocId     = await mkUser('dr.omar',       'doctor123',   'د. عمر الراشد',         'Dr. Omar Al-Rashed',      'emergency_doctor',  1, 'Emergency Medicine');
   const erDocId2    = await mkUser('dr.layla',      'doctor123',   'د. ليلى القاسم',        'Dr. Layla Al-Qasim',      'emergency_doctor',  1, 'Emergency Medicine');
+  const tnurseId    = await mkUser('nurse.noura',   'nurse123',    'نورة المطيري',          'Noura Al-Mutairi',        'triage_nurse',      1, null);
   const snurseId    = await mkUser('nurse.fatima',  'nurse123',    'فاطمة الزهراني',        'Fatima Al-Zahrani',       'senior_nurse',      2, null);
   const snurseICUId = await mkUser('nurse.huda',    'nurse123',    'هدى البلوي',            'Huda Al-Balawi',          'senior_nurse',      4, null);
   const nurseId     = await mkUser('nurse.mona',    'nurse123',    'منى الحربي',            'Mona Al-Harbi',           'nurse',             2, null);
@@ -1515,8 +1724,13 @@ async function seedHospitalData() {
     admissionIds.push(dbLastId());
   }
 
-  // Discharge patient 3 (Omar — appendicitis) — post-surgery
-  db.run("UPDATE admissions SET status = 'discharged', discharged_at = ? WHERE admission_id = ?", [yesterday+'T16:00:00Z', admissionIds[3]]);
+  // NOTE: Omar (admissionIds[3]) is discharged at the END of seedHospitalData —
+  // discharging him here broke EVERY fresh install: the discharge-protection
+  // triggers (trg_rx_block_discharged / trg_lab_block_discharged) aborted the
+  // later seed INSERTs of his historical prescriptions and labs, initDB threw
+  // "Cannot create prescription on a discharged admission", and the app booted
+  // with a broken half-seeded database. (Node tests never run seedData, so only
+  // a live browser boot caught this.)
 
   // ════════════════════════════════════════════════
   // 5. CASE ASSIGNMENTS (Consultant → Doctor)
@@ -1568,10 +1782,14 @@ async function seedHospitalData() {
     [7, 120, 75,  85,  37.0, 96,  null, null,null, today+'T06:00:00Z'],
   ];
 
+  // trg_vitals_future rejects rows later than now+1h. A fresh install booted
+  // between 00:00 and 05:00 UTC put today's T06:00Z rows in the future and
+  // aborted the whole seed — clamp any future seed timestamp to "now".
+  const clampSeedTime = (iso) => (new Date(iso) > new Date() ? new Date().toISOString() : iso);
   for (const v of vitalsData) {
     db.run(`INSERT INTO vitals_log (admission_id, recorded_by, recorded_at, bp_systolic, bp_diastolic, heart_rate, temperature, o2_sat, rbs, weight_kg, height_cm)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-      [admissionIds[v[0]], nurseICUId, v[9], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]]);
+      [admissionIds[v[0]], nurseICUId, clampSeedTime(v[9]), v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]]);
   }
 
   // ════════════════════════════════════════════════
@@ -2161,6 +2379,12 @@ async function seedHospitalData() {
 
   console.log('[DB] Historical analytics data seeded');
 
+  // Discharge patient 3 (Omar — appendicitis, post-surgery) LAST, after all his
+  // historical clinical rows are in — the rx/lab discharge-protection triggers
+  // are BEFORE INSERT, so the order admit → orders → discharge mirrors reality
+  // and keeps the seed trigger-clean.
+  db.run("UPDATE admissions SET status = 'discharged', discharged_at = ? WHERE admission_id = ?", [yesterday+'T16:00:00Z', admissionIds[3]]);
+
   console.log('[DB] Hospital data initialized successfully');
 }
 
@@ -2213,6 +2437,14 @@ let _dbSaved = {};             // meta.saved map: storage key -> last-write epoc
 // Force the next save to persist even when no dbRun happened — e.g. after
 // toggling encryption, which changes how the blob is written, not its contents.
 function markDbDirty() { _dbDirty = true; }
+
+// Force the next save to rewrite EVERY generational snapshot, not just
+// "current". Toggling encryption MUST call this: otherwise hour/day tiers keep
+// the old format until their cadence elapses — after a disable, stale
+// encrypted tiers would re-trigger the boot unlock prompt (whose only escape
+// is a device wipe, and the passphrase may be long forgotten); after an
+// enable, stale PLAINTEXT tiers would defeat encryption-at-rest entirely.
+function resetSnapshotCadence() { _dbSaved = {}; }
 
 // Storage adapter over the 'databases' object store. Extracted so the rotation
 // and recovery logic can be unit-tested against an in-memory mock.
@@ -2269,21 +2501,73 @@ async function _persistBlobTiered(store, toStore, prevSaved, now, tiers) {
   return saved;
 }
 
+// Per-connection safety pragmas. CRITICAL: sql.js db.export() closes and
+// reopens the underlying handle, which silently RESETS every per-connection
+// pragma — so a single auto-save used to disarm secure_delete (PHI remanence:
+// deleted-row bytes persisted to IndexedDB again) for the rest of the session.
+// Called at boot (initDB) AND immediately after every db.export().
+//   - secure_delete: zero freed pages on DELETE so exported blobs carry no
+//     deleted-PHI remnants (see the remanence note at the boot VACUUM).
+//   - foreign_keys: SQLite leaves FKs OFF per connection, so in browser mode
+//     every REFERENCES clause was decorative — a dangling admission_id/drug_id/
+//     patient_id write succeeded silently (the server sets and re-asserts this
+//     for its own connection; the browser never did). Applied AFTER the seed:
+//     the seed is owner-controlled, ordered data already asserted by
+//     test_seed.js, while runtime writes are where a bad id can come from.
+// try/catch per pragma — an old sql.js build without support degrades to the
+// previous behavior instead of failing boot.
+function _reassertConnectionPragmas() {
+  try { db.run('PRAGMA secure_delete = ON'); } catch (e) {}
+  try { db.run('PRAGMA foreign_keys = ON'); } catch (e) {}
+}
+
 async function saveDBToIndexedDB() {
+  if (SERVER_MODE) return;                 // the central server persists every write itself
   if (!db) return;
   if (!_dbDirty) return;                  // nothing changed since the last save
   if (_savePromise) return _savePromise;  // coalesce: wait on the in-flight write
   _savePromise = (async () => {
     try {
       while (_dbDirty) {
+        // Multi-tab clobber detection: each tab holds its own sql.js copy and
+        // this full-DB write is last-writer-wins. If the store's "current"
+        // stamp is newer than OUR last write, another tab persisted since —
+        // their committed changes are about to be overwritten. We cannot merge
+        // blobs; the honest move is to warn loudly so staff stop split-tab
+        // editing (server mode has no such hazard — one shared DB).
+        if (_dbSaved[DB_CURRENT_KEY] != null) {
+          try {
+            const meta = await idbStore.get(DB_META_KEY);
+            if (meta && meta.v === 2 && meta.saved && meta.saved[DB_CURRENT_KEY] != null
+                && meta.saved[DB_CURRENT_KEY] > _dbSaved[DB_CURRENT_KEY]) {
+              console.warn('[DB] another tab wrote this database since our last save — its changes are being overwritten');
+              if (typeof showError === 'function') {
+                const ar = (typeof currentLanguage === 'function' && currentLanguage() === 'ar');
+                showError(ar ? 'تحذير: تبويب آخر حفظ تغييرات على قاعدة البيانات — استخدم تبويباً واحداً فقط للإدخال.'
+                             : 'WARNING: another tab saved changes to this database — use ONE tab for data entry.');
+              }
+            }
+          } catch (e) { /* detection is best-effort; never block the save */ }
+        }
         _dbDirty = false;                 // snapshot point: db.export() below is synchronous
         const data = db.export();
+        _reassertConnectionPragmas();     // export() reopens the handle — pragmas reset
         // Encrypt at rest when a device passphrase is active (see crypto-store.js).
         // Only the persisted blob is encrypted; the in-memory DB stays plaintext.
         const encrypted = (typeof encIsActive === 'function' && encIsActive());
         const toStore = encrypted ? await encEncrypt(data) : data.buffer;
         _dbSaved = await _persistBlobTiered(idbStore, toStore, _dbSaved);
         // if a mutation re-dirtied the DB during the await, loop and flush again
+      }
+    } catch (e) {
+      // The snapshot never landed. Without this, _dbDirty stayed false and every
+      // later save no-opped — in-memory changes silently died with the tab.
+      _dbDirty = true;
+      console.error('[DB] save failed — data is still only in memory; will retry on next save', e);
+      if (typeof showError === 'function') {
+        const ar = (typeof currentLanguage === 'function' && currentLanguage() === 'ar');
+        showError(ar ? 'فشل حفظ قاعدة البيانات — التغييرات في الذاكرة فقط. لا تغلق التبويب وحاول مجدداً.'
+                     : 'Database save FAILED — changes are only in memory. Do not close this tab; retrying on next save.');
       }
     } finally {
       _savePromise = null;
@@ -2332,17 +2616,24 @@ async function loadDatabaseWithRecovery(SQL, store) {
   // snapshot set on the next save (which also drops the old keys).
   _dbSaved = (meta && meta.v === 2 && meta.saved) ? meta.saved : {};
 
-  const anyEncrypted = (typeof encIsEnvelope === 'function') && candidates.some(c => encIsEnvelope(c.value));
-  if (anyEncrypted) {
-    const ok = (typeof encBootUnlockMulti === 'function') ? await encBootUnlockMulti(candidates) : false;
-    if (!ok) { await wipeLocalDatabase(store); return null; }   // user chose reset
-  }
-
+  // Unlock LAZILY: prompt only when an envelope must actually be read, not
+  // because any candidate anywhere is one. After disabling encryption, stale
+  // hour/day snapshot tiers can still be envelopes while the newest copy is
+  // plaintext — those must not re-lock the app at boot (the unlock prompt's
+  // only escape is a full device wipe, and the passphrase may be long
+  // forgotten). If the newer copies all fail to open, we still prompt before
+  // falling back to an encrypted tier, so nothing recoverable is given up.
+  let unlockTried = false;
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
     try {
       let bytes;
       if ((typeof encIsEnvelope === 'function') && encIsEnvelope(c.value)) {
+        if (!unlockTried) {
+          unlockTried = true;
+          const ok = (typeof encBootUnlockMulti === 'function') ? await encBootUnlockMulti(candidates) : false;
+          if (!ok) { await wipeLocalDatabase(store); return null; }   // user chose reset
+        }
         bytes = await encDecrypt(c.value);     // throws if key wrong / bytes corrupt
       } else {
         bytes = new Uint8Array(c.value);
@@ -2374,6 +2665,10 @@ async function loadDatabaseWithRecovery(SQL, store) {
 // passphrase). The caller then seeds a fresh DB.
 async function wipeLocalDatabase(store) {
   try { await (store || idbStore).clear(); } catch (e) {}
+  // The store is empty — stale in-memory cadence stamps would otherwise make
+  // the next save skip "due" generational tiers and write meta entries that
+  // point at keys the wipe just deleted.
+  _dbSaved = {};
 }
 
 // ============================================================
@@ -2383,6 +2678,7 @@ async function wipeLocalDatabase(store) {
 function downloadBackup() {
   if (!db) return;
   const data = db.export();
+  _reassertConnectionPragmas();   // export() reopens the handle — pragmas reset
   const blob = new Blob([data], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2401,7 +2697,28 @@ function restoreBackup(file) {
         const SQL = await initSqlJs({
           locateFile: f => `vendor/${f}`
         });
-        db = new SQL.Database(new Uint8Array(reader.result));
+        // Validate into a TEMP handle first: a corrupt or wrong file must not
+        // replace the live db and then get persisted. Same probe as
+        // loadDatabaseWithRecovery, plus a core-table check so a random valid
+        // SQLite file can't wipe a hospital DB. Older stored tiers are left
+        // as-is — they are the pre-restore safety net.
+        let candidate = null;
+        try {
+          candidate = new SQL.Database(new Uint8Array(reader.result));
+          candidate.exec('SELECT count(*) FROM sqlite_master');
+          const probe = candidate.exec("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('patients','users','admissions')");
+          if (!probe.length || probe[0].values[0][0] < 3) throw new Error('missing core tables');
+        } catch (e) {
+          if (candidate) { try { candidate.close(); } catch (e2) {} }
+          const ar = (typeof currentLanguage === 'function' && currentLanguage() === 'ar');
+          showError(ar ? 'الملف ليس نسخة احتياطية صالحة من OpenWard — لم يتم تغيير قاعدة البيانات الحالية.'
+                       : 'Not a valid OpenWard backup — the current database was NOT changed.');
+          reject(e);
+          return;
+        }
+        if (db) { try { db.close(); } catch (e) {} }
+        db = candidate;
+        _reassertConnectionPragmas();   // brand-new connection — pragmas are at defaults
         _dbDirty = true;   // brand-new db instance — force a persist
         await saveDBToIndexedDB();
         showSuccess(t('db_loaded'));
@@ -2426,6 +2743,7 @@ function restoreBackup(file) {
  * @returns {object[]}
  */
 function dbAll(sql, params) {
+  if (SERVER_MODE) return _serverSql('query', sql, params).rows;
   const result = db.exec(sql, params);
   if (!result.length) return [];
   const cols = result[0].columns;
@@ -2453,8 +2771,23 @@ function dbGet(sql, params) {
  * @param {Array} [params]
  */
 function dbRun(sql, params) {
+  if (SERVER_MODE) {
+    const r = _serverSql('exec', sql, params);
+    _serverLastId = r.lastId;
+    _serverLastChanges = r.changes || 0;
+    return;
+  }
   db.run(sql, params);
+  _localLastChanges = db.getRowsModified();
   _dbDirty = true;   // mark for the next persist (see saveDBToIndexedDB)
+}
+
+// Rows affected by the most recent dbRun — lets guarded UPDATEs ("... AND
+// status='active'") detect that they lost a race instead of proceeding.
+let _localLastChanges = 0;
+let _serverLastChanges = 0;
+function dbChanges() {
+  return (typeof SERVER_MODE !== 'undefined' && SERVER_MODE) ? _serverLastChanges : _localLastChanges;
 }
 
 /**
@@ -2462,6 +2795,7 @@ function dbRun(sql, params) {
  * @returns {number}
  */
 function dbLastId() {
+  if (SERVER_MODE) return _serverLastId;   // captured from the last exec response
   const r = db.exec('SELECT last_insert_rowid() as id');
   return r[0].values[0][0];
 }
@@ -2470,6 +2804,7 @@ function dbLastId() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     loadDatabaseWithRecovery, _persistBlobTiered, _collectDbCandidates, wipeLocalDatabase,
+    resetSnapshotCadence,
     DB_SNAPSHOT_TIERS, DB_CURRENT_KEY, DB_META_KEY,
     // Build the schema exactly as a brand-new install does — createAllTables()
     // plus the shared migrations — on a caller-provided sql.js DB. Lets the

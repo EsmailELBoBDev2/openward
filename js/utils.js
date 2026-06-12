@@ -164,17 +164,20 @@ function nowISO() {
 }
 
 /**
- * Format ISO date for display
- * @param {string} isoStr
+ * Get today's date as YYYY-MM-DD (UTC, same convention as nowISO)
  * @returns {string}
  */
-function formatDate(isoStr) {
-  if (!isoStr) return '—';
-  const d = new Date(isoStr);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Standard empty-state block used by list/table views
+ * @param {string} [msg] defaults to t('no_data')
+ * @returns {string} HTML
+ */
+function emptyState(msg) {
+  return `<div class="empty-state"><p>${msg || t('no_data')}</p></div>`;
 }
 
 /**
@@ -220,6 +223,31 @@ function escapeHtml(str) {
   // textContent→innerHTML escapes < > & but NOT quotes; also escape " so the
   // output is safe inside double-quoted attributes, e.g. value="${escapeHtml(x)}".
   return div.innerHTML.replace(/"/g, '&quot;');
+}
+
+/**
+ * Escape a value for safe embedding inside a SINGLE-QUOTED JavaScript string that
+ * itself sits inside a DOUBLE-QUOTED HTML attribute, e.g.
+ *     onclick="doThing('${jsAttr(name)}')"
+ *
+ * escapeHtml() ALONE is not safe here: it leaves the single quote untouched, so a
+ * real name like  O'Brien  — or a malicious  ');evil()//  typed into a patient
+ * field — breaks out of the JS string. Encoding the quote as &#39; / &apos; is
+ * WORSE: the HTML parser decodes it back to ' BEFORE the JS runs, so the name
+ * neither renders correctly nor stays contained. The only correct fix is a real
+ * backslash escape (which the HTML parser leaves alone) layered on top of the
+ * HTML-attribute escaping escapeHtml() already does.
+ * @param {string} str
+ * @returns {string}
+ */
+function jsAttr(str) {
+  return String(str === null || str === undefined ? '' : str)
+    .replace(/&/g, '&amp;')     // HTML-escape first (entities introduce no \ or ')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')    // keeps the surrounding "..." attribute from closing
+    .replace(/\\/g, '\\\\')     // then JS-escape: backslashes for the string literal
+    .replace(/'/g, "\\'");      // and the single quote that delimits the JS string
 }
 
 // ============================================================
@@ -669,8 +697,23 @@ function runPIE(patient, conditions, allergies, currentMeds, admissionData) {
   if (admissionData && admissionData.diet_code === 'NPO') {
     nurseWarnings.push({severity:'red', en:'NPO patient: Absolutely nothing by mouth. Verify IV fluids running. Post NPO sign at bedside.', ar:'مريض NPO: ممنوع أي شيء بالفم تماماً. تأكد من السوائل الوريدية. ضع لافتة NPO عند السرير.'});
   }
-  // Fall risk
-  if (patient && (parseInt(patient.date_of_birth) < 1961 || conditions.includes('stroke_history'))) {
+  // Fall risk — age >= 65 (CDC STEADI / AHRQ inpatient screening) computed from
+  // the actual DOB. The old gate was a frozen literal birth-year (< 1961, i.e.
+  // 65 at the time it was written): patients born in 1961 were never flagged,
+  // and the effective threshold drifted up by one year every calendar year, so
+  // the unflagged-elderly window silently widened forever.
+  const FALL_RISK_AGE = 65;
+  let fallRiskAge = false;
+  if (patient && patient.date_of_birth) {
+    const dob = new Date(patient.date_of_birth);
+    if (!isNaN(dob)) {
+      const now = new Date();
+      let age = now.getFullYear() - dob.getFullYear();
+      if (now.getMonth() < dob.getMonth() || (now.getMonth() === dob.getMonth() && now.getDate() < dob.getDate())) age--;
+      fallRiskAge = age >= FALL_RISK_AGE;
+    }
+  }
+  if (fallRiskAge || conditions.includes('stroke_history')) {
     nurseWarnings.push({severity:'yellow', en:'Fall risk: Bed in lowest position. Side rails up. Call bell within reach. Non-slip footwear.', ar:'خطر سقوط: السرير في أدنى وضع. حواجز السرير مرفوعة. جرس الاستدعاء في متناول اليد.'});
   }
   // Allergy warnings
@@ -1013,48 +1056,6 @@ function requireReasonToDecline(alertHtml, contextKey, onAccept, onDecline) {
   };
 }
 
-/**
- * Render lab workflow pipeline HTML
- */
-function renderLabPipeline(status, lang) {
-  const steps = [
-    {key:'ordered', en:'Ordered', ar:'مطلوب'},
-    {key:'collected', en:'Collected', ar:'مسحوب'},
-    {key:'received', en:'Received', ar:'مُستلم'},
-    {key:'resulted', en:'Resulted', ar:'نتيجة'},
-  ];
-  const idx = steps.findIndex(s => s.key === status);
-  return '<div class="workflow-pipeline">' +
-    steps.map((s, i) => {
-      let cls = 'workflow-step';
-      if (i < idx) cls += ' step-complete';
-      else if (i === idx) cls += ' step-active';
-      return `<span class="${cls}">${lang === 'ar' ? s.ar : s.en}</span>` +
-        (i < steps.length - 1 ? '<span class="workflow-arrow">&#8594;</span>' : '');
-    }).join('') +
-    '</div>';
-}
-
-// ============================================================
-// Loading spinner
-// ============================================================
-
-function showLoading() {
-  let el = document.getElementById('loading-overlay');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'loading-overlay';
-    el.innerHTML = '<div class="spinner"></div><p>' + t('loading') + '</p>';
-    document.body.appendChild(el);
-  }
-  el.style.display = 'flex';
-}
-
-function hideLoading() {
-  const el = document.getElementById('loading-overlay');
-  if (el) el.style.display = 'none';
-}
-
 // ============================================================
 // Generic Modal helper (overlay)
 // Used by Care Plan, Assessment forms, etc.
@@ -1142,5 +1143,5 @@ function closeModal() {
 
 // Node test harness only (browser has no `module`): expose the pure helpers.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { sha256, hashPassword, verifyPassword, pbkdf2Hex, timingSafeEqualHex, generateSalt, escapeHtml, PW_HASH_ITERATIONS };
+  module.exports = { sha256, hashPassword, verifyPassword, pbkdf2Hex, timingSafeEqualHex, generateSalt, escapeHtml, jsAttr, PW_HASH_ITERATIONS };
 }

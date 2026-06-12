@@ -45,9 +45,20 @@ open `https://<hospital-pc-ip>:8080`.
   over TLS and marks the session cookie `Secure`. Use a local CA cert before real
   PHI (LAN HTTP is cleartext).
 
+- **Backups (automatic):** a consistent snapshot of the DB is written to
+  `OPENWARD_BACKUP_DIR` (default `server/data/backups/`) at boot and then every
+  `OPENWARD_BACKUP_HOURS` (default 24; `0` disables), keeping the newest
+  `OPENWARD_BACKUP_KEEP` (default 30). The IT admin can also snapshot on demand:
+  `POST /api/admin/backup` (audited as `BACKUP_CREATED`). **Point
+  `OPENWARD_BACKUP_DIR` at a second disk or a synced folder** — a backup on the
+  same disk as the live DB only survives software bugs, not disk death (3-2-1:
+  three copies, two media, one off-site). Back up `audit.key` separately once —
+  it never changes, and without it the audit chain can't be verified.
+
 Config env: `HOST`, `PORT`, `OPENWARD_DEMO`, `HTTPS_KEY`/`HTTPS_CERT`,
 `TRUST_PROXY` (believe `X-Forwarded-For` only behind a real proxy),
-`OPENWARD_DATA_DIR`.
+`OPENWARD_DATA_DIR`, `OPENWARD_BACKUP_DIR`, `OPENWARD_BACKUP_HOURS`,
+`OPENWARD_BACKUP_KEEP`.
 
 Quick check it's really central (demo mode):
 ```bash
@@ -68,16 +79,31 @@ curl -b jar localhost:8080/api/patients
   multi-step writes use `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` (e.g. registration
   rejects a double-booked bed atomically).
 - **Endpoints:** `GET /api/health`, `POST /api/setup` (first-run only),
-  `POST /api/login`, `POST /api/logout`, `GET /api/me`,
+  `POST /api/login`, `POST /api/logout`, `GET /api/me`, `POST /api/me/password`,
   `GET/POST /api/patients`, `GET /api/patients/:id`, `GET /api/beds`,
   `POST /api/vitals`, `GET/POST /api/prescriptions` (formulary-only),
-  `POST /api/lab-orders`, `GET /api/audit` (role-gated).
+  `POST /api/prescriptions/:id/administer` (MAR — bedside, dept-scoped),
+  `POST /api/prescriptions/:id/dispense` (pharmacy — decrements central stock
+  atomically; **service role**, hospital-wide), `POST /api/lab-orders`,
+  `POST /api/lab-orders/:id/result` (lab — **service role**),
+  `POST /api/admissions/:id/discharge` (stops active meds + frees the bed in one
+  transaction), `GET /api/audit` (role-gated),
+  `GET/POST /api/departments`, `GET/POST /api/users`, `POST /api/users/:id/{disable,enable,reset-password}`.
+- **Service vs ward roles:** ward clinicians are scoped to their department's active
+  admissions (`canAccessAdmission`). Pharmacy (`pharmacist`) and lab
+  (`lab_technician`) are **hospital-wide services**: their one workflow endpoint
+  (dispense / result) is gated by role, not by ward — but they get no patient list
+  and no chart, so they can't browse PHI across departments. `it_admin` and
+  `hospital_manager` are **oversight**: demographics/beds/audit, no chart or meds.
 
-Covered by `test/test_server.js` + `test/test_setup.js` (auth, RBAC denial,
-transactional bed conflict, **a second client seeing the first's write**,
-formulary-only prescribing, no secret leakage in patient detail, role-gated audit,
-audit chain, **FK enforcement** of orphan rows, path-traversal, **first-run setup
-with no default accounts**).
+Covered by `test/test_server.js` (135 assertions) + `test/test_setup.js` (auth,
+RBAC denial incl. **service roles**, transactional bed conflict, **a second client
+seeing the first's write**, formulary-only prescribing, **clinical fields
+allowlisted out of non-clinical payloads**, role-gated audit, **durable
+login-fail/logout audit**, audit chain, **FK enforcement** of orphan rows incl.
+dispensing/dept, **dot-segment path-traversal denied (sent raw)**, **MAR /
+pharmacy dispensing with atomic stock decrement / lab result entry / discharge with
+med reconciliation + bed release**, **first-run setup with no default accounts**).
 
 ## This IS the production target (decision locked)
 
@@ -95,13 +121,22 @@ off the in-browser sql.js/IndexedDB source-of-truth onto `/api`. Because the UI'
 DB calls are synchronous and `/api` is async, this is done screen-by-screen:
 
 1. ✅ Server owns the DB; auth/RBAC/audit/transactions; patients, beds, vitals,
-   prescriptions, lab orders, patient detail, audit endpoints.
+   prescriptions, lab orders, patient detail, audit, **staff/department admin**,
+   **MAR, pharmacy dispensing (stock-decrementing), lab result entry, and
+   discharge (med reconciliation + bed release)** endpoints.
 2. ⬜ Wire the browser **login** to `/api/login` (load `js/api.js`; drop the
    client-side `login()` for staff).
 3. ⬜ Migrate registration → beds → vitals → orders → MAR → dispensing → labs →
-   discharge → portal to `/api`, deleting their `dbRun/dbGet/saveDBToIndexedDB`
-   source-of-truth use (keep `localStorage` for UI prefs only).
-4. ⬜ Server push (WebSocket/SSE) to replace `BroadcastChannel` for live updates.
+   discharge → portal **screens** to the `/api` endpoints above, deleting their
+   `dbRun/dbGet/saveDBToIndexedDB` source-of-truth use (keep `localStorage` for UI
+   prefs only). The server side of these workflows now exists; the remaining work
+   is the browser wiring (needs a real browser to validate, so it's done
+   screen-by-screen).
+4. ✅ Server push: `/api/events` (SSE, session-gated, carries only a version
+   counter — no PHI) notifies every connected workstation the moment ANY device
+   writes, so screens refresh in real time. The 4s version poll remains as an
+   automatic fallback when the stream drops. (`BroadcastChannel` still covers
+   browser-local mode, which has no server.)
 5. ⬜ Server-side backup/restore (scheduled, encrypted, off-machine); remove the
    in-UI "Reset Database" from server builds.
 6. ⬜ Row versioning / conflict detection on hot rows (beds, stock, MAR).
@@ -114,7 +149,15 @@ DB calls are synchronous and `/api` is async, this is done screen-by-screen:
 - **One owner.** Never run two servers against the same file, and never put
   `openward.sqlite` on SMB/NFS — SQLite can corrupt when network file locking
   misbehaves.
-- **Back up** `server/data/` (DB + audit key) off the machine; test restores.
+- **Back up off the machine.** Automatic local snapshots are built in (see
+  "Backups" above), but they default to the same disk. Point
+  `OPENWARD_BACKUP_DIR` at a second disk or synced folder, and **test a restore**
+  (stop the server, copy a snapshot over `openward.sqlite`, start, log in).
+- **Downtime procedure.** Decide *before* the first outage what the ward does
+  when the hospital PC is down: paper vitals/MAR forms in a known drawer, who
+  re-enters the data afterwards, and who is allowed to declare downtime. The
+  HIPAA contingency-plan rule expects this written down; a one-page printout
+  taped near the workstation is enough at this scale.
 - **FK retrofit.** Foreign keys are defined in `CREATE TABLE` and enforced
   server-side (`PRAGMA foreign_keys=ON`, re-asserted after each `sql.js` export).
   SQLite can't ALTER-add FKs to tables created *before* those clauses, so a

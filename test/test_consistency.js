@@ -115,5 +115,38 @@ if (clearFn) {
   }
 }
 
+// ---- 7. MAR lifecycle: dispensed meds stay administrable -------------------
+// handleDispense() flips prescriptions.status 'active' -> 'dispensed'. If a MAR
+// surface filters p.status = 'active' only, every med disappears from the MAR
+// the moment pharmacy dispenses it and can never be charted. Both MAR queries
+// (full MAR view + embedded MAR on the nurse patient chart) must include both.
+{
+  const r = read('js/router.js');
+  assert(/UPDATE prescriptions SET status = 'dispensed'/.test(r),
+    'dispense flow marks prescriptions dispensed (precondition for this guard)');
+  const marQueries = r.match(/p\.status IN \('active', ?'dispensed'\)/g) || [];
+  assert(marQueries.length >= 2,
+    `both MAR surfaces include dispensed meds (found ${marQueries.length} of 2 IN ('active','dispensed') filters)`);
+
+  // No med_admin_records query may filter status='pending': nothing ever writes
+  // pending rows (the only INSERT charts given/held/refused), so such a query
+  // silently matches zero rows forever — that's how the "doses due" nurse alert
+  // was dead on arrival.
+  const pendingMar = r.match(/FROM med_admin_records[\s\S]{0,200}?status\s*=\s*'pending'/g) || [];
+  assert(pendingMar.length === 0,
+    'no med_admin_records query filters the never-written status=pending');
+
+  // The save handler must re-validate against the DB, not trust render-time args:
+  // the admission can be discharged / the order discontinued while the form is open.
+  const fn = r.match(/async function handleLogMAR\([\s\S]*?\n\}/);
+  assert(!!fn, 'found handleLogMAR()');
+  if (fn) {
+    assert(/JOIN admissions/.test(fn[0]) && /adm_status/.test(fn[0]),
+      'handleLogMAR re-reads the rx + admission at save time (TOCTOU guard)');
+    assert(/fresh\.drug_name/.test(fn[0]),
+      'handleLogMAR charts the DB values, not the render-time snapshot args');
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

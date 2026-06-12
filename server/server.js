@@ -31,6 +31,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = process.env.OPENWARD_DATA_DIR || path.join(__dirname, 'data');
@@ -48,9 +49,61 @@ let setupToken = null;                                  // one-time first-run to
 const initSqlJs = require(path.join(ROOT, 'vendor', 'sql-wasm.js'));
 const dbjs = require(path.join(ROOT, 'js', 'db.js'));     // reuse schema builder (createAllTables + migrations)
 const u = require(path.join(ROOT, 'js', 'utils.js'));     // reuse hashPassword/verifyPassword (PBKDF2)
+const allergyCheck = require(path.join(ROOT, 'js', 'allergy-check.js')); // SAME class-aware allergy matcher as the browser
 
 let db = null;            // the one central sql.js Database
 let auditKey = null;      // HMAC key, loaded from disk (outside the DB)
+let dbWriteVersion = 1;   // bumped on every shared-DB write so other devices know to refresh
+
+// ---- real-time change push (SSE) --------------------------------------------
+// Every logged-in workstation holds one EventSource on /api/events; when any
+// device writes data, bumpDbVersion() pushes the new version to all of them so
+// their screens refresh in ~real time instead of waiting out the poll interval.
+// The version-poll endpoint stays as the fallback for clients whose stream
+// dropped (EventSource auto-reconnects, and the browser also keeps a slow poll).
+const _sseClients = new Set();
+function bumpDbVersion() {
+  dbWriteVersion++;
+  const payload = `data: {"version":${dbWriteVersion}}\n\n`;
+  for (const c of _sseClients) {
+    try { c.write(payload); } catch (e) { _sseClients.delete(c); }
+  }
+}
+// Heartbeat comment every 25s so idle proxies/firewalls don't reap the sockets.
+// unref(): never holds the test process open.
+const _sseHeartbeat = setInterval(() => {
+  for (const c of _sseClients) { try { c.write(':hb\n\n'); } catch (e) { _sseClients.delete(c); } }
+}, 25000);
+if (_sseHeartbeat.unref) _sseHeartbeat.unref();
+// Per-IP failed-login sliding window (in-memory). The DB lockout is per-ACCOUNT
+// (5 fails / 15 min), so one LAN host could spray 5 bad passwords at every
+// username and lock the whole hospital out, or enumerate accounts unthrottled.
+// 30 failures / 15 min per source IP closes both; loopback is exempt so a
+// misbehaving reverse proxy without TRUST_PROXY can't lock out everyone at once.
+const ipLoginFails = new Map();   // ip -> [failure timestamps ms]
+const IP_FAIL_LIMIT = 30, IP_FAIL_WINDOW_MS = 15 * 60 * 1000;
+function ipThrottled(ip) {
+  const cutoff = Date.now() - IP_FAIL_WINDOW_MS;
+  const recent = (ipLoginFails.get(ip) || []).filter(t => t > cutoff);
+  if (recent.length) ipLoginFails.set(ip, recent); else ipLoginFails.delete(ip);
+  return recent.length >= IP_FAIL_LIMIT;
+}
+function recordIpFail(ip) {
+  const cutoff = Date.now() - IP_FAIL_WINDOW_MS;
+  const recent = (ipLoginFails.get(ip) || []).filter(t => t > cutoff);
+  recent.push(Date.now());
+  ipLoginFails.set(ip, recent);
+  // bound memory if something sprays from many spoofed XFF values
+  if (ipLoginFails.size > 10000) { for (const k of ipLoginFails.keys()) { ipLoginFails.delete(k); if (ipLoginFails.size <= 5000) break; } }
+}
+// First-touch PHI-read audit for the shared-DB bridge: one durable audit row the
+// first time a session reads each PHI table (auditing every bridge query would
+// write dozens of rows per page render). Keys are `${session_id}:${table}`;
+// bounded by live-sessions × PHI-table-count, reset on server restart.
+const BRIDGE_PHI_TABLES = ['patients', 'admissions', 'vitals', 'prescriptions', 'lab_orders',
+  'med_admin_records', 'patient_allergies', 'patient_conditions', 'appointments',
+  'consultations', 'sw_contacts', 'fluid_balance', 'nursing_assessments'];
+const bridgePhiAudited = new Set();
 
 // ---- tiny DB helpers over sql.js -------------------------------------------
 function all(sql, params = []) {
@@ -83,6 +136,35 @@ function persist() {                       // debounced write-to-disk
   _persistTimer = setTimeout(() => { _persistTimer = null; writeDbAtomic(); }, 50);
 }
 function persistNow() { if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null; } writeDbAtomic(); }
+
+// ---- backups (HIPAA contingency planning: a data backup plan is mandatory) ---
+// DB_FILE is always a CONSISTENT snapshot (writeDbAtomic = tmp + atomic rename),
+// so a backup is a plain copy taken right after a flush. Same-disk backups only
+// survive app bugs, not disk death — point OPENWARD_BACKUP_DIR at a second disk
+// or a synced/offsite folder for real disaster recovery (3-2-1: 3 copies,
+// 2 media, 1 offsite).
+const BACKUP_DIR = process.env.OPENWARD_BACKUP_DIR || path.join(DATA_DIR, 'backups');
+const BACKUP_HOURS = Number(process.env.OPENWARD_BACKUP_HOURS ?? 24);   // 0 disables scheduled backups
+const BACKUP_KEEP = Math.max(1, Number(process.env.OPENWARD_BACKUP_KEEP) || 30);
+function runBackup() {
+  persistNow();                              // flush pending writes so the copy is current
+  if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+  const dest = path.join(BACKUP_DIR, `openward-${stamp}.sqlite`);
+  const tmp = dest + '.tmp';
+  fs.copyFileSync(DB_FILE, tmp);
+  try { fs.chmodSync(tmp, 0o600); } catch (e) {}   // backups hold the same PHI as the live DB
+  fs.renameSync(tmp, dest);
+  const have = fs.readdirSync(BACKUP_DIR).filter(f => /^openward-.+\.sqlite$/.test(f)).sort();
+  for (const f of have.slice(0, Math.max(0, have.length - BACKUP_KEEP))) fs.unlinkSync(path.join(BACKUP_DIR, f));
+  return dest;
+}
+function scheduleBackups() {
+  if (!(BACKUP_HOURS > 0)) { console.log('[backup] scheduled backups DISABLED (OPENWARD_BACKUP_HOURS=0)'); return; }
+  const tick = () => { try { console.log(`[backup] wrote ${runBackup()}`); } catch (e) { console.error('[backup] FAILED:', e.message); } };
+  tick();                                    // one at every boot — restarts are the riskiest moment
+  setInterval(tick, BACKUP_HOURS * 3600 * 1000).unref();
+}
 
 // ---- audit (HMAC chain, key outside the DB) --------------------------------
 function auditHash(prev, row) {
@@ -130,17 +212,24 @@ function audit(actor, actionType, detail, req, patient) {
 function auditNow(actor, actionType, detail, req, patient) { audit(actor, actionType, detail, req, patient); persistNow(); }
 
 // ---- RBAC (server-authoritative) -------------------------------------------
-const CLINICAL = ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
+// Clinicians who may read clinical charts/meds. NOT it_admin/hospital_manager —
+// they are oversight (demographics/beds/audit), not a care team, so they don't get
+// chart/med access by default.
+const CLINICAL = ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
 const CAN = {
   register_patient: ['emergency_doctor', 'triage_nurse', 'receptionist', 'it_admin'],
-  // demographics (list + basic detail) — receptionist included; CLINICAL data is separate
-  view_patients:    [...CLINICAL, 'receptionist'],
+  // demographics (list + basic detail) — oversight + clinicians + receptionist
+  view_patients:    ['it_admin', 'hospital_manager', ...CLINICAL, 'receptionist'],
   view_chart:       CLINICAL,                            // vitals/clinical chart (NOT receptionist)
   view_meds:        CLINICAL,                            // prescriptions
   record_vitals:    ['nurse', 'senior_nurse', 'triage_nurse', 'doctor', 'emergency_doctor'],
   view_beds:        ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'senior_nurse', 'nurse', 'emergency_doctor', 'triage_nurse'],
   prescribe:        ['doctor', 'consultant', 'emergency_doctor'],
   order_labs:       ['doctor', 'consultant', 'emergency_doctor'],
+  administer_meds:  ['nurse', 'senior_nurse', 'triage_nurse', 'doctor', 'emergency_doctor'],  // record a dose given/held (MAR) at the bedside
+  dispense_meds:    ['pharmacist'],                      // pharmacy: dispense against an Rx and decrement central stock
+  enter_lab_result: ['lab_technician'],                 // lab: post a result to an order
+  discharge_patient:['doctor', 'consultant', 'emergency_doctor'],  // stop active meds + free the bed
   view_audit:       ['it_admin', 'hospital_manager'],   // full audit log is oversight-only (a consultant would see every dept's PHI access)
   manage_users:     ['it_admin'],                       // staff/department administration
 };
@@ -184,10 +273,15 @@ function sessionFromReq(req) {
 }
 
 // ---- HTTP plumbing ----------------------------------------------------------
+// HSTS once we're on HTTPS: a LAN MITM must not be able to downgrade a
+// workstation that has visited the real server even once.
+function hstsHeaders() {
+  return IS_HTTPS ? { 'Strict-Transport-Security': 'max-age=31536000' } : {};
+}
 function send(res, code, obj, headers) {
   const body = JSON.stringify(obj);
   // PHI must never be cached; nosniff hardens content handling.
-  res.writeHead(code, Object.assign({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'X-Content-Type-Options': 'nosniff' }, headers || {}));
+  res.writeHead(code, Object.assign({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'X-Content-Type-Options': 'nosniff' }, hstsHeaders(), headers || {}));
   res.end(body);
 }
 function readBody(req) {
@@ -205,16 +299,51 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 const STATIC_ALLOW = /^(?:index\.html|favicon\.ico)$|^(?:js|css|vendor)\/[\w./-]+$/;
 function serveStatic(req, res, pathname) {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  // Reject dot-segment traversal BEFORE path.join can normalize it away. The
+  // handler decodes the URL in one pass (decodeURIComponent), so a client that
+  // percent-encodes the slash — GET /js/..%2fserver/data/audit.key — arrives
+  // here as "js/../server/data/audit.key": its '..' was NOT collapsed by the
+  // client's URL layer (only a literal '/js/../...' is), yet path.join then
+  // normalizes it back INSIDE ROOT, so the path.relative startsWith('..') guard
+  // below passes and the allow-regex's [\w./-] class permits the dots. That
+  // served the HMAC audit.key, the whole PHI sqlite, and server source to any
+  // unauthenticated fetch(). Reject any empty/'.'/'..'  segment outright (same
+  // approach serve.py already takes), so neither encoding nor normalization can
+  // escape the allowlisted js/css/vendor roots.
+  if (rel.split('/').some(s => s === '' || s === '.' || s === '..')) { res.writeHead(403); return res.end('forbidden'); }
   if (!STATIC_ALLOW.test(rel)) { res.writeHead(403); return res.end('forbidden'); }
   const full = path.join(ROOT, rel);
   const within = path.relative(ROOT, full);
-  if (within.startsWith('..') || path.isAbsolute(within)) { res.writeHead(403); return res.end('forbidden'); }
-  fs.readFile(full, (err, buf) => {
-    if (err) { res.writeHead(404); return res.end('not found'); }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' });
-    res.end(buf);
+  // Final guard: the resolved path must be index.html/favicon.ico or inside js/css/vendor.
+  if (within.startsWith('..') || path.isAbsolute(within) || !/^(?:index\.html|favicon\.ico|(?:js|css|vendor)[\\/])/.test(within)) { res.writeHead(403); return res.end('forbidden'); }
+  // Static assets hold no PHI — unlike /api responses (no-store), let browsers
+  // cache them but ALWAYS revalidate (no-cache + ETag): a repeat load of the
+  // ~1.2MB app becomes a handful of 304s, and code updates still land instantly.
+  fs.stat(full, (serr, st) => {
+    if (serr || !st.isFile()) { res.writeHead(404); return res.end('not found'); }
+    const ext = path.extname(full);
+    // The ETag is PER-REPRESENTATION (RFC 9110): the gzip and identity bodies get
+    // different validators, so even a Vary-ignoring intermediary can never serve
+    // the cached gzip blob to an identity request on a 304 match.
+    const wantsGzip = COMPRESSIBLE.has(ext) && /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
+    const etag = `W/"${st.size}-${Math.floor(st.mtimeMs)}${wantsGzip ? '-gz' : ''}"`;
+    const headers = Object.assign({ 'Content-Type': MIME[ext] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-cache', 'ETag': etag, 'Vary': 'Accept-Encoding' }, hstsHeaders());
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end(); }
+    fs.readFile(full, (err, buf) => {
+      if (err) { res.writeHead(404); return res.end('not found'); }
+      // gzip text + wasm (router.js 611KB→~140KB, sql-wasm.wasm roughly halves);
+      // only on cache misses thanks to the ETag, so the sync gzip cost is rare.
+      if (wantsGzip) {
+        const gz = zlib.gzipSync(buf);
+        res.writeHead(200, Object.assign({}, headers, { 'Content-Encoding': 'gzip', 'Content-Length': gz.length }));
+        return res.end(gz);
+      }
+      res.writeHead(200, headers);
+      res.end(buf);
+    });
   });
 }
+const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.json', '.svg', '.wasm']);
 function genMRN(patientId) { return `HIS-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(patientId).padStart(5, '0')}`; }
 
 // ---- API routes -------------------------------------------------------------
@@ -254,6 +383,14 @@ async function handleApi(req, res, pathname) {
     const username = normUser(body.username);
     const password = String(body.password || '');
     const acct = username;
+    // Per-IP throttle first (see ipLoginFails above) — protects ALL accounts
+    // from a single spraying host before the per-account counters even engage.
+    const ip = clientIp(req);
+    if (!isLoopback(req) && ipThrottled(ip)) {
+      audit(null, 'LOGIN_THROTTLED', `Per-IP login throttle engaged for ${ip}`, req);
+      persist();
+      return send(res, 429, { error: 'locked', message: 'Too many attempts from this device; try again later.' });
+    }
     // DB-backed lockout (5 fails / 15 min)
     const since = Date.now() - 15 * 60 * 1000;
     const fails = get('SELECT COUNT(*) AS c FROM login_attempts WHERE account = ? AND attempt_ms > ?', [acct, since]);
@@ -263,11 +400,16 @@ async function handleApi(req, res, pathname) {
     const v = okUser ? await u.verifyPassword(password, user.salt, user.password_hash) : { ok: false };
     if (!okUser || !v.ok) {
       run('INSERT INTO login_attempts (account, attempt_ms) VALUES (?, ?)', [acct, Date.now()]);
-      audit(null, 'LOGIN_FAILED', `Failed login for "${username}"`, req);
-      persist();
+      recordIpFail(ip);
+      auditNow(null, 'LOGIN_FAILED', `Failed login for "${username}"`, req);   // durable security event
       return send(res, 401, { error: 'bad_credentials', message: 'Invalid username or password.' });
     }
-    if (v.needsUpgrade) { try { run('UPDATE users SET password_hash = ? WHERE user_id = ?', [await u.hashPassword(password, user.salt), user.user_id]); } catch (e) {} }
+    if (v.needsUpgrade) {
+      try {
+        run('UPDATE users SET password_hash = ? WHERE user_id = ?', [await u.hashPassword(password, user.salt), user.user_id]);
+        audit(user, 'PASSWORD_SCHEME_UPGRADED', `Stored hash for "${username}" upgraded to PBKDF2 on login`, req);
+      } catch (e) {}
+    }
     run('DELETE FROM login_attempts WHERE account = ?', [acct]);
     const sid = crypto.randomUUID();
     const now = new Date();
@@ -287,11 +429,37 @@ async function handleApi(req, res, pathname) {
   const actor = auth.user;
 
   if (pathname === '/api/logout' && req.method === 'POST') {
-    run('DELETE FROM sessions WHERE session_id = ?', [auth.session.session_id]); persist();
+    run('DELETE FROM sessions WHERE session_id = ?', [auth.session.session_id]);
+    auditNow(actor, 'LOGOUT', `${actor ? actor.full_name_en : 'patient'} logged out`, req);
     return send(res, 200, { ok: true }, { 'Set-Cookie': 'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
   }
   if (pathname === '/api/me' && req.method === 'GET') {
-    return send(res, 200, { user: actor ? { user_id: actor.user_id, full_name_en: actor.full_name_en, role: actor.role, department_id: actor.department_id } : { role: 'patient' } });
+    return send(res, 200, { user: actor ? { user_id: actor.user_id, full_name_en: actor.full_name_en, full_name_ar: actor.full_name_ar, role: actor.role, department_id: actor.department_id } : { role: 'patient' } });
+  }
+
+  // Self-service password change. Without this the only rotation path is the
+  // admin reset — meaning the IT admin CHOSE (and knows) every staff password,
+  // which breaks individual accountability in the audit trail. Requires the
+  // CURRENT password (a walk-up at an unlocked workstation can't silently take
+  // over the account) and kills the user's OTHER sessions so a stolen session
+  // doesn't outlive the rotation.
+  if (pathname === '/api/me/password' && req.method === 'POST') {
+    if (!actor) return send(res, 403, { error: 'forbidden', message: 'staff session required' });
+    const current = String(body.current_password || '');
+    const next = String(body.new_password || '');
+    if (next.length < 8) return send(res, 400, { error: 'validation', message: 'new password must be at least 8 characters' });
+    const v = await u.verifyPassword(current, actor.salt, actor.password_hash);
+    if (!v.ok) {
+      audit(actor, 'PASSWORD_CHANGE_FAILED', 'Self-service password change refused: current password wrong', req);
+      persist();
+      return send(res, 403, { error: 'bad_credentials', message: 'current password is incorrect' });
+    }
+    const salt = u.generateSalt();
+    run('UPDATE users SET password_hash = ?, salt = ? WHERE user_id = ?', [await u.hashPassword(next, salt), salt, actor.user_id]);
+    run('DELETE FROM sessions WHERE user_id = ? AND session_id <> ?', [actor.user_id, auth.session.session_id]);
+    audit(actor, 'PASSWORD_CHANGED', `${actor.full_name_en} changed their own password (other sessions revoked)`, req);
+    persistNow();
+    return send(res, 200, { ok: true });
   }
 
   if (pathname === '/api/patients' && req.method === 'GET') {
@@ -329,9 +497,10 @@ async function handleApi(req, res, pathname) {
       run(`INSERT INTO admissions (patient_id, dept_id, bed_number, admitted_by, admitted_at, status, chief_complaint)
            VALUES (?, ?, ?, ?, ?, 'active', ?)`,
         [pid, deptId, bed, actor.user_id, new Date().toISOString(), body.chief_complaint || null]);
-      run('COMMIT');
       const patient = get('SELECT * FROM patients WHERE patient_id = ?', [pid]);
-      audit(actor, 'PATIENT_REGISTERED', `Registered ${nameAr} (MRN ${mrn})`, req, patient);
+      audit(actor, 'PATIENT_REGISTERED', `Registered ${nameAr} (MRN ${mrn})`, req, patient);   // audited INSIDE the tx
+      run('COMMIT');
+      bumpDbVersion();
       persistNow();
       return send(res, 201, { patient_id: pid, mrn });
     } catch (e) {
@@ -367,6 +536,7 @@ async function handleApi(req, res, pathname) {
       vid = lastId();   // before audit()
       audit(actor, 'VITALS_RECORDED', `Vitals for admission ${aid}`, req, patientOfAdmission(aid));
     });
+    bumpDbVersion();
     persistNow();
     return send(res, 201, { vitals_id: vid });
   }
@@ -385,16 +555,18 @@ async function handleApi(req, res, pathname) {
       return send(res, 403, { error: 'forbidden', message: 'Patient is not in your department.' });
     }
     delete patient.portal_password_hash; delete patient.portal_salt;   // never ship secrets
-    // Clinical data (vitals + the clinical admission fields: chief complaint,
-    // diagnosis, code status, etc.) only for view_chart roles. Others (e.g.
-    // receptionist) get a demographics-only admission stub.
+    // Clinical data (vitals, clinical admission fields, and clinical patient fields
+    // like weight_kg/egfr) only for view_chart roles. Non-clinical roles (e.g.
+    // receptionist, it_admin oversight) get demographics only.
     const clinical = can(role, 'view_chart');
+    const DEMOG = ['patient_id', 'mrn', 'national_id', 'full_name_ar', 'full_name_en', 'date_of_birth', 'gender', 'blood_type', 'phone', 'emergency_contact', 'emergency_contact_name', 'emergency_contact_phone', 'emergency_contact_relation', 'registered_at'];
+    const safePatient = clinical ? patient : Object.fromEntries(DEMOG.map(k => [k, patient[k]]));
     const safeAdmission = !admission ? null : (clinical ? admission
       : { admission_id: admission.admission_id, dept_id: admission.dept_id, bed_number: admission.bed_number, admitted_at: admission.admitted_at, status: admission.status });
     const vitals = (admission && clinical) ? all('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 10', [admission.admission_id]) : [];
     audit(actor, 'PATIENT_VIEWED', 'Opened patient chart', req, patient);   // log every PHI read
     persistNow();   // durable: don't lose a PHI-access record on a crash
-    return send(res, 200, { patient, admission: safeAdmission, vitals });
+    return send(res, 200, { patient: safePatient, admission: safeAdmission, vitals });
   }
 
   if (pathname === '/api/prescriptions' && req.method === 'GET') {
@@ -413,12 +585,20 @@ async function handleApi(req, res, pathname) {
     if (!canAccessAdmission(actor, role, aid)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
     if (!drug) return send(res, 400, { error: 'validation', message: 'valid drug_id required (formulary only — no free-text drug)' });
     if (!body.dose || !body.route || !body.frequency) return send(res, 400, { error: 'validation', message: 'dose, route, frequency required' });
-    // server-side medication safety (authoritative; not just the browser):
+    // server-side medication safety (authoritative; not just the browser). Uses
+    // the SHARED class-aware matcher (js/allergy-check.js) — plain substring
+    // matching let Amoxicillin through a documented "Penicillin" allergy here
+    // while the browser warned, and the server is supposed to be the layer that
+    // cannot be bypassed.
     const ptRx = patientOfAdmission(aid);
-    const dn = (drug.name_generic || '').toLowerCase();
-    const allergyHit = all('SELECT allergen FROM patient_allergies WHERE patient_id = ?', [ptRx.patient_id])
-      .find(a => { const al = (a.allergen || '').toLowerCase().trim(); return al && (dn.includes(al) || al.includes(dn)); });
-    if (allergyHit && body.override !== true) return send(res, 409, { error: 'allergy_conflict', message: `Patient has a recorded allergy to "${allergyHit.allergen}". Re-send with override:true to proceed.` });
+    const allergyHit = allergyCheck.checkDrugAllergy(drug.name_generic,
+      all('SELECT allergen FROM patient_allergies WHERE patient_id = ?', [ptRx.patient_id]));
+    if (allergyHit && body.override !== true) {
+      const why = allergyHit._cross
+        ? `Possible cross-reactivity (${allergyHit._cross_note}) with the patient's recorded allergy to "${allergyHit.allergen}".`
+        : `Patient has a recorded allergy to "${allergyHit.allergen}".`;
+      return send(res, 409, { error: 'allergy_conflict', message: `${why} Re-send with override:true to proceed.` });
+    }
     if (get("SELECT rx_id FROM prescriptions WHERE admission_id = ? AND drug_id = ? AND status = 'active'", [aid, drug.drug_id]))
       return send(res, 409, { error: 'duplicate_active', message: 'An active prescription for this drug already exists for this admission.' });
     const now = new Date().toISOString();
@@ -431,6 +611,7 @@ async function handleApi(req, res, pathname) {
       const det = body.override === true && allergyHit ? ` [allergy override: ${allergyHit.allergen}]` : '';
       audit(actor, allergyHit && body.override === true ? 'PRESCRIPTION_ALLERGY_OVERRIDE' : 'PRESCRIPTION_ISSUED', `Prescribed ${drug.name_generic} ${body.dose} ${body.route} ${body.frequency}${det}`, req, ptRx);
     });
+    bumpDbVersion();
     persistNow();
     return send(res, 201, { rx_id: rxId });
   }
@@ -450,8 +631,110 @@ async function handleApi(req, res, pathname) {
       orderId = lastId();   // before audit()
       audit(actor, 'LAB_ORDERED', `Ordered ${test} (${priority})`, req, patientOfAdmission(aid));
     });
+    bumpDbVersion();
     persistNow();
     return send(res, 201, { order_id: orderId });
+  }
+
+  // ---- MAR: a bedside nurse/doctor records a dose given or held against an Rx ----
+  const am = pathname.match(/^\/api\/prescriptions\/(\d+)\/administer$/);
+  if (am && req.method === 'POST') {
+    if (!can(role, 'administer_meds')) return send(res, 403, { error: 'forbidden' });
+    const rx = get('SELECT * FROM prescriptions WHERE rx_id = ?', [parseInt(am[1], 10)]);
+    if (!rx) return send(res, 404, { error: 'not_found', message: 'prescription not found' });
+    if (!canAccessAdmission(actor, role, rx.admission_id)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
+    if (rx.status !== 'active') return send(res, 409, { error: 'not_active', message: 'prescription is not active' });
+    const status = body.status === 'held' ? 'held' : 'given';
+    if (status === 'held' && !String(body.hold_reason || '').trim()) return send(res, 400, { error: 'validation', message: 'hold_reason required when holding a dose' });
+    let marId;
+    withTx(() => {
+      run(`INSERT INTO med_admin_records (prescription_id, admission_id, drug_name, dose, route, administered_at, administered_by, status, hold_reason, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [rx.rx_id, rx.admission_id, rx.drug_name, rx.dose, rx.route, new Date().toISOString(), actor.user_id, status, status === 'held' ? String(body.hold_reason).trim() : null, body.notes ? String(body.notes) : null]);
+      marId = lastId();   // before audit()
+      audit(actor, status === 'held' ? 'MED_HELD' : 'MED_ADMINISTERED', `${status === 'held' ? 'Held' : 'Administered'} ${rx.drug_name} ${rx.dose} ${rx.route} (rx ${rx.rx_id})`, req, patientOfAdmission(rx.admission_id));
+    });
+    bumpDbVersion();
+    persistNow();
+    return send(res, 201, { mar_id: marId, status });
+  }
+
+  // ---- Pharmacy: dispense against an Rx, decrementing central stock atomically.
+  //      Pharmacy is a hospital-wide service, so it is NOT department-scoped — the
+  //      RBAC role (pharmacist) is the gate, not the patient's ward. ----
+  const dm = pathname.match(/^\/api\/prescriptions\/(\d+)\/dispense$/);
+  if (dm && req.method === 'POST') {
+    if (!can(role, 'dispense_meds')) return send(res, 403, { error: 'forbidden' });
+    const rx = get('SELECT * FROM prescriptions WHERE rx_id = ?', [parseInt(dm[1], 10)]);
+    if (!rx) return send(res, 404, { error: 'not_found', message: 'prescription not found' });
+    if (rx.status !== 'active') return send(res, 409, { error: 'not_active', message: 'prescription is not active' });
+    const qty = Number(body.qty);
+    if (!Number.isFinite(qty) || qty <= 0) return send(res, 400, { error: 'validation', message: 'qty must be a positive number' });
+    const drug = get('SELECT * FROM drugs WHERE drug_id = ?', [rx.drug_id]);
+    if (!drug) return send(res, 400, { error: 'validation', message: 'drug no longer in formulary' });
+    const pt = patientOfAdmission(rx.admission_id);
+    let dispenseId;
+    try {
+      dispenseId = withTx(() => {
+        const cur = Number(get('SELECT stock_qty FROM drugs WHERE drug_id = ?', [rx.drug_id]).stock_qty) || 0;
+        if (cur < qty) { const e = new Error('insufficient_stock'); e.code = 'insufficient_stock'; throw e; }   // rolls back the tx
+        run('UPDATE drugs SET stock_qty = stock_qty - ? WHERE drug_id = ?', [qty, rx.drug_id]);
+        run('INSERT INTO dispensing_log (prescription_id, drug_id, patient_id, qty_dispensed, dispensed_by, dispensed_at, notes) VALUES (?,?,?,?,?,?,?)',
+          [rx.rx_id, rx.drug_id, pt.patient_id, qty, actor.user_id, new Date().toISOString(), body.notes ? String(body.notes) : null]);
+        const id = lastId();
+        audit(actor, 'MED_DISPENSED', `Dispensed ${qty} ${drug.unit} of ${drug.name_generic} (rx ${rx.rx_id})`, req, pt);
+        return id;
+      });
+    } catch (e) {
+      if (e.code === 'insufficient_stock') return send(res, 409, { error: 'insufficient_stock', message: 'Not enough stock to dispense.' });
+      throw e;
+    }
+    bumpDbVersion();
+    persistNow();
+    return send(res, 201, { dispense_id: dispenseId, remaining_stock: get('SELECT stock_qty FROM drugs WHERE drug_id = ?', [rx.drug_id]).stock_qty });
+  }
+
+  // ---- Lab: a technician posts a result to an order (hospital-wide service) ----
+  const lr = pathname.match(/^\/api\/lab-orders\/(\d+)\/result$/);
+  if (lr && req.method === 'POST') {
+    if (!can(role, 'enter_lab_result')) return send(res, 403, { error: 'forbidden' });
+    const order = get('SELECT * FROM lab_orders WHERE order_id = ?', [parseInt(lr[1], 10)]);
+    if (!order) return send(res, 404, { error: 'not_found', message: 'lab order not found' });
+    if (order.status === 'resulted') return send(res, 409, { error: 'already_resulted', message: 'order already has a result' });
+    const value = String(body.result_value || '').trim();
+    if (!value) return send(res, 400, { error: 'validation', message: 'result_value required' });
+    const critical = body.is_critical === true ? 1 : 0;
+    withTx(() => {
+      run(`UPDATE lab_orders SET status='resulted', result_value=?, result_unit=?, result_flag=?, result_notes=?, is_critical=?, resulted_by=?, resulted_at=? WHERE order_id=?`,
+        [value, body.result_unit ? String(body.result_unit) : null, body.result_flag ? String(body.result_flag) : null, body.result_notes ? String(body.result_notes) : null, critical, actor.user_id, new Date().toISOString(), order.order_id]);
+      audit(actor, critical ? 'LAB_RESULT_CRITICAL' : 'LAB_RESULTED', `Resulted ${order.test_name}: ${value}${body.result_unit ? ' ' + body.result_unit : ''}${critical ? ' [CRITICAL]' : ''}`, req, patientOfAdmission(order.admission_id));
+    });
+    bumpDbVersion();
+    persistNow();
+    return send(res, 200, { ok: true, critical: !!critical });
+  }
+
+  // ---- Discharge: stop active meds (reconciliation) + free the bed, atomically ----
+  const dg = pathname.match(/^\/api\/admissions\/(\d+)\/discharge$/);
+  if (dg && req.method === 'POST') {
+    if (!can(role, 'discharge_patient')) return send(res, 403, { error: 'forbidden' });
+    const adm = get('SELECT * FROM admissions WHERE admission_id = ?', [parseInt(dg[1], 10)]);
+    if (!adm) return send(res, 404, { error: 'not_found', message: 'admission not found' });
+    if (!canAccessAdmission(actor, role, adm.admission_id)) return send(res, 403, { error: 'forbidden', message: 'Admission is not in your department.' });
+    if (adm.status !== 'active') return send(res, 409, { error: 'not_active', message: 'admission is not active' });
+    const summary = String(body.summary || '').trim();
+    if (!summary) return send(res, 400, { error: 'validation', message: 'a discharge summary is required (medication reconciliation)' });
+    let stopped = 0;
+    withTx(() => {
+      const active = all("SELECT rx_id FROM prescriptions WHERE admission_id = ? AND status = 'active'", [adm.admission_id]);
+      stopped = active.length;
+      run("UPDATE prescriptions SET status = 'discontinued' WHERE admission_id = ? AND status = 'active'", [adm.admission_id]);
+      run("UPDATE admissions SET status = 'discharged', discharged_at = ?, disposition_plan = ? WHERE admission_id = ?", [new Date().toISOString(), summary, adm.admission_id]);
+      audit(actor, 'PATIENT_DISCHARGED', `Discharged admission ${adm.admission_id}; ${stopped} active med(s) reconciled/stopped`, req, patientOfAdmission(adm.admission_id));
+    });
+    bumpDbVersion();
+    persistNow();
+    return send(res, 200, { ok: true, medications_stopped: stopped });
   }
 
   if (pathname === '/api/audit' && req.method === 'GET') {
@@ -459,6 +742,31 @@ async function handleApi(req, res, pathname) {
     const entries = all('SELECT log_id, timestamp, user_name_en, user_role, action_type, action_detail, patient_mrn, ip_address FROM audit_log ORDER BY log_id DESC LIMIT 200');
     auditNow(actor, 'AUDIT_LOG_VIEWED', `Read audit log (${entries.length} rows)`, req);   // reading the audit log is itself audited
     return send(res, 200, { entries });
+  }
+
+  // Oversight-only chain verification: the HMAC chain (key OUTSIDE the DB) is only
+  // tamper-EVIDENT if someone can actually check it. Walks every row in log_id
+  // order, recomputes the HMAC server-side (the key never leaves the box), and
+  // reports the first break. audit_log is INSERT-only by design, so a log_id gap
+  // or an AUTOINCREMENT sequence ahead of the last row always means deletion.
+  if (pathname === '/api/audit/verify' && req.method === 'GET') {
+    if (!can(role, 'view_audit')) return send(res, 403, { error: 'forbidden' });
+    const rows = all('SELECT * FROM audit_log ORDER BY log_id');
+    let result = { valid: true, rows: rows.length };
+    let prevHash = null, prevId = 0;
+    for (const r of rows) {
+      if (r.log_id !== prevId + 1) { result = { valid: false, rows: rows.length, broken_at: r.log_id, reason: 'log_id gap — row(s) deleted' }; break; }
+      if ((r.prev_hash || null) !== prevHash) { result = { valid: false, rows: rows.length, broken_at: r.log_id, reason: 'prev_hash link mismatch' }; break; }
+      if (r.row_hash !== auditHash(prevHash, r)) { result = { valid: false, rows: rows.length, broken_at: r.log_id, reason: 'row_hash mismatch — row altered or forged' }; break; }
+      prevHash = r.row_hash; prevId = r.log_id;
+    }
+    if (result.valid) {   // trailing truncation: AUTOINCREMENT seq survives DELETE
+      const seq = get("SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'");
+      const lastSeen = rows.length ? rows[rows.length - 1].log_id : 0;
+      if (seq && seq.seq > lastSeen) result = { valid: false, rows: rows.length, broken_at: lastSeen, reason: 'tail truncated — sequence is ahead of the last row' };
+    }
+    auditNow(actor, 'AUDIT_VERIFY_RUN', `Audit chain verify over ${result.rows} rows: ${result.valid ? 'VALID' : `BROKEN at log_id ${result.broken_at} (${result.reason})`}`, req);
+    return send(res, 200, result);
   }
 
   // ---- Departments (read: any staff, for dropdowns; create: it_admin) ----
@@ -471,6 +779,7 @@ async function handleApi(req, res, pathname) {
     if (!en || !ar) return send(res, 400, { error: 'validation', message: 'name_en and name_ar required' });
     run('INSERT INTO departments (name_ar, name_en, type) VALUES (?, ?, ?)', [ar, en, type]);
     const newDeptId = lastId();   // before audit()
+    bumpDbVersion();
     auditNow(actor, 'DEPT_CREATED', `Created department ${en}`, req);
     return send(res, 201, { dept_id: newDeptId });
   }
@@ -494,6 +803,7 @@ async function handleApi(req, res, pathname) {
     run('INSERT INTO users (username, password_hash, salt, full_name_ar, full_name_en, role, department_id, is_active, created_by, created_at) VALUES (?,?,?,?,?,?,?,1,?,?)',
       [username, await u.hashPassword(password, salt), salt, String(body.full_name_ar || username), String(body.full_name_en || username), urole, dept, actor.user_id, new Date().toISOString()]);
     const newUserId = lastId();   // capture BEFORE audit() inserts its own row
+    bumpDbVersion();
     auditNow(actor, 'USER_CREATED', `Created ${urole} "${username}"`, req);
     return send(res, 201, { user_id: newUserId });
   }
@@ -520,7 +830,157 @@ async function handleApi(req, res, pathname) {
       run("DELETE FROM sessions WHERE user_id = ? AND role != 'patient'", [uid]);   // force re-login
       auditNow(actor, 'USER_PASSWORD_RESET', `Reset password for "${target.username}"`, req);
     }
+    bumpDbVersion();
     return send(res, 200, { ok: true });
+  }
+
+  // ---- Shared-DB bridge (server-authoritative SQL) ----------------------------
+  // Lets the in-browser UI run its existing dbGet/dbRun/dbAll against the ONE
+  // central SQLite file instead of a per-browser IndexedDB copy, so every
+  // workstation reads/writes the SAME database in real time ("host on the PC,
+  // staff log in and edit it like a normal local app"). The browser stays the
+  // UI; this process stays the single owner of the file.
+  //
+  // SECURITY: STAFF session required (patient-portal sessions are refused — a
+  // patient must never get raw DB access). One statement per call (no stacked
+  // SQL), ATTACH/DETACH blocked (can't reach other files), and credential
+  // columns are stripped from every read so password material never crosses the
+  // wire (staff auth happens server-side via /api/login, which never returns a
+  // hash). This is the same trust level as the old browser-only app — any valid
+  // staff login could already edit the whole local DB — but now centralized.
+  const SECRET_COLS = ['password_hash', 'salt', 'portal_password_hash', 'portal_salt'];
+  function bridgeGuard(sql) {
+    if (typeof sql !== 'string' || !sql.trim()) return 'sql (string) required';
+    if (/;\s*\S/.test(sql)) return 'only a single statement per call is allowed';
+    if (/\b(attach|detach)\s/i.test(sql)) return 'ATTACH/DETACH is not allowed';
+    // Transaction control on the ONE shared connection would entangle every
+    // client: an open BEGIN sweeps other workstations' writes into the caller's
+    // transaction (a ROLLBACK then destroys them), and a client that crashes
+    // mid-transaction wedges the connection for the whole hospital.
+    if (/^\s*(begin|commit|end|rollback|savepoint|release)\b/i.test(sql)) return 'transaction control is not allowed over the bridge — each statement commits individually';
+    // The sessions table holds the live auth tokens (session_id == the cookie).
+    // Exposing it through the generic bridge would let any staff session read
+    // another user's session_id and impersonate them. The client never touches
+    // this table in server mode (auth is /api/login + /api/me), so block it
+    // outright on both query and exec.
+    if (/\bsessions\b/i.test(sql)) return 'the sessions table is managed by /api/login and is not accessible via the bridge';
+    // POSITIONAL-RENAME CREDENTIAL EXFIL: the query path strips credential
+    // columns by OUTPUT NAME (password_hash/salt/...) and rejects those names in
+    // the SQL text. Both checks are defeated by positionally renaming the
+    // columns, which returns the same data under harmless aliases:
+    //   WITH x(a,b,c,d,...) AS (SELECT * FROM users) SELECT * FROM x
+    //   SELECT 1 a,2 b,3 c,4 d,... UNION ALL SELECT * FROM users
+    // (a compound query takes its output names from the FIRST SELECT.) Any staff
+    // session could thus read every user's password_hash+salt. The client uses
+    // ZERO CTEs/compound operators over the bridge, so reject them outright on
+    // both paths — the only legit users read (IT user list) is a plain SELECT.
+    if (/\bwith\b/i.test(sql)) return 'common table expressions (WITH) are not allowed over the bridge';
+    if (/\b(union|intersect|except)\b/i.test(sql)) return 'compound queries (UNION/INTERSECT/EXCEPT) are not allowed over the bridge';
+    return null;
+  }
+  // Writes the bridge must refuse even from a staff session. The bridge is a
+  // coarse trust model (any staff login can run arbitrary CRUD — see the honest
+  // caveat above), so at minimum protect the structural/integrity invariants the
+  // server owns: no schema changes (server runs migrations), and audit_log stays
+  // APPEND-ONLY so its tamper-evidence can't be wiped from a workstation.
+  function execForbidden(sql) {
+    if (/^\s*(drop|alter|create|reindex|vacuum)\b/i.test(sql)) return 'schema changes are server-owned and not allowed via the bridge';
+    // audit_log must stay APPEND-ONLY: block UPDATE/DELETE *and* REPLACE /
+    // INSERT OR REPLACE (a REPLACE on a conflicting log_id deletes+reinserts,
+    // which would silently rewrite or drop an audit row).
+    if (/\baudit_log\b/i.test(sql) && /\b(update|delete|replace)\b/i.test(sql)) return 'audit_log is append-only — only plain INSERT is allowed';
+    return null;
+  }
+  // ---- Manual backup (it_admin): snapshot NOW, e.g. right before maintenance ----
+  if (pathname === '/api/admin/backup' && req.method === 'POST') {
+    if (!can(role, 'manage_users')) return send(res, 403, { error: 'forbidden' });
+    try {
+      const file = runBackup();
+      auditNow(actor, 'BACKUP_CREATED', `Manual DB backup: ${path.basename(file)}`, req);
+      return send(res, 200, { file: path.basename(file) });
+    } catch (e) { return send(res, 500, { error: 'backup_failed', message: e.message }); }
+  }
+
+  if (pathname === '/api/db/version' && req.method === 'GET') {
+    if (!actor) return send(res, 403, { error: 'forbidden', message: 'staff session required' });
+    return send(res, 200, { version: dbWriteVersion });
+  }
+  // ---- real-time change stream (SSE). Pushes {"version":N} on every data write
+  // so other workstations refresh immediately instead of waiting out a poll
+  // tick. Carries ONLY the version counter — no PHI rides this channel. Gated
+  // like /api/db/version: any staff session. ----
+  if (pathname === '/api/events' && req.method === 'GET') {
+    if (!actor) return send(res, 403, { error: 'forbidden', message: 'staff session required' });
+    res.writeHead(200, Object.assign({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-store',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',           // reverse proxies must not buffer the stream
+    }, hstsHeaders()));
+    // retry: how long the browser waits before auto-reconnecting; the initial
+    // version lets a reconnecting client detect writes it missed while offline.
+    res.write(`retry: 3000\ndata: {"version":${dbWriteVersion}}\n\n`);
+    _sseClients.add(res);
+    req.on('close', () => _sseClients.delete(res));
+    return;   // intentionally never res.end() — this response IS the stream
+  }
+  if (pathname === '/api/db/query' && req.method === 'POST') {
+    if (!actor) return send(res, 403, { error: 'forbidden', message: 'staff session required' });
+    const sql = body.sql, params = Array.isArray(body.params) ? body.params : [];
+    const bad = bridgeGuard(sql);
+    if (bad) return send(res, 400, { error: 'validation', message: bad });
+    if (!/^\s*(select|with|pragma\s+table_info|explain)\b/i.test(sql)) return send(res, 400, { error: 'validation', message: 'query endpoint is for reads only — use /api/db/exec for writes' });
+    // Reject any read that even MENTIONS a credential column. Output redaction
+    // alone is bypassable (SELECT password_hash AS x, or substr(password_hash,...)),
+    // so refuse at the SQL-text level. Staff auth is server-side (/api/login);
+    // the client never needs to read these in server mode.
+    if (SECRET_COLS.some(c => new RegExp('\\b' + c + '\\b', 'i').test(sql))) return send(res, 403, { error: 'forbidden', message: 'credential columns are not readable via the bridge' });
+    // PHI-read traceability: every dedicated read endpoint audits PHI access;
+    // the bridge couldn't without exploding audit_log, so the FIRST read of
+    // each PHI table per session is recorded instead — "which session could
+    // see what, starting when" survives in the audit trail.
+    let phiAdded = false;
+    for (const tbl of BRIDGE_PHI_TABLES) {
+      if (!new RegExp('\\b' + tbl + '\\b', 'i').test(sql)) continue;
+      const k = auth.session.session_id + ':' + tbl;
+      if (!bridgePhiAudited.has(k)) {
+        bridgePhiAudited.add(k);
+        audit(actor, 'BRIDGE_PHI_READ', `first bridge read of ${tbl} this session`, req);
+        phiAdded = true;
+      }
+    }
+    if (phiAdded) persist();
+    try {
+      const rows = all(sql, params).map(r => { for (const c of SECRET_COLS) if (c in r) delete r[c]; return r; });
+      return send(res, 200, { rows });
+    } catch (e) { return send(res, 400, { error: 'sql_error', message: e.message }); }
+  }
+  if (pathname === '/api/db/exec' && req.method === 'POST') {
+    if (!actor) return send(res, 403, { error: 'forbidden', message: 'staff session required' });
+    const sql = body.sql, params = Array.isArray(body.params) ? body.params : [];
+    const bad = bridgeGuard(sql);
+    if (bad) return send(res, 400, { error: 'validation', message: bad });
+    if (/^\s*(select|with|pragma|explain)\b/i.test(sql)) return send(res, 400, { error: 'validation', message: 'exec endpoint is for writes only — use /api/db/query for reads' });
+    const forbidden = execForbidden(sql);
+    if (forbidden) return send(res, 403, { error: 'forbidden', message: forbidden });
+    // PRIVILEGE-ESCALATION GUARD: any staff session could previously run
+    // `UPDATE users SET role='it_admin'` (or rewrite another user's
+    // password_hash/salt) through the bridge. Writes touching the users table
+    // or any credential column now require the same manage_users permission
+    // as the dedicated /api/users endpoints. The denial itself is audited.
+    if ((/\busers\b/i.test(sql) || SECRET_COLS.some(c => new RegExp('\\b' + c + '\\b', 'i').test(sql))) && !can(role, 'manage_users')) {
+      auditNow(actor, 'BRIDGE_DENIED', `exec touching users/credentials refused for role ${role}: ${String(sql).slice(0, 200)}`, req);
+      return send(res, 403, { error: 'forbidden', message: 'writes to users or credential columns require user-management permission — use /api/users' });
+    }
+    try {
+      // run + capture lastId synchronously (no await between) so concurrent
+      // requests from other devices can't interleave and corrupt last_insert_rowid.
+      run(sql, params);
+      const idRow = get('SELECT last_insert_rowid() AS id, changes() AS changes');
+      bumpDbVersion();   // push the change to every connected workstation (SSE)
+      persist();   // debounced flush to disk
+      return send(res, 200, { lastId: idRow ? idRow.id : null, changes: idRow ? idRow.changes : 0, version: dbWriteVersion });
+    } catch (e) { return send(res, 400, { error: 'sql_error', message: e.message }); }
   }
 
   return send(res, 404, { error: 'not_found' });
@@ -585,11 +1045,13 @@ async function init() {
 
 // Tables → the columns we expect to carry FK constraints; report any not constrained.
 const EXPECT_FK = {
-  admissions: ['patient_id'],
+  admissions: ['patient_id', 'dept_id'],
+  users: ['department_id'],
   vitals_log: ['admission_id'],
   prescriptions: ['admission_id', 'drug_id'],
   lab_orders: ['admission_id'],
   med_admin_records: ['prescription_id', 'admission_id'],
+  dispensing_log: ['prescription_id', 'drug_id', 'patient_id'],
   patient_conditions: ['patient_id'],
   patient_allergies: ['patient_id'],
 };
@@ -637,8 +1099,18 @@ function start() {
   return server;
 }
 
-if (require.main === module) {
-  init().then(start).catch(e => { console.error('server init failed:', e); process.exit(1); });
+// Ctrl+C / service stop must never drop the last writes (persist() holds a 50ms
+// debounce window) — flush before exiting.
+function shutdown(sig) {
+  console.log(`[shutdown] ${sig}: flushing DB to disk`);
+  try { persistNow(); } catch (e) { console.error('[shutdown] flush failed:', e.message); }
+  process.exit(0);
 }
 
-module.exports = { init, start, _internals: () => ({ all, get, run, withTx, audit, can, sessionFromReq, isLoopback, plainHttpAllowed, missingFks, getSetupToken: () => setupToken }) };
+if (require.main === module) {
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  init().then(() => { scheduleBackups(); return start(); }).catch(e => { console.error('server init failed:', e); process.exit(1); });
+}
+
+module.exports = { init, start, _internals: () => ({ all, get, run, withTx, audit, can, sessionFromReq, isLoopback, plainHttpAllowed, missingFks, ipThrottled, recordIpFail, runBackup, BACKUP_DIR, BACKUP_KEEP, getSetupToken: () => setupToken }) };

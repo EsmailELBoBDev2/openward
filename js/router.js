@@ -168,13 +168,15 @@ function initGlobalSearch() {
       const q = input.value.trim();
       if (q.length < 2) { results.style.display = 'none'; results.innerHTML = ''; return; }
       const lang = currentLanguage();
-      const like = '%' + q.toUpperCase() + '%';
+      // escape LIKE wildcards so a literal '%'/'_' in the query (or an MRN
+      // containing '_') doesn't match everything / the wrong rows
+      const like = '%' + q.toUpperCase().replace(/[\\%_]/g, m => '\\' + m) + '%';
       const matches = dbAll(`SELECT p.patient_id, p.mrn, p.full_name_ar, p.full_name_en, p.date_of_birth, p.gender,
         a.admission_id, a.bed_number, a.status as adm_status, d.name_ar as dept_ar, d.name_en as dept_en
         FROM patients p
         LEFT JOIN admissions a ON a.patient_id = p.patient_id AND a.status = 'active'
         LEFT JOIN departments d ON a.dept_id = d.dept_id
-        WHERE UPPER(p.mrn) LIKE ? OR UPPER(p.full_name_ar) LIKE ? OR UPPER(p.full_name_en) LIKE ? OR UPPER(p.national_id) LIKE ?
+        WHERE UPPER(p.mrn) LIKE ? ESCAPE '\\' OR UPPER(p.full_name_ar) LIKE ? ESCAPE '\\' OR UPPER(p.full_name_en) LIKE ? ESCAPE '\\' OR UPPER(p.national_id) LIKE ? ESCAPE '\\'
         ORDER BY (a.admission_id IS NOT NULL) DESC, p.patient_id DESC LIMIT 10`,
         [like, like, like, like]);
       if (!matches.length) {
@@ -501,6 +503,23 @@ function canAccessView(viewId, role) {
   const prefix = Object.keys(VIEW_PREFIX_ROLES).find(p => viewId.startsWith(p));
   if (!prefix) return true;            // unknown/non-prefixed view: don't block (renders the safe default)
   return VIEW_PREFIX_ROLES[prefix].includes(role);
+}
+
+// Handler-level role guard — defense in depth BEHIND the view dispatcher.
+// The dispatcher stops wrong-role navigation, but mutating handlers are global
+// functions: a stale onclick, a shared view, or a future refactor can reach
+// them with the wrong role and write a row whose actor column lies about who
+// is clinically allowed to act (e.g. a nurse id in prescriptions.verified_by).
+// These fail closed with an audited denial; the role triggers in db.js enforce
+// the same rule at the data layer in BOTH browser and server mode.
+const DOCTOR_ROLES = ['doctor', 'consultant', 'emergency_doctor'];
+function requireRole(allowedRoles, actionLabel) {
+  const sess = (typeof getCurrentSession === 'function') ? getCurrentSession() : null;
+  const role = sess ? sess.role : null;
+  if (role && allowedRoles.includes(role)) return true;
+  showError(currentLanguage() === 'ar' ? 'هذا الإجراء غير مسموح لدورك الوظيفي' : 'Your role is not authorized for this action');
+  try { const r = logAction('ACTION_DENIED', `Role ${role || 'none'} blocked from ${actionLabel}`); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+  return false;
 }
 
 function navigateTo(viewId) {
@@ -967,7 +986,7 @@ function renderHMOverview(main, lang) {
 
   const deptStats = dbAll(`SELECT d.name_ar, d.name_en, COUNT(a.admission_id) as cnt
     FROM departments d LEFT JOIN admissions a ON d.dept_id = a.dept_id AND a.status = 'active'
-    WHERE d.type = 'clinical' GROUP BY d.dept_id ORDER BY d.dept_id`);
+    WHERE d.type NOT IN ('admin','support') GROUP BY d.dept_id ORDER BY d.dept_id`);
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('overview')}</h1></div>
@@ -1163,8 +1182,8 @@ function verifyReceiptPrompt() {
 function renderHMReports(main, lang) {
   const totalPatients = dbGet('SELECT COUNT(*) as c FROM patients').c;
   const activeAdmissions = dbGet('SELECT COUNT(*) as c FROM admissions WHERE status = ?', ['active']).c;
-  const dischargedToday = dbGet("SELECT COUNT(*) as c FROM admissions WHERE status = 'discharged' AND discharged_at >= ?", [new Date().toISOString().substring(0,10)]).c;
-  const admittedToday = dbGet("SELECT COUNT(*) as c FROM admissions WHERE admitted_at >= ?", [new Date().toISOString().substring(0,10)]).c;
+  const dischargedToday = dbGet("SELECT COUNT(*) as c FROM admissions WHERE status = 'discharged' AND discharged_at >= ?", [todayISO()]).c;
+  const admittedToday = dbGet("SELECT COUNT(*) as c FROM admissions WHERE admitted_at >= ?", [todayISO()]).c;
   const pendingLabs = dbGet("SELECT COUNT(*) as c FROM lab_orders WHERE status IN ('ordered','collected','received')").c;
   const completedLabs = dbGet("SELECT COUNT(*) as c FROM lab_orders WHERE status = 'resulted'").c;
   const pendingRx = dbGet("SELECT COUNT(*) as c FROM prescriptions WHERE status = 'active'").c;
@@ -1174,7 +1193,7 @@ function renderHMReports(main, lang) {
   // Department census
   const deptCensus = dbAll(`SELECT d.name_en, d.name_ar, COUNT(a.admission_id) as cnt
     FROM departments d LEFT JOIN admissions a ON d.dept_id = a.dept_id AND a.status = 'active'
-    WHERE d.type = 'clinical' GROUP BY d.dept_id HAVING cnt > 0 ORDER BY cnt DESC`);
+    WHERE d.type NOT IN ('admin','support') GROUP BY d.dept_id HAVING cnt > 0 ORDER BY cnt DESC`);
 
   // LOS analytics
   const avgLOSRow = dbGet(`SELECT AVG(CAST((julianday(discharged_at) - julianday(admitted_at)) AS REAL)) as avg_los
@@ -1252,7 +1271,7 @@ function renderHMReports(main, lang) {
 // ============================================================
 
 function renderERRegister(main, lang) {
-  const depts = dbAll("SELECT * FROM departments WHERE type = 'clinical' ORDER BY dept_id");
+  const depts = dbAll("SELECT * FROM departments WHERE type NOT IN ('admin','support') ORDER BY dept_id");
   const deptOptions = depts.map(d => `<option value="${d.dept_id}">${lang === 'ar' ? escapeHtml(d.name_ar) : escapeHtml(d.name_en)}</option>`).join('');
   const condOptions = Object.entries(CONDITIONS).map(([k, v]) => `<label><input type="checkbox" name="conditions" value="${k}"> ${v[lang]}</label>`).join('');
   const bloodOptions = ['unknown', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map(b => `<option value="${b}">${b === 'unknown' ? t('blood_unknown') : b}</option>`).join('');
@@ -1486,7 +1505,7 @@ async function handleRegisterPatient(e) {
   }
   // A3 fix: reject future DOB and absurdly old DOB
   if (dob) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayISO();
     if (dob > today) {
       showError(lang === 'ar' ? 'تاريخ الميلاد في المستقبل غير مسموح' : 'Date of birth cannot be in the future');
       return;
@@ -1598,6 +1617,11 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
   const bedNum = document.getElementById('reg-bed').value.trim() || null;
   const complexityScore = pieValues.complexity_score || 1;
   const dietCode = pieValues.diet_code || 'REG';
+  // The nurse's ESI selection (#reg-triage) was previously NEVER read — the
+  // triage queue then displayed a fabricated "ESI" derived from the comorbidity
+  // complexity score, inverting acuity for acutely sick patients with no charted
+  // comorbidities. Capture the real value into admissions.triage_level.
+  const triageLevel = parseInt(document.getElementById('reg-triage')?.value, 10) || null;
   if (bedNum) {
     const conflict = dbGet(`SELECT a.admission_id, p.full_name_ar, p.full_name_en, p.mrn
       FROM admissions a JOIN patients p ON a.patient_id = p.patient_id
@@ -1613,8 +1637,17 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
 
   // Atomic unit: every patient write commits together or rolls back together, so
   // a failure mid-way can't leave a half-registered patient.
+  //
+  // LOCAL MODE ONLY. In server mode dbRun goes over the bridge to the server's
+  // ONE shared connection — a BEGIN here would sweep other workstations'
+  // concurrent writes into THIS transaction (and a ROLLBACK would destroy
+  // them), and a client crash mid-transaction would wedge the connection for
+  // everyone. The bridge refuses transaction control server-side too; in
+  // server mode each statement commits individually (worst case on a mid-way
+  // failure: an orphaned patient row, surfaced by the error toast).
+  const useTxn = !(typeof SERVER_MODE !== 'undefined' && SERVER_MODE);
   let patientId, mrn;
-  dbRun('BEGIN IMMEDIATE');
+  if (useTxn) dbRun('BEGIN IMMEDIATE');
   try {
     dbRun(`INSERT INTO patients (mrn, national_id, full_name_ar, full_name_en, date_of_birth, gender, blood_type, phone,
     emergency_contact, emergency_contact_name, emergency_contact_phone, emergency_contact_relation,
@@ -1713,8 +1746,8 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
 
   // 4. Create admission. Bed availability was validated up front; deptId, bedNum,
   // complexityScore and dietCode were computed at the top of the transaction.
-  dbRun(`INSERT INTO admissions (patient_id, dept_id, bed_number, admitted_by, admitted_at, status, complexity_score, diet_code, chief_complaint, initial_diagnosis, disposition_plan, on_ventilator, post_surgery)
-    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`, [
+  dbRun(`INSERT INTO admissions (patient_id, dept_id, bed_number, admitted_by, admitted_at, status, complexity_score, diet_code, chief_complaint, initial_diagnosis, disposition_plan, on_ventilator, post_surgery, triage_level)
+    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`, [
     patientId, deptId, bedNum,
     session.user_id, nowISO(),
     complexityScore, dietCode,
@@ -1722,6 +1755,7 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
     document.getElementById('reg-disposition').value.trim() || null,
     document.getElementById('reg-ventilator').checked ? 1 : 0,
     document.getElementById('reg-post-surgery').checked ? 1 : 0,
+    triageLevel,
   ]);
   const admissionId = dbLastId();
 
@@ -1742,10 +1776,10 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
     ]);
   }
 
-    dbRun('COMMIT');
+    if (useTxn) dbRun('COMMIT');
   } catch (e) {
-    try { dbRun('ROLLBACK'); } catch (_) {}
-    console.error('[register] rolled back:', e);
+    if (useTxn) { try { dbRun('ROLLBACK'); } catch (_) {} }
+    console.error('[register] registration failed' + (useTxn ? ', rolled back' : '') + ':', e);
     showError(lang === 'ar' ? 'فشل تسجيل المريض؛ تم التراجع عن جميع التغييرات.' : 'Registration failed; all changes were rolled back.');
     return;
   }
@@ -1775,6 +1809,23 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
       patientId, nameEn || nameAr, mrn
     );
   }
+
+  // Finalize a pre-arrival conversion ON SUCCESS ONLY: the arrival row stays
+  // 'pending' (visible on the triage board) until this point, so an abandoned
+  // or failed registration can no longer strand an incoming patient invisibly.
+  try {
+    const prefillRaw = sessionStorage.getItem('arrival_prefill');
+    if (prefillRaw) {
+      const prefill = JSON.parse(prefillRaw);
+      if (prefill && prefill.arrival_id) {
+        const arr = dbGet(`SELECT status FROM incoming_arrivals WHERE arrival_id = ?`, [prefill.arrival_id]);
+        if (arr && arr.status === 'pending') {
+          dbRun(`UPDATE incoming_arrivals SET status = 'converted' WHERE arrival_id = ?`, [prefill.arrival_id]);
+        }
+      }
+      sessionStorage.removeItem('arrival_prefill');
+    }
+  } catch (e) { /* a malformed prefill must never break registration */ }
 
   await saveDBToIndexedDB();
 
@@ -1823,9 +1874,13 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
           <div style="padding:18px 22px;">
             <h3 style="color:#3b82f6;margin-bottom:8px;">&#128161; ${lang === 'ar' ? 'اقتراح ذكي' : 'Smart Suggestion'}</h3>
             <p style="font-size:0.92rem;margin-bottom:14px;">
-              ${lang === 'ar'
-                ? `الشكوى تطابق بروتوكول <strong>${matched.label.ar}</strong>. هل ترغب بتطبيقه الآن؟ سيتم إنشاء الفحوصات والأدوية والمهام تلقائياً.`
-                : `Chief complaint matches the <strong>${matched.label.en}</strong>. Apply now to auto-create labs, meds, and tasks?`}
+              ${DOCTOR_ROLES.includes(user.role)
+                ? (lang === 'ar'
+                    ? `الشكوى تطابق بروتوكول <strong>${matched.label.ar}</strong>. هل ترغب بتطبيقه الآن؟ سيتم إنشاء الفحوصات والأدوية والمهام تلقائياً.`
+                    : `Chief complaint matches the <strong>${matched.label.en}</strong>. Apply now to auto-create labs, meds, and tasks?`)
+                : (lang === 'ar'
+                    ? `الشكوى تطابق بروتوكول <strong>${matched.label.ar}</strong>. الفحوصات والأدوية تتطلب طبيباً — سيتم تعليق البنود كبنود بروتوكول معلّقة في صفحة المريض ليعتمدها الطبيب.`
+                    : `Chief complaint matches the <strong>${matched.label.en}</strong>. Labs and meds need a doctor — flag the items as Pending Protocol Items on the patient chart for the doctor to action?`)}
             </p>
             <div style="background:#f8fafc;padding:10px;border-radius:6px;font-size:0.82rem;margin-bottom:12px;">
               <div>&#129514; ${ORDER_SETS[matched.setKey].labs.length} ${lang === 'ar' ? 'فحوصات' : 'labs'}</div>
@@ -1835,7 +1890,9 @@ async function doRegisterPatient(pieValues, conditions, allergies, user, session
             <textarea id="smart-decline" rows="1" style="display:none;width:100%;border:1px solid #ccc;border-radius:6px;padding:8px;margin-bottom:8px;font-size:0.85rem;" placeholder="${lang === 'ar' ? 'سبب الرفض (مطلوب)...' : 'Reason for declining (required)...'}"></textarea>
             <div style="display:flex;gap:8px;justify-content:flex-end;">
               <button class="btn btn-secondary" id="ss-decline">${lang === 'ar' ? 'رفض' : 'Decline'}</button>
-              <button class="btn btn-primary" id="ss-apply">${lang === 'ar' ? 'تطبيق البروتوكول' : 'Apply Protocol'}</button>
+              <button class="btn btn-primary" id="ss-apply">${DOCTOR_ROLES.includes(user.role)
+                ? (lang === 'ar' ? 'تطبيق البروتوكول' : 'Apply Protocol')
+                : (lang === 'ar' ? 'تعليق للطبيب' : 'Flag for Doctor')}</button>
             </div>
           </div>
         </div>`;
@@ -1926,7 +1983,7 @@ function renderConPatients(main, lang) {
           <td>${escapeHtml(p.chief_complaint || '—')}</td>
           <td>${p.complexity_score}/5</td>
           <td>${p.doctor_id ? (lang === 'ar' ? escapeHtml(p.doc_ar) : escapeHtml(p.doc_en)) : '<span class="badge badge-warning">' + t('unassigned') + '</span>'}</td>
-          <td>${p.bed_number || '—'}</td>
+          <td>${escapeHtml(p.bed_number || '—')}</td>
         </tr>`).join('')}</tbody>
       </table>
     </div>`}
@@ -2000,6 +2057,8 @@ function renderConRounds(main, lang) {
     FROM admissions a JOIN patients p ON a.patient_id = p.patient_id
     WHERE a.dept_id = ? AND a.status = 'active' ORDER BY a.bed_number`, [session.dept_id]);
 
+  const roundData = collectRoundCardData(patients);
+
   main.innerHTML = `
     <div class="page-header">
       <h1>&#127973; ${lang === 'ar' ? 'وضع الجولة' : 'Rounding Mode'}</h1>
@@ -2008,20 +2067,48 @@ function renderConRounds(main, lang) {
     <p style="color:#666;font-size:0.85rem;margin-bottom:14px;">
       ${lang === 'ar' ? 'كل مريض يظهر في بطاقة واحدة: السن، الشكوى، السوابق، العلامات الحيوية، آخر مذكرة، حقل لكتابة مذكرة جديدة. لا حاجة للتنقل بين الشاشات.' : 'Each patient as a single card with story, vitals trend, last note, and inline new-note field. No screen-hopping needed.'}
     </p>
-    ${patients.length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : ''}
+    ${patients.length === 0 ? `${emptyState()}` : ''}
     <div style="display:flex;flex-direction:column;gap:14px;">
-      ${patients.map(p => renderRoundCard(p, lang)).join('')}
+      ${patients.map(p => renderRoundCard(p, lang, roundData)).join('')}
     </div>
   `;
 }
 
-function renderRoundCard(p, lang) {
-  const recentVitals = dbAll(`SELECT * FROM vitals_log WHERE admission_id=? ORDER BY recorded_at DESC LIMIT 1`, [p.admission_id])[0];
-  const lastNote = dbGet(`SELECT c.*, u.full_name_en as doc_en FROM consultations c LEFT JOIN users u ON c.doctor_id=u.user_id WHERE c.admission_id=? ORDER BY c.created_at DESC LIMIT 1`, [p.admission_id]);
-  const activeRxCt = dbGet(`SELECT COUNT(*) AS c FROM prescriptions WHERE admission_id=? AND status='active'`, [p.admission_id]).c;
-  const pendingLabsCt = dbGet(`SELECT COUNT(*) AS c FROM lab_orders WHERE admission_id=? AND status IN ('ordered','collected','received')`, [p.admission_id]).c;
-  const allergies = dbAll(`SELECT allergen FROM patient_allergies WHERE patient_id=?`, [p.patient_id]);
-  const commCt = dbGet("SELECT COUNT(*) AS c FROM patient_conditions WHERE patient_id=? AND category='communicable'", [p.patient_id]).c;
+// Batch the per-card lookups into one query per table instead of 6 queries per
+// patient (in server mode each dbAll is a network round-trip, so this turns
+// 6×N requests into 6 total).
+function collectRoundCardData(patients) {
+  const d = { vitals: new Map(), notes: new Map(), rxCt: new Map(), labCt: new Map(), allergyCt: new Map(), commCt: new Map() };
+  if (!patients.length) return d;
+  const admIds = patients.map(p => p.admission_id);
+  const patIds = [...new Set(patients.map(p => p.patient_id))];
+  const aPh = admIds.map(() => '?').join(',');
+  const pPh = patIds.map(() => '?').join(',');
+  // SQLite bare-column-with-MAX(): the non-aggregated columns come from the row
+  // that holds the max, i.e. the latest entry per admission.
+  dbAll(`SELECT *, MAX(recorded_at) AS _latest FROM vitals_log WHERE admission_id IN (${aPh}) GROUP BY admission_id`, admIds)
+    .forEach(r => d.vitals.set(r.admission_id, r));
+  dbAll(`SELECT c.*, u.full_name_en AS doc_en, MAX(c.created_at) AS _latest FROM consultations c LEFT JOIN users u ON c.doctor_id = u.user_id
+    WHERE c.admission_id IN (${aPh}) GROUP BY c.admission_id`, admIds)
+    .forEach(r => d.notes.set(r.admission_id, r));
+  dbAll(`SELECT admission_id, COUNT(*) AS c FROM prescriptions WHERE admission_id IN (${aPh}) AND status='active' GROUP BY admission_id`, admIds)
+    .forEach(r => d.rxCt.set(r.admission_id, r.c));
+  dbAll(`SELECT admission_id, COUNT(*) AS c FROM lab_orders WHERE admission_id IN (${aPh}) AND status IN ('ordered','collected','received') GROUP BY admission_id`, admIds)
+    .forEach(r => d.labCt.set(r.admission_id, r.c));
+  dbAll(`SELECT patient_id, COUNT(*) AS c FROM patient_allergies WHERE patient_id IN (${pPh}) GROUP BY patient_id`, patIds)
+    .forEach(r => d.allergyCt.set(r.patient_id, r.c));
+  dbAll(`SELECT patient_id, COUNT(*) AS c FROM patient_conditions WHERE patient_id IN (${pPh}) AND category='communicable' GROUP BY patient_id`, patIds)
+    .forEach(r => d.commCt.set(r.patient_id, r.c));
+  return d;
+}
+
+function renderRoundCard(p, lang, d) {
+  const recentVitals = d.vitals.get(p.admission_id);
+  const lastNote = d.notes.get(p.admission_id);
+  const activeRxCt = d.rxCt.get(p.admission_id) || 0;
+  const pendingLabsCt = d.labCt.get(p.admission_id) || 0;
+  const allergyCt = d.allergyCt.get(p.patient_id) || 0;
+  const commCt = d.commCt.get(p.patient_id) || 0;
 
   // Age
   let age = '';
@@ -2043,7 +2130,7 @@ function renderRoundCard(p, lang) {
         </div>
         <div style="font-size:0.85rem;color:#444;margin-top:4px;">${escapeHtml(p.chief_complaint || '—')}</div>
         <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
-          ${allergies.length ? `<span class="spb-badge spb-allergy">&#9888; ${allergies.length} ${lang === 'ar' ? 'حساسية' : 'allergies'}</span>` : ''}
+          ${allergyCt ? `<span class="spb-badge spb-allergy">&#9888; ${allergyCt} ${lang === 'ar' ? 'حساسية' : 'allergies'}</span>` : ''}
           ${commCt ? `<span class="spb-badge" style="background:#dc2626;color:#fff;">&#9763; ${commCt} ${lang === 'ar' ? 'معدٍ' : 'comm'}</span>` : ''}
           <span class="spb-badge" style="background:#dbeafe;color:#1e40af;">&#128138; ${activeRxCt} Rx</span>
           ${pendingLabsCt ? `<span class="spb-badge" style="background:#fef3c7;color:#92400e;">&#129514; ${pendingLabsCt} ${lang === 'ar' ? 'فحص' : 'pending'}</span>` : ''}
@@ -2134,7 +2221,7 @@ function renderDocPatients(main, lang) {
           <td>${p.mrn}</td>
           <td>${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</td>
           <td>${escapeHtml(p.chief_complaint || '—')}</td>
-          <td>${p.bed_number || '—'}</td>
+          <td>${escapeHtml(p.bed_number || '—')}</td>
           <td>${p.complexity_score}/5</td>
           <td><span class="badge badge-info">${p.diet_code}</span></td>
           <td>
@@ -2202,7 +2289,7 @@ function showPatientDetail(patientId, admissionId) {
             <span class="flag-critical_high" style="margin:0 8px">${escapeHtml(lab.result_value || '—')} ${escapeHtml(lab.result_unit || '')}</span>
             <span class="text-muted" style="font-size:0.8rem">${formatDateTime(lab.resulted_at)}</span>
           </div>
-          <button class="btn btn-sm btn-danger" onclick="showCriticalAckModal(${lab.order_id}, '${escapeHtml(lab.test_name).replace(/'/g,'')}', ${patientId}, ${admissionId})">
+          <button class="btn btn-sm btn-danger" onclick="showCriticalAckModal(${lab.order_id}, '${jsAttr(lab.test_name)}', ${patientId}, ${admissionId})">
             ${t('critical_ack_btn')}
           </button>
         </div>
@@ -2211,7 +2298,7 @@ function showPatientDetail(patientId, admissionId) {
 
     <div class="stat-cards">
       <div class="stat-card"><div class="stat-label">${t('department')}</div><div class="stat-value" style="font-size:1.2rem">${lang === 'ar' ? admission.name_ar : admission.name_en}</div></div>
-      <div class="stat-card"><div class="stat-label">${t('bed_number')}</div><div class="stat-value" style="font-size:1.2rem">${admission.bed_number || '—'}</div></div>
+      <div class="stat-card"><div class="stat-label">${t('bed_number')}</div><div class="stat-value" style="font-size:1.2rem">${escapeHtml(admission.bed_number || '—')}</div></div>
       <div class="stat-card"><div class="stat-label">${t('diet_code')}</div><div class="stat-value" style="font-size:1.2rem">${admission.diet_code}</div></div>
       <div class="stat-card"><div class="stat-label">${t('complexity')}</div><div class="stat-value" style="font-size:1.2rem">${admission.complexity_score}/5</div></div>
     </div>
@@ -2231,7 +2318,7 @@ function showPatientDetail(patientId, admissionId) {
         return hai.length ? `
           <div style="margin-top:10px;padding-top:10px;border-top:1px dashed #f87171;">
             <div style="font-size:0.8rem;font-weight:700;color:#7c3aed;margin-bottom:6px;">&#127861; ${t('nosocomial_infections')}</div>
-            ${hai.map(n => `<span class="badge mb-1" style="background:#7c3aed;color:#fff;margin-right:6px;">${NOSOCOMIAL_TYPES[n.infection_type]?.[lang] || n.infection_type}${n.pathogen ? ' — ' + n.pathogen : ''}${n.is_isolated ? ' [ISOLATED]' : ''}</span>`).join('')}
+            ${hai.map(n => `<span class="badge mb-1" style="background:#7c3aed;color:#fff;margin-right:6px;">${NOSOCOMIAL_TYPES[n.infection_type]?.[lang] || escapeHtml(n.infection_type)}${n.pathogen ? ' — ' + escapeHtml(n.pathogen) : ''}${n.is_isolated ? ' [ISOLATED]' : ''}</span>`).join('')}
           </div>` : '';
       })()}
     </div>
@@ -2288,6 +2375,8 @@ function showPatientDetail(patientId, admissionId) {
       `).join('') : '<p class="text-muted">' + t('no_data') + '</p>'}
     </div>
 
+    ${renderOrderSetExceptions(admissionId, lang)}
+
     <div class="flex gap-1 flex-wrap">
       <button class="btn btn-primary" onclick="showRxForm(${patientId}, ${admissionId})">${t('write_prescription')}</button>
       <button class="btn btn-info" onclick="showLabForm(${patientId}, ${admissionId})">${t('order_labs')}</button>
@@ -2297,10 +2386,10 @@ function showPatientDetail(patientId, admissionId) {
       <button class="btn btn-danger" onclick="showOrderSetPanel(${patientId}, ${admissionId})" style="background:#6f42c1;border-color:#6f42c1;">&#9889; ${t('order_sets_title')}</button>
       <button class="btn btn-secondary" onclick="printWristband(${patientId}, ${admissionId})" style="background:#20c997;border-color:#20c997;color:#fff;">&#128203; ${lang==='ar'?'طباعة سوار':'Print Wristband'}</button>
       <button class="btn btn-secondary" onclick="writeNFCWristband(${patientId})" style="background:#7c3aed;border-color:#7c3aed;color:#fff;">&#128248; ${t('write_nfc')}</button>
-      <button class="btn btn-secondary" onclick="showNosocomialForm(${patientId}, ${admissionId}, '${escapeHtml((patient.full_name_en||'').replace(/'/g,"\\'")||'')}', '${escapeHtml(patient.full_name_ar.replace(/'/g,"\\'"))}')" style="background:#dc3545;border-color:#dc3545;color:#fff;">&#127861; ${t('add_nosocomial')}</button>
+      <button class="btn btn-secondary" onclick="showNosocomialForm(${patientId}, ${admissionId}, '${jsAttr(patient.full_name_en||'')}', '${jsAttr(patient.full_name_ar||'')}')" style="background:#dc3545;border-color:#dc3545;color:#fff;">&#127861; ${t('add_nosocomial')}</button>
       <button class="btn btn-secondary" onclick="showPatientTimeline(${patientId}, ${admissionId})" style="background:#343a40;border-color:#343a40;color:#fff;">&#128197; ${lang==='ar'?'السجل الزمني':'Timeline'}</button>
       <button class="btn btn-secondary" onclick="showMedReconciliation(${patientId}, ${admissionId})" style="background:#e83e8c;border-color:#e83e8c;color:#fff;">&#128138; ${lang==='ar'?'مطابقة الأدوية':'Med Reconciliation'}</button>
-      <button class="btn btn-secondary" onclick="showVaccinationsForm(${patientId}, '${escapeHtml(lang==='ar'?patient.full_name_ar:(patient.full_name_en||patient.full_name_ar)).replace(/'/g,'&apos;')}')" style="background:#0ea5e9;border-color:#0ea5e9;color:#fff;">&#128137; ${lang==='ar'?'التطعيمات':'Vaccinations'}</button>
+      <button class="btn btn-secondary" onclick="showVaccinationsForm(${patientId}, '${jsAttr(lang==='ar'?patient.full_name_ar:(patient.full_name_en||patient.full_name_ar))}')" style="background:#0ea5e9;border-color:#0ea5e9;color:#fff;">&#128137; ${lang==='ar'?'التطعيمات':'Vaccinations'}</button>
     </div>
     <div id="doc-action-form" class="mt-3"></div>
     <div class="card mt-3" id="vitals-chart-card" style="padding:12px;">
@@ -2315,6 +2404,47 @@ function showPatientDetail(patientId, admissionId) {
   requestAnimationFrame(() => renderVitalsChart(admissionId, 'vitals-chart-container'));
 }
 
+// Pending order-set exceptions for an admission: protocol meds that could NOT
+// be auto-prescribed (unmatched formulary, allergy flag, interaction flag) and
+// protocol tasks. The table used to be write-only — flagged meds vanished the
+// moment the apply-toast faded, so nobody ever prescribed them.
+function renderOrderSetExceptions(admissionId, lang) {
+  const rows = dbAll(`SELECT * FROM order_set_exceptions WHERE admission_id = ? AND status = 'pending' ORDER BY created_at`, [admissionId]);
+  if (!rows.length) return '';
+  const reasonLabel = {
+    not_in_formulary:    lang === 'ar' ? 'غير متوفر في الصيدلية — صِفه يدوياً' : 'not in formulary — prescribe manually',
+    allergy_flagged:     lang === 'ar' ? 'تحذير حساسية — صِفه عبر نموذج الوصفة' : 'ALLERGY flag — prescribe via the Rx form',
+    interaction_flagged: lang === 'ar' ? 'تداخل دوائي — صِفه عبر نموذج الوصفة' : 'INTERACTION flag — prescribe via the Rx form',
+    nursing_task:        lang === 'ar' ? 'مهمة تمريضية' : 'nursing task',
+    requires_doctor:     lang === 'ar' ? 'بانتظار اعتماد الطبيب — من بروتوكول مقترح عند التسجيل' : 'awaiting doctor — flagged from a protocol at registration',
+  };
+  return `
+    <div class="card mt-2" style="border-left:4px solid #f59e0b;background:#fffbeb;">
+      <h4 style="margin:0 0 8px;color:#92400e;">&#9888; ${lang === 'ar' ? 'بنود البروتوكول المعلّقة' : 'Pending Protocol Items'} (${rows.length})</h4>
+      ${rows.map(r => `
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:0.88rem;">
+          <span style="flex:1;">${escapeHtml(r.drug_name || '')}${r.dose ? ' ' + escapeHtml(r.dose) : ''}${r.frequency ? ' ' + escapeHtml(r.frequency) : ''}
+            — <em style="color:#92400e;">${reasonLabel[r.reason] || escapeHtml(r.reason || '')}</em></span>
+          <button class="btn btn-sm btn-secondary" onclick="resolveOrderSetException(${r.exc_id}, ${patientIdOfAdmission(admissionId)}, ${admissionId})">${lang === 'ar' ? 'تم' : 'Done'}</button>
+        </div>`).join('')}
+    </div>`;
+}
+
+function patientIdOfAdmission(admissionId) {
+  const a = dbGet('SELECT patient_id FROM admissions WHERE admission_id = ?', [admissionId]);
+  return a ? a.patient_id : 'null';
+}
+
+async function resolveOrderSetException(excId, patientId, admissionId) {
+  const user = getCurrentUser();
+  if (!user) return;
+  dbRun(`UPDATE order_set_exceptions SET status = 'done' WHERE exc_id = ? AND status = 'pending'`, [excId]);
+  if (!dbChanges()) return;   // already resolved elsewhere
+  await logAction('ORDER_SET_EXCEPTION_RESOLVED', `${user.full_name_en} marked order-set exception #${excId} done (admission ${admissionId})`);
+  saveDBToIndexedDB();
+  if (patientId) showPatientDetail(patientId, admissionId);
+}
+
 // ============================================================
 // DOCTOR — Write Prescription
 // ============================================================
@@ -2326,7 +2456,7 @@ function renderDocRx(main, lang) {
     JOIN patients p ON a.patient_id = p.patient_id
     WHERE ca.doctor_id = ? AND a.status = 'active'`, [session.user_id]);
 
-  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('write_prescription')}</h1></div><div class="empty-state"><p>${t('no_data')}</p></div>`; return; }
+  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('write_prescription')}</h1></div>${emptyState()}`; return; }
 
   const drugs = dbAll('SELECT * FROM drugs ORDER BY name_generic');
   const drugOptions = drugs.map(d => `<option value="${d.drug_id}" data-name="${escapeHtml(d.name_generic)}">${d.name_generic}${d.name_brand ? ' (' + d.name_brand + ')' : ''} — ${d.name_ar || ''}</option>`).join('');
@@ -2358,74 +2488,19 @@ function renderDocRx(main, lang) {
   `;
 }
 
-// Drug-class allergen matcher: returns true if patient is allergic to this drug.
-// B1d/e fix: trim allergen, lowercase, AND fuzzy-match common typos.
-function checkDrugAllergy(drugName, allergies) {
-  if (!allergies || !allergies.length) return null;
-  const drugLower = (drugName || '').trim().toLowerCase();
-  // Map of allergen substrings → drug name substrings that should trigger
-  const ALLERGEN_DRUG_MAP = {
-    'penicillin':   ['penicillin', 'amoxicillin', 'ampicillin', 'augmentin', 'piperacillin'],
-    'sulfa':        ['sulfamethoxazole', 'bactrim', 'septra', 'sulfasalazine', 'sulfa'],
-    'nsaid':        ['ibuprofen', 'naproxen', 'ketorolac', 'diclofenac', 'celecoxib', 'indomethacin'],
-    'aspirin':      ['aspirin', 'asa', 'acetylsalicylic'],
-    'ace':          ['lisinopril', 'enalapril', 'captopril', 'ramipril', 'perindopril', 'benazepril'],
-    'cephalosporin':['cefuroxime', 'ceftriaxone', 'cefazolin', 'cephalexin', 'cefepime'],
-    'statin':       ['atorvastatin', 'simvastatin', 'rosuvastatin', 'pravastatin', 'lovastatin'],
-    'opioid':       ['morphine', 'oxycodone', 'hydromorphone', 'fentanyl', 'codeine', 'tramadol'],
-    'iodine':       ['iodine', 'contrast'],
-    'latex':        [], // not a drug match
-  };
-  // Common typo aliases — map misspellings to canonical class
-  const TYPO_ALIASES = {
-    'pencilin': 'penicillin', 'pencillin': 'penicillin', 'penisilin': 'penicillin', 'penicilin': 'penicillin',
-    'sulpha': 'sulfa', 'sulph': 'sulfa',
-    'asprin': 'aspirin', 'aspirine': 'aspirin',
-    'cefalosporin': 'cephalosporin', 'cephalo': 'cephalosporin',
-    'morphin': 'opioid', 'codien': 'opioid',
-  };
-  // Levenshtein distance ≤ 2 for short tokens
-  const lev = (a, b) => {
-    const m = a.length, n = b.length;
-    if (Math.abs(m - n) > 2) return 99;
-    const dp = Array(n + 1).fill(0).map((_, i) => i);
-    for (let i = 1; i <= m; i++) {
-      let prev = dp[0]; dp[0] = i;
-      for (let j = 1; j <= n; j++) {
-        const tmp = dp[j];
-        dp[j] = a[i-1] === b[j-1] ? prev : Math.min(prev, dp[j], dp[j-1]) + 1;
-        prev = tmp;
-      }
-    }
-    return dp[n];
-  };
-  for (const a of allergies) {
-    let allergenLower = (a.allergen || '').trim().toLowerCase();
-    if (!allergenLower) continue;
-    // Resolve typo alias
-    if (TYPO_ALIASES[allergenLower]) allergenLower = TYPO_ALIASES[allergenLower];
-
-    // Direct substring match
-    if (drugLower.includes(allergenLower)) return a;
-    // Class-based match
-    for (const [classKey, drugs] of Object.entries(ALLERGEN_DRUG_MAP)) {
-      if (allergenLower.includes(classKey)) {
-        if (drugs.some(d => drugLower.includes(d))) return a;
-      }
-      // Fuzzy: allergen ≤ 2 edits from a class key
-      if (allergenLower.length >= 5 && lev(allergenLower, classKey) <= 2) {
-        if (drugs.some(d => drugLower.includes(d))) return Object.assign({}, a, { _fuzzy: true, _matched_class: classKey });
-      }
-    }
-  }
-  return null;
-}
+// Drug-class allergen matcher: checkDrugAllergy() now lives in
+// js/allergy-check.js (loaded before this file) so the LAN server can require()
+// the SAME curated table — previously the server's "authoritative" check was
+// substring-only and let Amoxicillin past a documented Penicillin allergy. The
+// shared version also adds cross-reactivity hits (penicillin → cephalosporin /
+// carbapenem, aspirin ↔ NSAIDs) returned with _cross:true.
 
 async function handlePrescribe(e) {
   e.preventDefault();
   const lang = currentLanguage();
   const user = getCurrentUser();
   if (!user) { showError(lang === 'ar' ? 'انتهت الجلسة' : 'Session expired'); return; }
+  if (!requireRole(DOCTOR_ROLES, 'prescribing')) return;
 
   const admissionId = document.getElementById('rx-patient').value;
   const drugId = document.getElementById('rx-drug').value;
@@ -2449,9 +2524,18 @@ async function handlePrescribe(e) {
   if (allergyMatch) {
     const sev = (allergyMatch.severity || '').toLowerCase();
     const isLifeThreatening = sev === 'life_threatening' || sev === 'severe' || sev === 'anaphylaxis';
-    const msg = lang === 'ar'
-      ? `&#9888; تنبيه حساسية! المريض لديه حساسية من: ${escapeHtml(allergyMatch.allergen)} (${escapeHtml(allergyMatch.severity || '—')}). التفاعل: ${escapeHtml(allergyMatch.reaction || '—')}`
-      : `&#9888; ALLERGY ALERT! Patient has documented allergy to: ${escapeHtml(allergyMatch.allergen)} (${escapeHtml(allergyMatch.severity || '—')}). Reaction: ${escapeHtml(allergyMatch.reaction || '—')}`;
+    // RAW text only: showRedAlert/showYellowAlert escapeHtml() the whole message
+    // themselves (and render their own ⚠ icon). Pre-escaping here double-escaped
+    // the highest-severity bedside alert — the &#9888; entity displayed as
+    // literal text and an allergen like "Penicillin & Sulfa" rendered as
+    // "Penicillin &amp; Sulfa".
+    const msg = allergyMatch._cross
+      ? (lang === 'ar'
+        ? `تحسس تصالبي محتمل! المريض لديه حساسية موثقة من: ${allergyMatch.allergen} (${allergyMatch.severity || '—'}) وهذا الدواء من فئة قد تتفاعل معها (${allergyMatch._cross_note}).`
+        : `POSSIBLE CROSS-REACTIVITY! Patient has a documented allergy to ${allergyMatch.allergen} (${allergyMatch.severity || '—'}) and this drug is in a potentially cross-reactive class (${allergyMatch._cross_note}).`)
+      : (lang === 'ar'
+        ? `تنبيه حساسية! المريض لديه حساسية من: ${allergyMatch.allergen} (${allergyMatch.severity || '—'}). التفاعل: ${allergyMatch.reaction || '—'}`
+        : `ALLERGY ALERT! Patient has documented allergy to: ${allergyMatch.allergen} (${allergyMatch.severity || '—'}). Reaction: ${allergyMatch.reaction || '—'}`);
     if (isLifeThreatening) {
       // Hard stop with override-with-reason
       showRedAlert(msg, async (reason) => {
@@ -2477,30 +2561,53 @@ async function handlePrescribe(e) {
 }
 
 async function checkInteractionsAndPrescribe(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user) {
-  // Check drug interactions with current prescriptions
+  // Collect interactions against ALL current prescriptions BEFORE alerting.
+  // Returning on the first hit let a RED interaction later in the rx list slip
+  // through unacknowledged once a milder one was confirmed.
   const currentRxs = dbAll("SELECT drug_id FROM prescriptions WHERE admission_id = ? AND status = 'active'", [admissionId]);
+  const seen = new Set();
+  const interactions = [];
   for (const rx of currentRxs) {
     const interaction = dbGet('SELECT * FROM drug_interactions WHERE (drug_a_id = ? AND drug_b_id = ?) OR (drug_a_id = ? AND drug_b_id = ?)',
       [drugId, rx.drug_id, rx.drug_id, drugId]);
-    if (interaction) {
-      const lang = currentLanguage();
-      const msg = lang === 'ar' ? (interaction.description_ar || interaction.description) : interaction.description;
-      if (interaction.severity === 'red') {
-        showRedAlert(msg, async (reason) => {
-          await logAction('ALERT_OVERRIDDEN',
-            `${user.full_name_en} overrode RED ALERT for patient ${admission.full_name_en || admission.full_name_ar}: ${interaction.description}. Override reason: ${reason}`,
-            null, admission.patient_id, admission.full_name_en || admission.full_name_ar, admission.mrn);
-          await doInsertPrescription(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user);
-        });
-        return;
-      } else if (interaction.severity === 'yellow') {
-        showYellowAlert(msg, async () => {
-          await doInsertPrescription(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user);
-        });
-        return;
-      } else {
-        showBlueAlert(msg);
-      }
+    if (interaction && !seen.has(interaction.id)) {
+      seen.add(interaction.id);
+      interactions.push(interaction);
+    }
+  }
+
+  // Drug-vs-CONDITION contraindications (metformin/renal failure, NSAID/renal,
+  // beta-blocker/asthma, opioid/liver, warfarin/liver …) ride the same alert
+  // pipeline as drug-drug hits: worst severity wins, red requires an
+  // override-with-reason. The checker (utils.js) keys off the same
+  // patient_conditions.condition_code values the registration form writes.
+  const condCodes = dbAll('SELECT condition_code FROM patient_conditions WHERE patient_id = ?', [admission.patient_id]).map(r => r.condition_code);
+  checkDrugConditionInteractions(drugName, condCodes).forEach((w, i) => {
+    interactions.push({ id: 'cond-' + i, severity: w.severity, description: w.message_en, description_ar: w.message_ar });
+  });
+
+  if (interactions.length) {
+    const lang = currentLanguage();
+    const rank = s => s === 'red' ? 2 : s === 'yellow' ? 1 : 0;
+    interactions.sort((a, b) => rank(b.severity) - rank(a.severity));
+    const worst = interactions[0];
+    const msg = interactions.map(i => lang === 'ar' ? (i.description_ar || i.description) : i.description).join(' • ');
+    const logList = interactions.map(i => i.description).join('; ');
+    if (worst.severity === 'red') {
+      showRedAlert(msg, async (reason) => {
+        await logAction('ALERT_OVERRIDDEN',
+          `${user.full_name_en} overrode RED ALERT for patient ${admission.full_name_en || admission.full_name_ar}: ${logList}. Override reason: ${reason}`,
+          null, admission.patient_id, admission.full_name_en || admission.full_name_ar, admission.mrn);
+        await doInsertPrescription(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user);
+      });
+      return;
+    } else if (worst.severity === 'yellow') {
+      showYellowAlert(msg, async () => {
+        await doInsertPrescription(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user);
+      });
+      return;
+    } else {
+      showBlueAlert(msg);
     }
   }
 
@@ -2534,7 +2641,7 @@ function renderDocLabs(main, lang) {
     JOIN patients p ON a.patient_id = p.patient_id
     WHERE ca.doctor_id = ? AND a.status = 'active'`, [session.user_id]);
 
-  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('order_labs')}</h1></div><div class="empty-state"><p>${t('no_data')}</p></div>`; return; }
+  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('order_labs')}</h1></div>${emptyState()}`; return; }
 
   const patientOptions = patients.map(p => `<option value="${p.admission_id}" data-pid="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
 
@@ -2716,6 +2823,7 @@ function updateLabSuggestions() {
 async function handleOrderLab(e) {
   e.preventDefault();
   const user = getCurrentUser();
+  if (!requireRole(DOCTOR_ROLES, 'lab ordering')) return;
   const admissionId = document.getElementById('lab-patient').value;
   const priority = document.getElementById('lab-priority').value;
   const notes = document.getElementById('lab-notes').value.trim();
@@ -2777,7 +2885,7 @@ function renderDocConsult(main, lang) {
     JOIN patients p ON a.patient_id = p.patient_id
     WHERE ca.doctor_id = ? AND a.status = 'active'`, [session.user_id]);
 
-  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('my_consultations')}</h1></div><div class="empty-state"><p>${t('no_data')}</p></div>`; return; }
+  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('my_consultations')}</h1></div>${emptyState()}`; return; }
 
   const patientOptions = patients.map(p => `<option value="${p.admission_id}" data-pid="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
 
@@ -2894,6 +3002,7 @@ async function handleDischarge(e, patientId, admissionId) {
   const lang = currentLanguage();
   const user = getCurrentUser();
   if (!user) { showError(lang === 'ar' ? 'انتهت الجلسة' : 'Session expired'); return; }
+  if (!requireRole(DOCTOR_ROLES, 'discharge')) return;
 
   const patient = dbGet('SELECT * FROM patients WHERE patient_id = ?', [patientId]);
   if (!patient) { showError(lang === 'ar' ? 'المريض غير موجود' : 'Patient not found'); return; }
@@ -2904,8 +3013,8 @@ async function handleDischarge(e, patientId, admissionId) {
     const admDept = dbGet('SELECT name_en, name_ar FROM departments WHERE dept_id = ?', [admForDept.dept_id]);
     const userDept = dbGet('SELECT name_en, name_ar FROM departments WHERE dept_id = ?', [user.department_id]);
     const msg = lang === 'ar'
-      ? `أنت من قسم <strong>${userDept ? userDept.name_ar : '?'}</strong> ولكن المريض في قسم <strong>${admDept ? admDept.name_ar : '?'}</strong>. هل أنت متأكد؟`
-      : `You are in <strong>${userDept ? userDept.name_en : '?'}</strong> but patient is in <strong>${admDept ? admDept.name_en : '?'}</strong>. Cross-department discharge — proceed?`;
+      ? `أنت من قسم <strong>${escapeHtml(userDept ? userDept.name_ar : '?')}</strong> ولكن المريض في قسم <strong>${escapeHtml(admDept ? admDept.name_ar : '?')}</strong>. هل أنت متأكد؟`
+      : `You are in <strong>${escapeHtml(userDept ? userDept.name_en : '?')}</strong> but patient is in <strong>${escapeHtml(admDept ? admDept.name_en : '?')}</strong>. Cross-department discharge — proceed?`;
     return requireReasonToDecline(msg, `Cross-dept discharge: ${patient.mrn} by ${user.full_name_en}`,
       async () => { await _doDischargeFromForm(e, patientId, admissionId, patient, user, lang); },
       async (_reason) => { /* declined */ }
@@ -3175,10 +3284,10 @@ function showNosocomialForm(patientId, admissionId, patientNameEn, patientNameAr
           ${existing.map(n => `
             <div style="background:#fff5f5;color:#7f1d1d;border-left:3px solid #dc3545;padding:10px;border-radius:6px;margin-bottom:8px;">
               <strong>${NOSOCOMIAL_TYPES[n.infection_type] ? NOSOCOMIAL_TYPES[n.infection_type][lang] : n.infection_type}</strong>
-              ${n.pathogen ? ` — ${n.pathogen}` : ''}
+              ${n.pathogen ? ` — ${escapeHtml(n.pathogen)}` : ''}
               ${n.is_isolated ? ` <span style="background:#dc3545;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.75rem;">${lang === 'ar' ? 'معزول' : 'ISOLATED'}</span>` : ''}
               <div style="font-size:0.8rem;color:#888;margin-top:4px;">${lang === 'ar' ? 'بتاريخ' : 'Identified'}: ${n.identified_at.split('T')[0]} ${n.doc_en ? '— ' + n.doc_en : ''}</div>
-              ${n.treatment ? `<div style="font-size:0.82rem;margin-top:2px;">${lang === 'ar' ? 'العلاج: ' : 'Treatment: '}${n.treatment}</div>` : ''}
+              ${n.treatment ? `<div style="font-size:0.82rem;margin-top:2px;">${lang === 'ar' ? 'العلاج: ' : 'Treatment: '}${escapeHtml(n.treatment)}</div>` : ''}
             </div>
           `).join('')}
         </div>
@@ -3379,9 +3488,15 @@ async function handleInlineRx(e, patientId, admissionId) {
   if (allergyMatch) {
     const sev = (allergyMatch.severity || '').toLowerCase();
     const isLifeThreatening = sev === 'life_threatening' || sev === 'severe' || sev === 'anaphylaxis';
-    const msg = lang === 'ar'
-      ? `تنبيه حساسية! المريض لديه حساسية من: ${escapeHtml(allergyMatch.allergen)} (${escapeHtml(allergyMatch.severity || '—')})`
-      : `ALLERGY ALERT! Patient allergic to: ${escapeHtml(allergyMatch.allergen)} (${escapeHtml(allergyMatch.severity || '—')})`;
+    // RAW text — showRedAlert/showYellowAlert escape the whole message (see the
+    // matching comment in handlePrescribe).
+    const msg = allergyMatch._cross
+      ? (lang === 'ar'
+        ? `تحسس تصالبي محتمل! حساسية موثقة من: ${allergyMatch.allergen} (${allergyMatch._cross_note})`
+        : `POSSIBLE CROSS-REACTIVITY! Documented allergy to ${allergyMatch.allergen} (${allergyMatch._cross_note})`)
+      : (lang === 'ar'
+        ? `تنبيه حساسية! المريض لديه حساسية من: ${allergyMatch.allergen} (${allergyMatch.severity || '—'})`
+        : `ALLERGY ALERT! Patient allergic to: ${allergyMatch.allergen} (${allergyMatch.severity || '—'})`);
     if (isLifeThreatening) {
       showRedAlert(msg, async (reason) => {
         await logAction('ALLERGY_OVERRIDE', `${user.full_name_en} overrode allergy alert (${allergyMatch.allergen} → ${drugName}). Reason: ${reason}`, null, patientId, '', '');
@@ -3425,6 +3540,7 @@ function showLabForm(patientId, admissionId) {
 async function handleInlineLab(e, patientId, admissionId) {
   e.preventDefault();
   const user = getCurrentUser();
+  if (!requireRole(DOCTOR_ROLES, 'lab ordering')) return;
   const selectedTests = Array.from(document.getElementById('ilab-test').selectedOptions).map(o => o.value);
   const priority = document.getElementById('ilab-priority').value;
   const admission = dbGet('SELECT a.*, p.* FROM admissions a JOIN patients p ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [admissionId]);
@@ -3494,12 +3610,12 @@ function renderSNWard(main, lang) {
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('ward_overview')}</h1></div>
-    ${patients.length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : `
+    ${patients.length === 0 ? `${emptyState()}` : `
     <div class="table-container">
       <table>
         <thead><tr><th>${t('bed_number')}</th><th>${t('mrn')}</th><th>${lang === 'ar' ? 'الاسم' : 'Name'}</th><th>${t('complexity')}</th><th>${t('diet_code')}</th><th>${t('assigned_nurse')}</th></tr></thead>
         <tbody>${patients.map(p => `<tr>
-          <td>${p.bed_number || '—'}</td>
+          <td>${escapeHtml(p.bed_number || '—')}</td>
           <td>${p.mrn}</td>
           <td>${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</td>
           <td>${p.complexity_score}/5</td>
@@ -3522,11 +3638,21 @@ function renderSNAssign(main, lang) {
   const nurseOptions = nurses.map(n => `<option value="${n.user_id}">${lang === 'ar' ? escapeHtml(n.full_name_ar) : escapeHtml(n.full_name_en)}</option>`).join('');
   const shiftOptions = `<option value="morning">${t('shift_morning')}</option><option value="afternoon">${t('shift_afternoon')}</option><option value="night">${t('shift_night')}</option>`;
 
-  // Workload dashboard (Sara persona): show each nurse's load today
-  const workload = nurses.map(n => {
-    const assigned = dbAll(`SELECT a.admission_id, a.complexity_score FROM nurse_assignments na
+  // Workload dashboard (Sara persona): show each nurse's load today.
+  // One query for all nurses, grouped in JS (was one query per nurse).
+  const nurseIds = nurses.map(n => n.user_id);
+  const assignedByNurse = new Map();
+  if (nurseIds.length) {
+    dbAll(`SELECT na.nurse_id, a.complexity_score FROM nurse_assignments na
       JOIN admissions a ON na.admission_id = a.admission_id
-      WHERE na.nurse_id = ? AND na.shift_date = date('now') AND a.status = 'active'`, [n.user_id]);
+      WHERE na.nurse_id IN (${nurseIds.map(() => '?').join(',')}) AND na.shift_date = date('now') AND a.status = 'active'`, nurseIds)
+      .forEach(r => {
+        if (!assignedByNurse.has(r.nurse_id)) assignedByNurse.set(r.nurse_id, []);
+        assignedByNurse.get(r.nurse_id).push(r);
+      });
+  }
+  const workload = nurses.map(n => {
+    const assigned = assignedByNurse.get(n.user_id) || [];
     const totalCx = assigned.reduce((s, x) => s + (x.complexity_score || 1), 0);
     return { nurse: n, count: assigned.length, totalCx, avgCx: assigned.length ? (totalCx / assigned.length).toFixed(1) : 0 };
   });
@@ -3559,7 +3685,7 @@ function renderSNAssign(main, lang) {
   main.innerHTML = `
     <div class="page-header"><h1>${t('nurse_assignment')}</h1></div>
     ${workloadCard}
-    ${unassigned.length === 0 ? `<div class="empty-state"><p>${lang === 'ar' ? 'جميع المرضى معينين' : 'All patients are assigned'}</p></div>` : `
+    ${unassigned.length === 0 ? `${emptyState(lang === 'ar' ? 'جميع المرضى معينين' : 'All patients are assigned')}` : `
     <div class="table-container">
       <table>
         <thead><tr><th>${t('mrn')}</th><th>${lang === 'ar' ? 'الاسم' : 'Name'}</th><th>${t('complexity')} ${help('ESI')}</th><th>${lang === 'ar' ? 'الممرض/ة' : 'Nurse'}</th><th>${lang === 'ar' ? 'المناوبة' : 'Shift'}</th><th>${t('actions')}</th></tr></thead>
@@ -3604,8 +3730,8 @@ async function handleAssignNurse(admissionId, patientId) {
   const warnings = [];
   if (isJunior && admission.complexity_score >= 4) {
     warnings.push(lang === 'ar'
-      ? `الممرض/ة ${nurse.full_name_ar} حديث/ة التعيين (<6 شهور)، والمريض حرج (${admission.complexity_score}/5).`
-      : `Nurse ${nurse.full_name_en} is junior (<6mo), and patient is critical (${admission.complexity_score}/5).`);
+      ? `الممرض/ة ${escapeHtml(nurse.full_name_ar)} حديث/ة التعيين (<6 شهور)، والمريض حرج (${admission.complexity_score}/5).`
+      : `Nurse ${escapeHtml(nurse.full_name_en)} is junior (<6mo), and patient is critical (${admission.complexity_score}/5).`);
   }
   if (curLoad + admission.complexity_score > 12) {
     warnings.push(lang === 'ar'
@@ -3617,7 +3743,7 @@ async function handleAssignNurse(admissionId, patientId) {
     dbRun('INSERT INTO nurse_assignments (admission_id, nurse_id, shift, shift_date, assigned_by, assigned_at) VALUES (?, ?, ?, date(?), ?, ?)',
       [admissionId, nurseId, shift, nowISO(), user.user_id, nowISO()]);
     await logAction('NURSE_ASSIGNED',
-      `Senior Nurse ${user.full_name_en} assigned patient ${patient.full_name_en || patient.full_name_ar} (cx ${admission.complexity_score}) to Nurse ${nurse.full_name_en} for ${shift} shift on ${new Date().toISOString().slice(0,10)}${warnings.length ? ' [WARNINGS PRESENT]' : ''}`,
+      `Senior Nurse ${user.full_name_en} assigned patient ${patient.full_name_en || patient.full_name_ar} (cx ${admission.complexity_score}) to Nurse ${nurse.full_name_en} for ${shift} shift on ${todayISO()}${warnings.length ? ' [WARNINGS PRESENT]' : ''}`,
       null, patientId, patient.full_name_en || patient.full_name_ar, patient.mrn);
     showSuccess(t('success_saved'));
     saveDBToIndexedDB();
@@ -3665,7 +3791,7 @@ function renderSNSupply(main, lang) {
 
 function renderNRPatients(main, lang) {
   const session = getCurrentSession();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
   const patients = dbAll(`SELECT a.*, p.full_name_ar, p.full_name_en, p.mrn, p.patient_id,
     na.assignment_id, na.transferred_from, na.acknowledged_at,
     fromU.full_name_en as transferred_from_en, fromU.full_name_ar as transferred_from_ar
@@ -3678,11 +3804,12 @@ function renderNRPatients(main, lang) {
   // "What needs my attention?" widget — top 3 priorities right now
   const admissionIds = patients.map(p => p.admission_id);
   const priorities = computeNurseAttention(admissionIds, session.user_id);
+  const flagData = collectPatientFlagData(patients);
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('my_patients')}</h1></div>
     ${renderAttentionWidget(priorities, lang)}
-    ${patients.length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : `
+    ${patients.length === 0 ? `${emptyState()}` : `
     <div class="table-container">
       <table>
         <thead><tr>
@@ -3691,14 +3818,14 @@ function renderNRPatients(main, lang) {
           <th>${t('complexity')}</th><th>${t('diet_code')}</th><th>${t('actions')}</th>
         </tr></thead>
         <tbody>${patients.map(p => {
-          const flags = quickPatientFlags(p.patient_id, p.admission_id, lang);
+          const flags = quickPatientFlags(p.patient_id, p.admission_id, lang, flagData);
           const isTransferred = p.transferred_from && !p.acknowledged_at;
           const transferBadge = isTransferred
             ? `<div style="margin-top:4px;"><span class="badge" style="background:#7c3aed;color:#fff;animation:pulse 1.5s infinite;">${lang === 'ar' ? `&#128257; جديد — من ${escapeHtml(p.transferred_from_ar || '?')}` : `&#128257; NEW — from ${escapeHtml(p.transferred_from_en || '?')}`}</span>
                 <button class="btn btn-sm" style="background:#7c3aed;border-color:#7c3aed;color:#fff;font-size:0.7rem;padding:2px 8px;margin-left:6px;" onclick="acknowledgeHandoff(${p.assignment_id})">${lang === 'ar' ? '&check; استلام' : '&check; Acknowledge'}</button></div>`
             : '';
           return `<tr ${isTransferred ? 'style="background:#faf5ff;"' : ''}>
-            <td>${p.bed_number || '—'}</td><td>${p.mrn}</td>
+            <td>${escapeHtml(p.bed_number || '—')}</td><td>${p.mrn}</td>
             <td>${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}${transferBadge}</td>
             <td>${flags}</td>
             <td>${p.complexity_score}/5</td>
@@ -3711,24 +3838,48 @@ function renderNRPatients(main, lang) {
   `;
 }
 
+// Batch the five per-row flag lookups into one query per table (was 5 queries
+// per patient on the nurse's default landing view; in server mode each one is
+// a network round-trip).
+function collectPatientFlagData(patients) {
+  const d = { allergyCt: new Map(), commCt: new Map(), haiCt: new Map(), critCt: new Map(), lastVit: new Map() };
+  if (!patients.length) return d;
+  const admIds = patients.map(p => p.admission_id);
+  const patIds = [...new Set(patients.map(p => p.patient_id))];
+  const aPh = admIds.map(() => '?').join(',');
+  const pPh = patIds.map(() => '?').join(',');
+  dbAll(`SELECT patient_id, COUNT(*) AS c FROM patient_allergies WHERE patient_id IN (${pPh}) GROUP BY patient_id`, patIds)
+    .forEach(r => d.allergyCt.set(r.patient_id, r.c));
+  dbAll(`SELECT patient_id, COUNT(*) AS c FROM patient_conditions WHERE patient_id IN (${pPh}) AND category='communicable' GROUP BY patient_id`, patIds)
+    .forEach(r => d.commCt.set(r.patient_id, r.c));
+  dbAll(`SELECT admission_id, COUNT(*) AS c FROM nosocomial_infections WHERE admission_id IN (${aPh}) GROUP BY admission_id`, admIds)
+    .forEach(r => d.haiCt.set(r.admission_id, r.c));
+  dbAll(`SELECT lo.admission_id, COUNT(*) AS c FROM lab_orders lo LEFT JOIN lab_critical_acks lca ON lo.order_id = lca.order_id
+    WHERE lo.admission_id IN (${aPh}) AND lo.is_critical = 1 AND lo.status = 'resulted' AND lca.ack_id IS NULL GROUP BY lo.admission_id`, admIds)
+    .forEach(r => d.critCt.set(r.admission_id, r.c));
+  dbAll(`SELECT admission_id, MAX(recorded_at) AS recorded_at FROM vitals_log WHERE admission_id IN (${aPh}) GROUP BY admission_id`, admIds)
+    .forEach(r => d.lastVit.set(r.admission_id, r.recorded_at));
+  return d;
+}
+
 // Quick flags shown next to patient name on the list — gives nurse at-a-glance status
-function quickPatientFlags(patientId, admissionId, lang) {
+function quickPatientFlags(patientId, admissionId, lang, d) {
   const flags = [];
-  const allergies = dbGet('SELECT COUNT(*) AS c FROM patient_allergies WHERE patient_id=?', [patientId]).c;
+  const allergies = d.allergyCt.get(patientId) || 0;
   if (allergies > 0) flags.push(`<span class="badge badge-danger" title="${lang==='ar'?'حساسية':'Allergies'}" style="margin-right:2px;">&#9888; ${allergies}</span>`);
 
-  const commCt = dbGet("SELECT COUNT(*) AS c FROM patient_conditions WHERE patient_id=? AND category='communicable'", [patientId]).c;
+  const commCt = d.commCt.get(patientId) || 0;
   if (commCt > 0) flags.push(`<span class="badge" style="background:#dc2626;color:#fff;margin-right:2px;" title="${lang==='ar'?'مرض معدٍ':'Communicable'}">&#9763;</span>`);
 
-  const haiCt = dbGet('SELECT COUNT(*) AS c FROM nosocomial_infections WHERE admission_id=?', [admissionId]).c;
+  const haiCt = d.haiCt.get(admissionId) || 0;
   if (haiCt > 0) flags.push(`<span class="badge" style="background:#fd7e14;color:#fff;margin-right:2px;" title="HAI">&#127861;</span>`);
 
-  const critUnack = dbGet(`SELECT COUNT(*) AS c FROM lab_orders lo LEFT JOIN lab_critical_acks lca ON lo.order_id=lca.order_id WHERE lo.admission_id=? AND lo.is_critical=1 AND lo.status='resulted' AND lca.ack_id IS NULL`, [admissionId]).c;
+  const critUnack = d.critCt.get(admissionId) || 0;
   if (critUnack > 0) flags.push(`<span class="badge" style="background:#dc2626;color:#fff;margin-right:2px;font-weight:700;animation:pulse 1.5s infinite;" title="${lang==='ar'?'نتائج حرجة':'Critical labs'}">&#128680;</span>`);
 
-  const lastVit = dbGet('SELECT recorded_at FROM vitals_log WHERE admission_id=? ORDER BY recorded_at DESC LIMIT 1', [admissionId]);
+  const lastVit = d.lastVit.get(admissionId);
   if (lastVit) {
-    const hoursAgo = (Date.now() - new Date(lastVit.recorded_at).getTime()) / 3600000;
+    const hoursAgo = (Date.now() - new Date(lastVit).getTime()) / 3600000;
     if (hoursAgo >= 4) flags.push(`<span class="badge badge-warning" title="${lang==='ar'?'علامات حيوية متأخرة':'Vitals overdue'}">&#9201; ${Math.floor(hoursAgo)}h</span>`);
   } else {
     flags.push(`<span class="badge badge-warning" title="${lang==='ar'?'لا علامات حيوية':'No vitals'}">&#9201; —</span>`);
@@ -3764,17 +3915,40 @@ function computeNurseAttention(admissionIds, nurseId) {
     });
   }
 
-  // 2. MAR doses due within next hour
-  const nowIso = new Date().toISOString();
-  const inOneHour = new Date(Date.now() + 3600000).toISOString();
-  const dueMar = dbAll(`SELECT mar.mar_id, mar.drug_name, mar.dose, mar.scheduled_time, mar.admission_id, p.full_name_ar, p.full_name_en, p.patient_id, a.bed_number
-    FROM med_admin_records mar
-    JOIN admissions a ON mar.admission_id=a.admission_id
-    JOIN patients p ON a.patient_id=p.patient_id
-    WHERE mar.admission_id IN (${placeholders}) AND mar.status='pending'
-      AND mar.scheduled_time <= ? ORDER BY mar.scheduled_time LIMIT 5`, [...admissionIds, inOneHour]);
-  for (const m of dueMar) {
-    const overdue = new Date(m.scheduled_time) < new Date(nowIso);
+  // 2. Med doses due/overdue — computed from verified orders vs. the last
+  // charted 'given' dose. There is no scheduler writing pending MAR rows
+  // (med_admin_records rows exist only AFTER a nurse charts a dose), so a
+  // status='pending'/scheduled_time query matches nothing, ever.
+  const FREQ_HOURS = { once_daily: 24, twice_daily: 12, three_times_daily: 8,
+    four_times_daily: 6, every_6h: 6, every_8h: 8, every_12h: 12 };
+  const dueRxs = dbAll(`SELECT p.rx_id, p.drug_name, p.dose, p.frequency, p.verified_at, p.admission_id,
+      pt.full_name_ar, pt.full_name_en, pt.patient_id, a.bed_number,
+      (SELECT MAX(administered_at) FROM med_admin_records m
+        WHERE m.prescription_id = p.rx_id AND m.status = 'given') AS last_given
+    FROM prescriptions p
+    JOIN admissions a ON p.admission_id = a.admission_id
+    JOIN patients pt ON a.patient_id = pt.patient_id
+    WHERE p.admission_id IN (${placeholders}) AND p.status IN ('active','dispensed')
+      AND p.verified_at IS NOT NULL AND p.frequency != 'as_needed'`, admissionIds);
+  const nowMs = Date.now();
+  const dueMar = [];
+  for (const m of dueRxs) {
+    const oneTime = m.frequency === 'stat' || m.frequency === 'once';
+    const hrs = FREQ_HOURS[m.frequency];
+    if (!oneTime && !hrs) continue;          // unknown frequency — don't guess a schedule
+    if (oneTime && m.last_given) continue;   // one-time dose already given
+    const lastMs = m.last_given ? Date.parse(m.last_given) : NaN;
+    // Repeat dose due <interval> after the last one; first dose due at
+    // verification (stat = immediately, others get a 1h charting grace).
+    const dueMs = !isNaN(lastMs)
+      ? lastMs + hrs * 3600000
+      : Date.parse(m.verified_at) + (m.frequency === 'stat' ? 0 : 3600000);
+    if (isNaN(dueMs) || dueMs > nowMs + 3600000) continue; // not due within the hour
+    dueMar.push({ ...m, dueMs });
+  }
+  dueMar.sort((a, b) => a.dueMs - b.dueMs);
+  for (const m of dueMar.slice(0, 5)) {
+    const overdue = m.dueMs < nowMs;
     out.push({
       sev: overdue ? 'red' : 'yellow',
       icon: '&#128138;',
@@ -3788,9 +3962,11 @@ function computeNurseAttention(admissionIds, nurseId) {
   // 3. Vitals overdue (>4h since last)
   const fourHoursAgo = new Date(Date.now() - 4 * 3600000).toISOString();
   const stale = dbAll(`SELECT a.admission_id, p.full_name_ar, p.full_name_en, p.patient_id, a.bed_number,
-    (SELECT MAX(recorded_at) FROM vitals_log WHERE admission_id=a.admission_id) AS last_vital
+    MAX(v.recorded_at) AS last_vital
     FROM admissions a JOIN patients p ON a.patient_id=p.patient_id
+    LEFT JOIN vitals_log v ON v.admission_id=a.admission_id
     WHERE a.admission_id IN (${placeholders})
+    GROUP BY a.admission_id
     HAVING last_vital IS NULL OR last_vital < ?
     LIMIT 5`, [...admissionIds, fourHoursAgo]);
   for (const s of stale) {
@@ -3846,8 +4022,8 @@ function renderAttentionWidget(items, lang) {
       ${items.map(it => `<div style="border-left:4px solid ${sevColor[it.sev] || '#888'};padding:8px 10px;background:var(--bg);border-radius:0 6px 6px 0;display:flex;align-items:center;gap:10px;">
         <span style="font-size:1.2rem;">${it.icon}</span>
         <div style="flex:1;min-width:0;">
-          <div style="font-size:0.85rem;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${it.title}</div>
-          <div style="font-size:0.75rem;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${it.subtitle}</div>
+          <div style="font-size:0.85rem;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(it.title)}</div>
+          <div style="font-size:0.75rem;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(it.subtitle)}</div>
         </div>
         <button class="btn btn-sm btn-primary" style="flex-shrink:0;font-size:0.75rem;padding:4px 10px;" onclick="${it.action}">${it.actionLabel} &rarr;</button>
       </div>`).join('')}
@@ -3908,7 +4084,7 @@ function showNurseActions(admissionId, patientId) {
     (SELECT status FROM med_admin_records WHERE prescription_id = p.rx_id ORDER BY administered_at DESC LIMIT 1) AS last_status,
     (SELECT administered_at FROM med_admin_records WHERE prescription_id = p.rx_id ORDER BY administered_at DESC LIMIT 1) AS last_time
     FROM prescriptions p LEFT JOIN drugs d ON p.drug_id = d.drug_id
-    WHERE p.admission_id = ? AND p.status = 'active' ORDER BY p.prescribed_at DESC`, [admissionId]);
+    WHERE p.admission_id = ? AND p.status IN ('active', 'dispensed') ORDER BY p.prescribed_at DESC`, [admissionId]);
   const marHtml = todayMar.length === 0 ? '' : `
     <div class="card mb-3" style="border-left:4px solid #3b82f6;">
       <div class="card-header" style="background:#eff6ff;display:flex;justify-content:space-between;align-items:center;">
@@ -3935,12 +4111,12 @@ function showNurseActions(admissionId, patientId) {
             return `<tr>
               <td><strong>${escapeHtml(m.drug_name)}</strong>${haBadge}</td>
               <td>${escapeHtml(m.dose)}</td>
-              <td>${m.route}</td>
+              <td>${escapeHtml(m.route)}</td>
               <td>${escapeHtml(m.frequency || '—')}</td>
               <td style="font-size:0.78rem;">${m.last_time ? formatDateTime(m.last_time) : '—'}</td>
               <td>${verBadge} ${m.last_status ? `<span class="badge ${lastStatusBadge}">${t('mar_' + m.last_status) || m.last_status}</span>` : ''}</td>
               <td>${m.verified_at
-                ? `<button class="btn btn-sm btn-primary" onclick="showMARLogForm(${m.rx_id}, ${admissionId}, '${escapeHtml(m.drug_name).replace(/'/g,'')}', '${escapeHtml(m.dose).replace(/'/g,'')}', '${m.route}')">${lang === 'ar' ? 'إعطاء' : 'Give'}</button>`
+                ? `<button class="btn btn-sm btn-primary" onclick="showMARLogForm(${m.rx_id}, ${admissionId}, '${jsAttr(m.drug_name)}', '${jsAttr(m.dose)}', '${jsAttr(m.route)}')">${lang === 'ar' ? 'إعطاء' : 'Give'}</button>`
                 : `<button class="btn btn-sm btn-secondary" disabled style="opacity:0.5;cursor:not-allowed;" title="${lang === 'ar' ? 'بانتظار اعتماد الصيدلة' : 'Awaiting pharmacist verify'}">&#128274;</button>`}</td>
             </tr>`;
           }).join('')}</tbody>
@@ -4112,68 +4288,75 @@ async function completeProcedure(code, admissionId) {
 //             patient false-alarms on Scale 1 -> alarm fatigue.
 // CLINICAL: thresholds need MD / informaticist sign-off; the Scale-2 indication
 // is a clinician decision recorded per admission (admissions.news2_scale).
+// Returns { score, red }. `red` is the RCP NEWS2 2017 "red score": ANY single
+// parameter scoring 3 mandates escalation (minimum 1-hourly obs + inform the
+// medical team) even when the aggregate is only 1-4 — previously an isolated
+// RR 8 / HR 40 / SpO2 91 / temp 35.0 / SBP 220 / non-alert consciousness gave a
+// reassuring green toast because only aggregate thresholds drove the alerts.
 function calcNEWS2(sys, hr, temp, o2, rr, onO2, consciousness, scale) {
   scale = (scale === 2) ? 2 : 1;
   let score = 0;
+  let red = false;
+  const add = (pts) => { score += pts; if (pts === 3) red = true; };
   // Respiratory rate (same on both scales)
   if (rr !== null) {
-    if (rr <= 8) score += 3;
-    else if (rr <= 11) score += 1;
-    else if (rr <= 20) score += 0;
-    else if (rr <= 24) score += 2;
-    else score += 3;
+    if (rr <= 8) add(3);
+    else if (rr <= 11) add(1);
+    else if (rr <= 20) add(0);
+    else if (rr <= 24) add(2);
+    else add(3);
   }
   // O2 saturation
   if (o2 !== null) {
     if (scale === 2) {
       // SpO2 Scale 2 (hypercapnic respiratory failure, target 88-92%)
-      if (o2 <= 83) score += 3;
-      else if (o2 <= 85) score += 2;
-      else if (o2 <= 87) score += 1;
-      else if (o2 <= 92) score += 0;
+      if (o2 <= 83) add(3);
+      else if (o2 <= 85) add(2);
+      else if (o2 <= 87) add(1);
+      else if (o2 <= 92) add(0);
       else if (onO2) {                 // 93%+ is scored ONLY on supplemental oxygen
-        if (o2 <= 94) score += 1;
-        else if (o2 <= 96) score += 2;
-        else score += 3;
+        if (o2 <= 94) add(1);
+        else if (o2 <= 96) add(2);
+        else add(3);
       }                                // 93%+ on air -> 0
     } else {
       // SpO2 Scale 1 (default)
-      if (o2 <= 91) score += 3;
-      else if (o2 <= 93) score += 2;
-      else if (o2 <= 95) score += 1;
-      else score += 0;
+      if (o2 <= 91) add(3);
+      else if (o2 <= 93) add(2);
+      else if (o2 <= 95) add(1);
+      else add(0);
     }
   }
-  // On supplemental O2
-  if (onO2) score += 2;
+  // On supplemental O2 (max 2 — can never be a red score)
+  if (onO2) add(2);
   // Systolic BP
   if (sys !== null) {
-    if (sys <= 90) score += 3;
-    else if (sys <= 100) score += 2;
-    else if (sys <= 110) score += 1;
-    else if (sys <= 219) score += 0;
-    else score += 3;
+    if (sys <= 90) add(3);
+    else if (sys <= 100) add(2);
+    else if (sys <= 110) add(1);
+    else if (sys <= 219) add(0);
+    else add(3);
   }
   // Heart rate
   if (hr !== null) {
-    if (hr <= 40) score += 3;
-    else if (hr <= 50) score += 1;
-    else if (hr <= 90) score += 0;
-    else if (hr <= 110) score += 1;
-    else if (hr <= 130) score += 2;
-    else score += 3;
+    if (hr <= 40) add(3);
+    else if (hr <= 50) add(1);
+    else if (hr <= 90) add(0);
+    else if (hr <= 110) add(1);
+    else if (hr <= 130) add(2);
+    else add(3);
   }
   // Consciousness (AVPU)
-  if (consciousness && consciousness !== 'alert') score += 3;
+  if (consciousness && consciousness !== 'alert') add(3);
   // Temperature
   if (temp !== null) {
-    if (temp <= 35.0) score += 3;
-    else if (temp <= 36.0) score += 1;
-    else if (temp <= 38.0) score += 0;
-    else if (temp <= 39.0) score += 1;
-    else score += 2;
+    if (temp <= 35.0) add(3);
+    else if (temp <= 36.0) add(1);
+    else if (temp <= 38.0) add(0);
+    else if (temp <= 39.0) add(1);
+    else add(2);
   }
-  return score;
+  return { score, red };
 }
 
 function calcQSOFA(sys, rr, consciousness) {
@@ -4223,13 +4406,24 @@ async function handleRecordVitals(e, admissionId, patientId) {
   const user = getCurrentUser();
   const patient = dbGet('SELECT * FROM patients WHERE patient_id = ?', [patientId]);
 
-  const sys = parseInt(document.getElementById('nv-sys').value) || null;
-  const dia = parseInt(document.getElementById('nv-dia').value) || null;
-  const hr = parseInt(document.getElementById('nv-hr').value) || null;
-  const temp = parseFloat(document.getElementById('nv-temp').value) || null;
-  const o2 = parseInt(document.getElementById('nv-o2').value) || null;
+  // Parse vitals WITHOUT collapsing 0 to null: `parseInt(...) || null` treated a
+  // charted ZERO (RR 0 = apnoea, HR 0 = asystole, SBP 0 = unobtainable) as "not
+  // measured", so calcNEWS2/calcQSOFA/checkSepsisCriteria skipped the single most
+  // alarming parameter and a peri-arrest patient could get a green "NEWS2: 0"
+  // toast. null now means ONLY "field left empty".
+  const vitalsNum = (id, float) => {
+    const raw = (document.getElementById(id).value || '').trim();
+    if (raw === '') return null;
+    const n = float ? parseFloat(raw) : parseInt(raw, 10);
+    return Number.isNaN(n) ? null : n;
+  };
+  const sys = vitalsNum('nv-sys');
+  const dia = vitalsNum('nv-dia');
+  const hr = vitalsNum('nv-hr');
+  const temp = vitalsNum('nv-temp', true);
+  const o2 = vitalsNum('nv-o2');
   const rbs = document.getElementById('nv-rbs').value || null;
-  const rr = parseInt(document.getElementById('nv-rr').value) || null;
+  const rr = vitalsNum('nv-rr');
   const onO2 = document.getElementById('nv-o2-supp').checked ? 1 : 0;
   const consciousness = document.getElementById('nv-consciousness').value;
   // SpO2 scale: clinician toggle for chronic hypercapnic resp failure (COPD).
@@ -4238,7 +4432,7 @@ async function handleRecordVitals(e, admissionId, patientId) {
   const news2Scale = (scale2El && scale2El.checked) ? 2 : 1;
   dbRun('UPDATE admissions SET news2_scale = ? WHERE admission_id = ?', [news2Scale, admissionId]);
 
-  const news2 = calcNEWS2(sys, hr, temp, o2, rr, onO2, consciousness, news2Scale);
+  const { score: news2, red: news2Red } = calcNEWS2(sys, hr, temp, o2, rr, onO2, consciousness, news2Scale);
   const qsofa = calcQSOFA(sys, rr, consciousness);
 
   dbRun(`INSERT INTO vitals_log (admission_id, recorded_by, recorded_at, bp_systolic, bp_diastolic, heart_rate, temperature, o2_sat, rbs, resp_rate, on_o2, consciousness, news2_score, qsofa_score)
@@ -4246,7 +4440,7 @@ async function handleRecordVitals(e, admissionId, patientId) {
     [admissionId, user.user_id, nowISO(), sys, dia, hr, temp, o2, rbs, rr, onO2, consciousness, news2, qsofa]);
 
   await logAction('VITALS_RECORDED',
-    `Nurse ${user.full_name_en} recorded vitals for patient ${patient.full_name_en || patient.full_name_ar}: BP=${sys||'—'}/${dia||'—'} HR=${hr||'—'} Temp=${temp||'—'} O2=${o2||'—'}% RR=${rr||'—'} NEWS2=${news2} qSOFA=${qsofa}`,
+    `Nurse ${user.full_name_en} recorded vitals for patient ${patient.full_name_en || patient.full_name_ar}: BP=${sys ?? '—'}/${dia ?? '—'} HR=${hr ?? '—'} Temp=${temp ?? '—'} O2=${o2 ?? '—'}% RR=${rr ?? '—'} NEWS2=${news2} qSOFA=${qsofa}`,
     null, patientId, patient.full_name_en || patient.full_name_ar, patient.mrn);
 
   saveDBToIndexedDB();
@@ -4306,6 +4500,21 @@ async function handleRecordVitals(e, admissionId, patientId) {
         <button class="btn btn-primary" onclick="closeModal()">${t('understood')}</button>
       </div>
     `);
+  } else if (news2Red) {
+    // RCP NEWS2 2017 "red score": a 3 in ANY single parameter at aggregate 1-4
+    // is low-MEDIUM risk — minimum 1-hourly observations and the registered
+    // nurse must inform the medical team. Previously this case fell through to
+    // the green success toast.
+    showModal(`
+      <div style="border:3px solid #fd7e14;border-radius:8px;padding:20px;text-align:center;">
+        <div style="font-size:2.5rem;">⚠️</div>
+        <h2 style="color:#fd7e14;">${t('news2_red_title')}</h2>
+        <p>${t('news2_red_body')}</p>
+        <div class="news2-badge news2-medium" style="font-size:1.5rem;margin:12px auto;">NEWS2 = ${news2}</div>
+        <p style="color:#666;font-size:0.9rem;">${t('news2_red_action')}</p>
+        <button class="btn btn-primary" onclick="closeModal()">${t('understood')}</button>
+      </div>
+    `);
   } else {
     showSuccess(t('vitals_recorded') + ` — NEWS2: ${news2}`);
   }
@@ -4333,7 +4542,7 @@ async function handleNursingTask(e, admissionId, patientId) {
 
 function renderNRTasks(main, lang) {
   const session = getCurrentSession();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
   const tasks = dbAll(`SELECT nt.*, p.full_name_ar, p.full_name_en, p.mrn
     FROM nursing_tasks nt
     JOIN admissions a ON nt.admission_id = a.admission_id
@@ -4342,7 +4551,7 @@ function renderNRTasks(main, lang) {
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('my_tasks')}</h1></div>
-    ${tasks.length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : `
+    ${tasks.length === 0 ? `${emptyState()}` : `
     <div class="table-container">
       <table>
         <thead><tr><th>${lang === 'ar' ? 'الاسم' : 'Patient'}</th><th>${lang === 'ar' ? 'المهمة' : 'Task'}</th><th>${t('status')}</th><th>${t('time')}</th></tr></thead>
@@ -4359,7 +4568,7 @@ function renderNRTasks(main, lang) {
 
 function renderNRShift(main, lang) {
   const session = getCurrentSession();
-  const today   = new Date().toISOString().slice(0, 10);
+  const today   = todayISO();
 
   // Pull assigned patients for auto-population of S and B
   const assignments = dbAll(
@@ -4401,7 +4610,7 @@ function renderNRShift(main, lang) {
           <input type="checkbox" class="transfer-cb" data-aid="${a.admission_id}" checked>
           <div style="flex:1;min-width:0;">
             <div style="font-size:0.85rem;font-weight:600;">${escapeHtml(lang === 'ar' ? a.full_name_ar : (a.full_name_en || a.full_name_ar))}</div>
-            <div style="font-size:0.72rem;color:var(--text-secondary);">${a.bed_number || '—'} • ${a.mrn}</div>
+            <div style="font-size:0.72rem;color:var(--text-secondary);">${escapeHtml(a.bed_number || '—')} • ${escapeHtml(a.mrn)}</div>
           </div>
         </label>`).join('')}
       </div>
@@ -4520,7 +4729,7 @@ async function handleShiftTransfer() {
   if (!selected.length) { showError(lang === 'ar' ? 'اختر مريضاً واحداً على الأقل' : 'Select at least one patient'); return; }
 
   const targetNurse = dbGet('SELECT * FROM users WHERE user_id = ?', [toId]);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
   let transferred = 0;
   for (const aid of selected) {
     // Remove the outgoing nurse's assignment for today (if it's the same date)
@@ -4543,7 +4752,7 @@ async function handleSBARHandover(e) {
   const lang  = currentLanguage();
   const user  = getCurrentUser();
   const session = getCurrentSession();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
 
   const assessment     = (document.getElementById('sbar-assessment')?.value || '').trim();
   const recommendation = (document.getElementById('sbar-recommendation')?.value || '').trim();
@@ -4597,7 +4806,7 @@ function renderPHQueue(main, lang) {
     JOIN patients p ON a.patient_id = p.patient_id
     JOIN users u ON rx.doctor_id = u.user_id
     LEFT JOIN users v ON rx.verified_by = v.user_id
-    WHERE rx.status = 'active' ORDER BY rx.prescribed_at DESC`);
+    WHERE rx.status = 'active' AND a.status = 'active' ORDER BY rx.prescribed_at DESC`);
 
   const pending  = rxs.filter(r => !r.verified_at);
   const verified = rxs.filter(r =>  r.verified_at);
@@ -4621,7 +4830,7 @@ function renderPHQueue(main, lang) {
         <div class="stat-label">${lang === 'ar' ? 'جاهزة للصرف' : 'Ready to Dispense'}</div>
       </div>
     </div>
-    ${rxs.length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : `
+    ${rxs.length === 0 ? `${emptyState()}` : `
     <div class="table-container">
       <table>
         <thead><tr>
@@ -4644,11 +4853,11 @@ function renderPHQueue(main, lang) {
           return `<tr>
             <td>${cb}</td>
             <td>${lang === 'ar' ? escapeHtml(rx.full_name_ar) : escapeHtml(rx.full_name_en || rx.full_name_ar)}</td>
-            <td>${rx.mrn}</td>
+            <td>${escapeHtml(rx.mrn)}</td>
             <td><strong>${escapeHtml(rx.drug_name)}</strong></td>
             <td>${escapeHtml(rx.dose)}</td>
-            <td>${rx.route}</td>
-            <td>${rx.frequency}</td>
+            <td>${escapeHtml(rx.route)}</td>
+            <td>${escapeHtml(LANG['freq_' + rx.frequency] ? LANG['freq_' + rx.frequency][lang] : rx.frequency)}</td>
             <td>${lang === 'ar' ? escapeHtml(rx.doc_ar) : escapeHtml(rx.doc_en)}</td>
             <td>${statusBadge}${isVerified && rx.verifier_en ? `<br><small class="text-muted">${lang==='ar'?escapeHtml(rx.verifier_ar):escapeHtml(rx.verifier_en)}</small>` : ''}</td>
             <td>${actionBtn}</td>
@@ -4675,6 +4884,7 @@ function updateBatchCount() {
 
 async function batchVerifyRx() {
   const lang = currentLanguage();
+  if (!requireRole(['pharmacist'], 'batch rx verification')) return;
   const ids = Array.from(document.querySelectorAll('.batch-cb:checked')).map(cb => parseInt(cb.dataset.rxid));
   if (!ids.length) return;
   const user = getCurrentUser();
@@ -4691,9 +4901,11 @@ async function batchVerifyRx() {
     }
   }
   if (flagged.length > 0) {
-    const msg = (lang === 'ar' ? 'تعارض حساسية في:' : 'Allergy conflict in:') + '<ul>' +
-      flagged.map(f => `<li>${escapeHtml(f.patient)} — ${escapeHtml(f.drug)} (${lang === 'ar' ? 'حساس من' : 'allergic to'} ${escapeHtml(f.allergen)})</li>`).join('') + '</ul>' +
-      (lang === 'ar' ? 'سيتم استبعاد هذه الوصفات من التحقق الدفعة. تحقق منها فردياً.' : 'These will be EXCLUDED from batch verify. Verify them individually.');
+    // PLAIN TEXT on purpose: showRedAlert escapeHtml()s the whole message, so
+    // tags or pre-escaped entities here rendered as literal "<ul><li>…&amp;" soup.
+    const msg = (lang === 'ar' ? 'تعارض حساسية في: ' : 'Allergy conflict in: ') +
+      flagged.map(f => `${f.patient} — ${f.drug} (${lang === 'ar' ? 'حساس من' : 'allergic to'} ${f.allergen})`).join(' • ') +
+      ' — ' + (lang === 'ar' ? 'سيتم استبعاد هذه الوصفات من التحقق بالدفعة. تحقق منها فردياً.' : 'These will be EXCLUDED from batch verify. Verify them individually.');
     showRedAlert(msg, async () => {
       const flaggedIds = new Set(flagged.map(f => f.rxId));
       const safeIds = ids.filter(id => !flaggedIds.has(id));
@@ -4723,6 +4935,7 @@ async function _doBatchVerify(ids, user) {
 async function handleVerifyRx(rxId) {
   const lang = currentLanguage();
   const user = getCurrentUser();
+  if (!requireRole(['pharmacist'], 'rx verification')) return;
   const rx = dbGet('SELECT * FROM prescriptions WHERE rx_id = ?', [rxId]);
   if (!rx) return;
   // Prevent double-verify race (B7 fix)
@@ -4739,12 +4952,18 @@ async function handleVerifyRx(rxId) {
     const allergies = dbAll('SELECT * FROM patient_allergies WHERE patient_id = ?', [patient.patient_id]);
     const match = checkDrugAllergy(rx.drug_name, allergies);
     if (match) {
+      // SAFETY: the one-click green button must be the SAFE action (refuse the
+      // conflicting rx back to the doctor). Verifying DESPITE the allergy is the
+      // dangerous override and requires a typed reason (e.g. desensitization
+      // protocol). The previous wiring was inverted — one click verified the
+      // allergic rx with no reason, and the audit row claimed the alert was
+      // "accepted" while the pharmacist had actually pushed the drug through.
       const msg = lang === 'ar'
-        ? `&#9888; تنبيه! المريض ${escapeHtml(patient.full_name_ar)} لديه حساسية من <strong>${escapeHtml(match.allergen)}</strong> — والدواء الموصوف <strong>${escapeHtml(rx.drug_name)}</strong>. هل أنت متأكد من التحقق؟`
-        : `&#9888; ALERT: Patient ${escapeHtml(patient.full_name_en || patient.full_name_ar)} has documented allergy to <strong>${escapeHtml(match.allergen)}</strong> — but prescribed drug is <strong>${escapeHtml(rx.drug_name)}</strong>. Verify anyway?`;
-      requireReasonToDecline(msg, `Pharmacist verify of Rx ${rxId} despite ${match.allergen} allergy`,
-        async () => { /* Accepted = pharmacist confirmed safe (e.g. desensitization protocol) */ await _doVerifyRx(rxId, rx, patient, user, lang); },
-        async (reason) => { /* Declined = pharmacist refuses */ await _doRefuseRx(rxId, rx, patient, user, lang, `Allergy cross-check: ${reason}`); }
+        ? `&#9888; تنبيه! المريض ${escapeHtml(patient.full_name_ar)} لديه حساسية من <strong>${escapeHtml(match.allergen)}</strong> — والدواء الموصوف <strong>${escapeHtml(rx.drug_name)}</strong>.<br>«تم» = رفض الوصفة وإعادتها للطبيب (الإجراء الآمن). «تجاوز» = التحقق رغم الحساسية — يتطلب ذكر السبب.`
+        : `&#9888; ALERT: Patient ${escapeHtml(patient.full_name_en || patient.full_name_ar)} has documented allergy to <strong>${escapeHtml(match.allergen)}</strong> — but prescribed drug is <strong>${escapeHtml(rx.drug_name)}</strong>.<br>"Done" = refuse this rx back to the doctor (safe action). "Override" = verify DESPITE the allergy — requires a reason.`;
+      requireReasonToDecline(msg, `Allergy conflict on Rx ${rxId}: ${match.allergen} vs ${rx.drug_name}`,
+        async () => { /* one-click safe default: refuse back to prescriber */ await _doRefuseRx(rxId, rx, patient, user, lang, `Allergy conflict: ${match.allergen} vs ${rx.drug_name} — refused at pharmacist verification`); },
+        async (reason) => { /* override-with-reason: verify despite allergy */ await _doVerifyRx(rxId, rx, patient, user, lang); }
       );
       return;
     }
@@ -4766,6 +4985,7 @@ async function _doVerifyRx(rxId, rx, patient, user, lang) {
 async function handleRefuseRx(rxId) {
   const lang = currentLanguage();
   const user = getCurrentUser();
+  if (!requireRole(['pharmacist'], 'rx refusal')) return;
   const rx = dbGet('SELECT * FROM prescriptions WHERE rx_id = ?', [rxId]);
   if (!rx) return;
   const patient = dbGet(`SELECT p.* FROM prescriptions rx JOIN admissions a ON rx.admission_id=a.admission_id JOIN patients p ON a.patient_id=p.patient_id WHERE rx.rx_id=?`, [rxId]);
@@ -4777,7 +4997,7 @@ async function handleRefuseRx(rxId) {
       <div style="padding:20px;">
         <h3 style="color:#dc2626;margin-bottom:10px;">${lang === 'ar' ? 'رفض الوصفة' : 'Refuse Prescription'}</h3>
         <div style="background:#fef2f2;padding:10px;border-radius:6px;margin-bottom:14px;font-size:0.88rem;">
-          <strong>${escapeHtml(rx.drug_name)} ${escapeHtml(rx.dose)} ${rx.route}</strong><br>
+          <strong>${escapeHtml(rx.drug_name)} ${escapeHtml(rx.dose)} ${escapeHtml(rx.route)}</strong><br>
           <span style="color:#666;">${lang === 'ar' ? 'للمريض' : 'For'}: ${escapeHtml(patient ? (lang === 'ar' ? patient.full_name_ar : (patient.full_name_en || patient.full_name_ar)) : '—')}</span>
         </div>
         <label style="font-size:0.85rem;font-weight:600;">${lang === 'ar' ? 'سبب الرفض' : 'Reason for refusal'} *</label>
@@ -4824,6 +5044,7 @@ async function handleDispense(rxId) {
   const lang = currentLanguage();
   const user = getCurrentUser();
   if (!user) { showError(lang === 'ar' ? 'انتهت الجلسة' : 'Session expired'); return; }
+  if (!requireRole(['pharmacist'], 'dispensing')) return;
 
   const rx = dbGet(`SELECT rx.*, p.*, a.admission_id FROM prescriptions rx
     JOIN admissions a ON rx.admission_id = a.admission_id JOIN patients p ON a.patient_id = p.patient_id WHERE rx.rx_id = ?`, [rxId]);
@@ -4858,6 +5079,15 @@ async function handleDispense(rxId) {
     return;
   }
 
+  // CLAIM the rx first, atomically (status guard in the UPDATE): in a
+  // double-click or two-pharmacist race the loser matches 0 rows and bails
+  // here — BEFORE deducting stock or writing a second dispensing_log row.
+  dbRun(`UPDATE prescriptions SET status = 'dispensed' WHERE rx_id = ? AND status = 'active'`, [rxId]);
+  if (!dbChanges()) {
+    showError(lang === 'ar' ? 'تم صرف هذه الوصفة بالفعل' : 'This prescription has already been dispensed');
+    return;
+  }
+
   // Deduct stock (with floor at 0)
   if (drug) {
     const newQty = Math.max(0, drug.stock_qty - 1);
@@ -4869,9 +5099,6 @@ async function handleDispense(rxId) {
   // Log dispensing
   dbRun('INSERT INTO dispensing_log (prescription_id, drug_id, patient_id, qty_dispensed, dispensed_by, dispensed_at) VALUES (?, ?, ?, ?, ?, ?)',
     [rxId, rx.drug_id, rx.patient_id, 1, user.user_id, nowISO()]);
-
-  // Mark prescription as dispensed (prevents double-dispense)
-  dbRun(`UPDATE prescriptions SET status = 'dispensed' WHERE rx_id = ?`, [rxId]);
 
   await logAction('DRUG_DISPENSED',
     `Pharmacist ${user.full_name_en} dispensed 1 ${drug ? drug.unit : 'unit'} of ${rx.drug_name} for patient ${rx.full_name_en || rx.full_name_ar}`,
@@ -4959,7 +5186,7 @@ function renderPHLog(main, lang) {
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('dispensing_log')}</h1></div>
-    ${logs.length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : `
+    ${logs.length === 0 ? `${emptyState()}` : `
     <div class="table-container">
       <table>
         <thead><tr><th>${t('date')}</th><th>${t('drug_name')}</th><th>${t('patient_col')}</th><th>${t('mrn')}</th><th>${lang === 'ar' ? 'الصيدلاني' : 'Pharmacist'}</th><th>${t('quantity')}</th></tr></thead>
@@ -4984,11 +5211,11 @@ function renderLTPending(main, lang) {
   const collected = dbAll(`SELECT lo.*, p.full_name_ar, p.full_name_en, p.mrn, u.full_name_en as nurse_en, u.full_name_ar as nurse_ar
     FROM lab_orders lo JOIN admissions a ON lo.admission_id = a.admission_id JOIN patients p ON a.patient_id = p.patient_id
     LEFT JOIN users u ON lo.collected_by = u.user_id
-    WHERE lo.status = 'collected' AND (lo.category IS NULL OR lo.category != 'radiology' AND lo.category != 'cardiology') ORDER BY CASE lo.priority WHEN 'stat' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, lo.collected_at`);
+    WHERE lo.status = 'collected' AND a.status = 'active' AND (lo.category IS NULL OR lo.category != 'radiology' AND lo.category != 'cardiology') ORDER BY CASE lo.priority WHEN 'stat' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, lo.collected_at`);
 
   const received = dbAll(`SELECT lo.*, p.full_name_ar, p.full_name_en, p.mrn
     FROM lab_orders lo JOIN admissions a ON lo.admission_id = a.admission_id JOIN patients p ON a.patient_id = p.patient_id
-    WHERE lo.status = 'received' AND (lo.category IS NULL OR lo.category != 'radiology' AND lo.category != 'cardiology') ORDER BY CASE lo.priority WHEN 'stat' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, lo.received_at`);
+    WHERE lo.status = 'received' AND a.status = 'active' AND (lo.category IS NULL OR lo.category != 'radiology' AND lo.category != 'cardiology') ORDER BY CASE lo.priority WHEN 'stat' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, lo.received_at`);
 
   main.innerHTML = `
     <div class="page-header">
@@ -5029,7 +5256,7 @@ function renderLTPending(main, lang) {
       </tr>`;
     }).join('')}</tbody></table></div></div>` : ''}
 
-    ${collected.length === 0 && received.length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : ''}
+    ${collected.length === 0 && received.length === 0 ? `${emptyState()}` : ''}
   `;
 }
 
@@ -5225,11 +5452,11 @@ function showLabResultForm(orderId) {
 function renderLTResults(main, lang) {
   const received = dbAll(`SELECT lo.*, p.full_name_ar, p.full_name_en, p.mrn
     FROM lab_orders lo JOIN admissions a ON lo.admission_id = a.admission_id JOIN patients p ON a.patient_id = p.patient_id
-    WHERE lo.status = 'received' AND (lo.category IS NULL OR lo.category != 'radiology' AND lo.category != 'cardiology') ORDER BY CASE lo.priority WHEN 'stat' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, lo.received_at`);
+    WHERE lo.status = 'received' AND a.status = 'active' AND (lo.category IS NULL OR lo.category != 'radiology' AND lo.category != 'cardiology') ORDER BY CASE lo.priority WHEN 'stat' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, lo.received_at`);
 
   const cardiology = dbAll(`SELECT lo.*, p.full_name_ar, p.full_name_en, p.mrn
     FROM lab_orders lo JOIN admissions a ON lo.admission_id = a.admission_id JOIN patients p ON a.patient_id = p.patient_id
-    WHERE lo.status = 'received' AND lo.category = 'cardiology' ORDER BY CASE lo.priority WHEN 'stat' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, lo.received_at`);
+    WHERE lo.status = 'received' AND lo.category = 'cardiology' AND a.status = 'active' ORDER BY CASE lo.priority WHEN 'stat' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, lo.received_at`);
 
   const renderTable = (items, isCardiology) => {
     if (!items.length) return '';
@@ -5258,7 +5485,7 @@ function renderLTResults(main, lang) {
     ${received.length > 0 ? `
       <h3 style="margin-bottom:8px;">${lang === 'ar' ? 'تحاليل مستلمة — انتظار الإدخال' : 'Received Samples — Awaiting Results'}</h3>
       ${renderTable(received, false)}` : ''}
-    ${!received.length && !cardiology.length ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : ''}
+    ${!received.length && !cardiology.length ? `${emptyState()}` : ''}
   `;
 }
 
@@ -5363,7 +5590,7 @@ function renderLTHistory(main, lang) {
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('lab_history')}</h1></div>
-    ${results.length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : `
+    ${results.length === 0 ? `${emptyState()}` : `
     <div class="table-container"><table><thead><tr>
       <th>${t('date')}</th><th>${t('patient_col')}</th><th>${t('lab_test_name')}</th>
       <th>${t('lab_result_value')}</th><th>${lang === 'ar' ? 'المرجع' : 'Reference'}</th>
@@ -5417,6 +5644,10 @@ function showLabDetails(orderId) {
 // ============================================================
 
 function renderTNArrivals(main, lang) {
+  // Returning to the arrivals board means any in-flight conversion was
+  // abandoned — drop the stale prefill so a later unrelated registration can't
+  // accidentally consume it and mark the wrong arrival converted.
+  try { sessionStorage.removeItem('arrival_prefill'); } catch (e) {}
   const arrivals = dbAll(`SELECT a.*, u.full_name_en as creator_en, u.full_name_ar as creator_ar
     FROM incoming_arrivals a LEFT JOIN users u ON a.created_by = u.user_id
     WHERE a.status = 'pending' ORDER BY
@@ -5445,7 +5676,7 @@ function renderTNArrivals(main, lang) {
     </p>
     <div id="tn-add-arrival"></div>
     ${arrivals.length === 0
-      ? `<div class="empty-state"><p>${lang === 'ar' ? 'لا توجد حالات وصول قادمة. اضغط "تسجيل وصول قادم" عند تلقي اتصال.' : 'No incoming arrivals. Press "Pre-Register Arrival" when notified.'}</p></div>`
+      ? `${emptyState(lang === 'ar' ? 'لا توجد حالات وصول قادمة. اضغط "تسجيل وصول قادم" عند تلقي اتصال.' : 'No incoming arrivals. Press "Pre-Register Arrival" when notified.')}`
       : `<div class="table-container"><table>
           <thead><tr>
             <th>${sevBadge('').replace(/<[^>]+>/g, '') ? lang === 'ar' ? 'الخطورة' : 'Severity' : ''}</th>
@@ -5561,10 +5792,16 @@ async function handleAddArrival(e) {
       LIMIT 50`);
     let paged = 0;
     for (const member of team) {
-      // Use a system_notifications-style row via portal_messages with from_type='system' (legacy table reuse — patient_id = arrival_id as locator)
+      // Staff page rides portal_messages with the SENTINEL patient_id 0 (no real
+      // patient can have id 0 — AUTOINCREMENT starts at 1). It was previously
+      // keyed by member.user_id, and since users/patients use independent id
+      // sequences, any patient whose patient_id collided with a staff user_id
+      // saw the full clinical page (label/age/complaint/notes) in their own
+      // portal inbox. The staff inbox itself routes by the [→ user:N] subject
+      // tag, not patient_id, so the sentinel changes nothing for staff.
       dbRun(`INSERT INTO portal_messages (patient_id, from_type, from_id, subject, body, sent_at)
-        VALUES (?, 'system', ?, ?, ?, ?)`,
-        [member.user_id, user.user_id, subject + ' [→ user:' + member.user_id + ']', body, nowISO()]);
+        VALUES (0, 'system', ?, ?, ?, ?)`,
+        [user.user_id, subject + ' [→ user:' + member.user_id + ']', body, nowISO()]);
       paged++;
     }
     await logAction('TEAM_PAGED',
@@ -5609,24 +5846,34 @@ async function convertArrivalToPatient(arrivalId) {
       const dispEl = document.getElementById('reg-disposition');
       if (dispEl) dispEl.value = (lang === 'ar' ? 'ملاحظات المسعف: ' : 'Paramedic notes: ') + ar.paramedic_notes;
     }
-    // Mark the arrival as converting (will be finalized when registration succeeds)
-    dbRun(`UPDATE incoming_arrivals SET status = 'converting' WHERE arrival_id = ?`, [arrivalId]);
-    saveDBToIndexedDB();
+    // NOTE: do NOT change the arrival's status here. It used to be set to
+    // 'converting' the moment this button was clicked, but nothing ever
+    // finalized it — renderTNArrivals lists only status='pending' and no view
+    // shows 'converting' — so an abandoned registration (validation error,
+    // bed conflict, mis-click, nurse pulled away) permanently removed an
+    // incoming critical patient from the triage board. The row now stays
+    // 'pending' until doRegisterPatient succeeds and marks it 'converted'.
     showSuccess(lang === 'ar' ? 'تم نقل البيانات إلى نموذج التسجيل' : 'Arrival data loaded into registration form');
   }, 300);
 }
 
 function renderTNQueue(main, lang) {
-  // Patients registered but not yet seen by ER doctor
+  // Patients registered but not yet seen by ER doctor.
+  // Sort/display by the REAL nurse-selected ESI (admissions.triage_level,
+  // 1 = most urgent). The old board showed a fabricated "ESI" computed as
+  // 6 − complexity_score (a comorbidity heuristic), which inverted acuity for
+  // the dangerous case — an acutely sick walk-in with no charted comorbidities
+  // displayed as green "ESI 5" and sorted to the bottom. The COALESCE keeps a
+  // sensible order for pre-fix admissions that have no stored triage_level.
   const waiting = dbAll(`SELECT a.*, p.full_name_ar, p.full_name_en, p.mrn, p.patient_id,
     (SELECT MIN(c.created_at) FROM consultations c WHERE c.admission_id = a.admission_id) as first_consult
     FROM admissions a JOIN patients p ON a.patient_id = p.patient_id
-    WHERE a.status = 'active' AND a.dept_id IN (SELECT dept_id FROM departments WHERE LOWER(name_en) LIKE '%emergency%' OR LOWER(name_en) LIKE '%er%')
-    ORDER BY a.complexity_score DESC, a.admitted_at ASC`);
+    WHERE a.status = 'active' AND a.dept_id IN (SELECT dept_id FROM departments WHERE type = 'emergency' OR LOWER(name_en) LIKE '%emergency%')
+    ORDER BY COALESCE(a.triage_level, 6 - a.complexity_score) ASC, a.admitted_at ASC`);
 
   main.innerHTML = `
     <div class="page-header"><h1>${lang === 'ar' ? 'قائمة انتظار الفرز' : 'Triage Waiting Queue'}</h1></div>
-    ${waiting.length === 0 ? `<div class="empty-state"><p>${lang === 'ar' ? 'لا يوجد منتظرون' : 'No patients waiting'}</p></div>`
+    ${waiting.length === 0 ? `${emptyState(lang === 'ar' ? 'لا يوجد منتظرون' : 'No patients waiting')}`
     : `<div class="table-container"><table>
         <thead><tr>
           <th>ESI</th>
@@ -5638,9 +5885,12 @@ function renderTNQueue(main, lang) {
         </tr></thead>
         <tbody>${waiting.map(w => {
           const waitMin = Math.floor((Date.now() - new Date(w.admitted_at).getTime()) / 60000);
-          const esiColor = w.complexity_score >= 4 ? '#dc2626' : w.complexity_score === 3 ? '#f59e0b' : '#10b981';
+          // Color keys on the ESI itself: 1-2 red (resuscitation/emergent),
+          // 3 amber, 4-5 green. '?' for pre-fix rows with no stored ESI.
+          const esi = w.triage_level || null;
+          const esiColor = esi === null ? '#6b7280' : esi <= 2 ? '#dc2626' : esi === 3 ? '#f59e0b' : '#10b981';
           return `<tr>
-            <td><span class="badge" style="background:${esiColor};color:#fff;">${6 - w.complexity_score}</span></td>
+            <td><span class="badge" style="background:${esiColor};color:#fff;">${esi ?? '?'}</span></td>
             <td>${lang === 'ar' ? escapeHtml(w.full_name_ar) : escapeHtml(w.full_name_en || w.full_name_ar)}</td>
             <td>${w.mrn}</td>
             <td>${escapeHtml(w.chief_complaint || '—')}</td>
@@ -5660,11 +5910,11 @@ function renderRadPending(main, lang) {
     doc.full_name_en as doc_en, doc.full_name_ar as doc_ar
     FROM lab_orders lo JOIN admissions a ON lo.admission_id = a.admission_id JOIN patients p ON a.patient_id = p.patient_id
     LEFT JOIN users doc ON lo.doctor_id = doc.user_id
-    WHERE lo.category = 'radiology' AND lo.status IN ('ordered','collected','received') ORDER BY CASE lo.priority WHEN 'stat' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, lo.ordered_at`);
+    WHERE lo.category = 'radiology' AND lo.status IN ('ordered','collected','received') AND a.status = 'active' ORDER BY CASE lo.priority WHEN 'stat' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END, lo.ordered_at`);
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('rad_pending')}</h1></div>
-    ${pending.length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : `
+    ${pending.length === 0 ? `${emptyState()}` : `
     <div class="table-container"><table><thead><tr><th>${t('patient_col')}</th><th>${t('mrn')}</th><th>${t('lab_test_name')}</th><th>${t('lab_priority')}</th><th>${t('lab_prep_notes')}</th><th>${t('status')}</th><th>${t('actions')}</th></tr></thead>
     <tbody>${pending.map(l => {
       const priBadge = l.priority === 'stat' ? 'badge-danger' : l.priority === 'urgent' ? 'badge-warning' : 'badge-neutral';
@@ -5746,7 +5996,7 @@ function renderRadResults(main, lang) {
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('rad_results')}</h1></div>
-    ${results.length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : `
+    ${results.length === 0 ? `${emptyState()}` : `
     <div class="table-container"><table><thead><tr><th>${t('date')}</th><th>${t('patient_col')}</th><th>${t('lab_test_name')}</th><th>${t('rad_report')}</th><th>${t('lab_result_flag')}</th></tr></thead>
     <tbody>${results.map(l => {
       const flag = l.result_flag || 'normal';
@@ -5841,7 +6091,7 @@ function handleVisitDone(visitId) {
 }
 
 function renderRCPRegister(main, lang) {
-  const depts = dbAll(`SELECT dept_id, name_ar, name_en FROM departments WHERE type='clinical' ORDER BY name_en`);
+  const depts = dbAll(`SELECT dept_id, name_ar, name_en FROM departments WHERE type NOT IN ('admin','support') ORDER BY name_en`);
   const deptOpts = depts.map(d=>`<option value="${d.dept_id}">${escapeHtml(lang==='ar'?d.name_ar:d.name_en)}</option>`).join('');
 
   main.innerHTML = `
@@ -5965,42 +6215,6 @@ async function handleRCPRegister(e) {
   navigateTo('rcp-queue');
 }
 
-function renderRCPDone(main, lang) {
-  const visits = dbAll(`
-    SELECT v.*, d.name_en as dept_en, d.name_ar as dept_ar
-    FROM outpatient_visits v
-    LEFT JOIN departments d ON v.dept_id = d.dept_id
-    WHERE v.status = 'done'
-    ORDER BY v.registered_at DESC
-    LIMIT 50
-  `);
-
-  const rows = visits.map(v=>`
-    <tr>
-      <td>${escapeHtml(lang==='ar'?v.patient_name_ar:v.patient_name_en)}</td>
-      <td>${escapeHtml(v.national_id||'—')}</td>
-      <td>${escapeHtml(lang==='ar'?(v.dept_ar||'—'):(v.dept_en||'—'))}</td>
-      <td>${escapeHtml(v.chief_complaint||'—')}</td>
-      <td>${escapeHtml(v.registered_at.substring(0,16).replace('T',' '))}</td>
-    </tr>
-  `).join('');
-
-  main.innerHTML = `
-    <h1>${lang==='ar'?'الزيارات المكتملة':'Completed Visits'}</h1>
-    ${visits.length===0?`<div class="empty-state"><div class="empty-icon">📋</div><p>${lang==='ar'?'لا توجد زيارات مكتملة':'No completed visits'}</p></div>`:`
-    <table class="data-table">
-      <thead><tr>
-        <th>${lang==='ar'?'المريض':'Patient'}</th>
-        <th>${lang==='ar'?'الهوية':'ID'}</th>
-        <th>${lang==='ar'?'القسم':'Dept'}</th>
-        <th>${lang==='ar'?'الشكوى':'Complaint'}</th>
-        <th>${lang==='ar'?'الوقت':'Time'}</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`}
-  `;
-}
-
 // ============================================================
 // DOCTOR — Discharge Summary
 // ============================================================
@@ -6020,7 +6234,7 @@ function renderDocDischarge(main, lang) {
 
   main.innerHTML = `
     <div class="page-header"><h1>${lang==='ar'?'ملخص التخريج':'Discharge Summary'}</h1></div>
-    ${activePatients.length === 0 ? `<div class="empty-state"><p>${lang==='ar'?'لا يوجد مرضى منومون حالياً':'No admitted patients'}</p></div>` : `
+    ${activePatients.length === 0 ? `${emptyState(lang==='ar'?'لا يوجد مرضى منومون حالياً':'No admitted patients')}` : `
     <div class="hint-box" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px;margin-bottom:1rem">
       <strong>${lang==='ar'?'💡 تذكير:':'💡 Reminder:'}</strong>
       ${lang==='ar'?'ملخص التخريج وثيقة طبية رسمية. تأكد من اكتمال كل الحقول قبل تخريج المريض.':'The discharge summary is an official medical document. Ensure all fields are complete before discharging.'}
@@ -6192,7 +6406,7 @@ function renderBedManagement(main, lang) {
     <div class="stat-cards">
       <div class="stat-card"><div class="stat-value">${total}</div><div class="stat-label">${lang==='ar'?'أسرة مشغولة':'Occupied Beds'}</div></div>
     </div>
-    ${total === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` : deptSections}
+    ${total === 0 ? `${emptyState()}` : deptSections}
   `;
 }
 
@@ -6205,10 +6419,21 @@ async function handleBedDischarge(admissionId) {
   showConfirm(lang==='ar'?'هل تريد تخريج هذا المريض؟':'Discharge this patient?', async () => {
     const user = getCurrentUser();
     const admission = dbGet('SELECT a.*, p.full_name_en, p.full_name_ar, p.mrn, p.patient_id FROM admissions a JOIN patients p ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [admissionId]);
+    // Order reconciliation — mirrors the doctor discharge flow. The bed-board
+    // shortcut used to flip status only, leaving active prescriptions and
+    // pending lab/imaging orders LIVE in the pharmacist/lab/radiology worklists:
+    // staff got dispatched for patients who had already left, and results could
+    // be filed against a closed admission nobody follows.
+    const activeRx    = dbGet(`SELECT COUNT(*) c FROM prescriptions WHERE admission_id = ? AND status = 'active'`, [admissionId])?.c || 0;
+    const pendingLabs = dbGet(`SELECT COUNT(*) c FROM lab_orders WHERE admission_id = ? AND status IN ('ordered','collected','received')`, [admissionId])?.c || 0;
+    if (activeRx > 0)    dbRun(`UPDATE prescriptions SET status = 'discontinued' WHERE admission_id = ? AND status = 'active'`, [admissionId]);
+    if (pendingLabs > 0) dbRun(`UPDATE lab_orders SET status = 'cancelled' WHERE admission_id = ? AND status IN ('ordered','collected','received')`, [admissionId]);
+    dbRun(`UPDATE nursing_tasks SET status = 'cancelled' WHERE admission_id = ? AND status = 'pending'`, [admissionId]);
     dbRun(`UPDATE admissions SET status='discharged', discharged_at=? WHERE admission_id=?`, [nowISO(), admissionId]);
     if (admission) {
       await logAction('PATIENT_DISCHARGED',
-        `${user.full_name_en} discharged patient ${admission.full_name_en||admission.full_name_ar} from bed ${admission.bed_number}`,
+        `${user.full_name_en} discharged patient ${admission.full_name_en||admission.full_name_ar} from bed ${admission.bed_number}` +
+        (activeRx || pendingLabs ? ` (auto-reconciled: ${activeRx} active Rx discontinued, ${pendingLabs} pending orders cancelled)` : ''),
         null, admission.patient_id, admission.full_name_en||admission.full_name_ar, admission.mrn);
     }
     showSuccess(lang==='ar'?'تم تخريج المريض':'Patient discharged');
@@ -6222,7 +6447,7 @@ async function handleBedDischarge(admissionId) {
 // ============================================================
 
 function renderRCPAppointments(main, lang) {
-  const today = new Date().toISOString().substring(0,10);
+  const today = todayISO();
   const appts = dbAll(`
     SELECT a.*, d.name_en as dept_en, d.name_ar as dept_ar,
            u.full_name_en as doc_en, u.full_name_ar as doc_ar
@@ -6245,7 +6470,7 @@ function renderRCPAppointments(main, lang) {
       <button class="btn btn-primary" onclick="showApptForm()">${lang==='ar'?'+ موعد جديد':'+ New Appointment'}</button>
     </div>
     <div id="appt-form-container"></div>
-    ${appts.length === 0 ? `<div class="empty-state"><p>${lang==='ar'?'لا توجد مواعيد قادمة':'No upcoming appointments'}</p></div>` : `
+    ${appts.length === 0 ? `${emptyState(lang==='ar'?'لا توجد مواعيد قادمة':'No upcoming appointments')}` : `
     <div class="table-container"><table>
       <thead><tr>
         <th>${lang==='ar'?'التاريخ':'Date'}</th>
@@ -6282,9 +6507,9 @@ function renderRCPAppointments(main, lang) {
 
 function showApptForm() {
   const lang = currentLanguage();
-  const depts = dbAll(`SELECT dept_id, name_ar, name_en FROM departments WHERE type='clinical' ORDER BY name_en`);
+  const depts = dbAll(`SELECT dept_id, name_ar, name_en FROM departments WHERE type NOT IN ('admin','support') ORDER BY name_en`);
   const doctors = dbAll(`SELECT user_id, full_name_ar, full_name_en FROM users WHERE role IN ('doctor','consultant') AND is_active=1 ORDER BY full_name_en`);
-  const today = new Date().toISOString().substring(0,10);
+  const today = todayISO();
 
   const deptOpts = `<option value="">${lang==='ar'?'-- اختر القسم --':'-- Select Dept --'}</option>` +
     depts.map(d=>`<option value="${d.dept_id}">${escapeHtml(lang==='ar'?d.name_ar:d.name_en)}</option>`).join('');
@@ -6327,10 +6552,16 @@ async function handleAddAppt(e) {
   const user = getCurrentUser();
   const nameAr = document.getElementById('appt-name-ar').value.trim();
   const nameEn = document.getElementById('appt-name-en').value.trim() || nameAr;
-  dbRun(`INSERT INTO appointments (patient_name_ar, patient_name_en, national_id, phone, dept_id, doctor_id, appt_date, appt_time, reason, created_by, created_at, status)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,'scheduled')`,
-    [nameAr, nameEn,
-     document.getElementById('appt-nid').value.trim()||null,
+  const nid = document.getElementById('appt-nid').value.trim() || null;
+  // Link to a registered patient by national id when possible: the portal's
+  // "My Appointments" matches on strong identifiers only (never name — name
+  // matching leaked same-named patients' visit reasons), so storing the MRN
+  // here keeps reception-booked appointments visible to the right patient.
+  const linked = nid ? dbGet(`SELECT mrn FROM patients WHERE national_id = ?`, [nid]) : null;
+  dbRun(`INSERT INTO appointments (patient_name_ar, patient_name_en, national_id, mrn, phone, dept_id, doctor_id, appt_date, appt_time, reason, created_by, created_at, status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'scheduled')`,
+    [nameAr, nameEn, nid,
+     linked ? linked.mrn : null,
      document.getElementById('appt-phone').value.trim()||null,
      document.getElementById('appt-dept').value,
      document.getElementById('appt-doctor').value||null,
@@ -6361,7 +6592,7 @@ function handleApptCancel(apptId) {
 
 function renderDocAppointments(main, lang) {
   const user = getCurrentUser();
-  const today = new Date().toISOString().substring(0,10);
+  const today = todayISO();
   const appts = dbAll(`
     SELECT a.*, d.name_en as dept_en, d.name_ar as dept_ar
     FROM appointments a
@@ -6372,7 +6603,7 @@ function renderDocAppointments(main, lang) {
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('doc_appointments')}</h1></div>
-    ${appts.length === 0 ? `<div class="empty-state"><p>${lang==='ar'?'لا توجد مواعيد قادمة':'No upcoming appointments'}</p></div>` : `
+    ${appts.length === 0 ? `${emptyState(lang==='ar'?'لا توجد مواعيد قادمة':'No upcoming appointments')}` : `
     <div class="table-container"><table>
       <thead><tr>
         <th>${lang==='ar'?'التاريخ':'Date'}</th>
@@ -6415,7 +6646,7 @@ function renderRCPBilling(main, lang) {
       <button class="btn btn-primary" onclick="showBillingForm()">${lang==='ar'?'+ فاتورة جديدة':'+ New Invoice'}</button>
     </div>
     <div id="billing-form-container"></div>
-    ${invoices.length === 0 ? `<div class="empty-state"><p>${lang==='ar'?'لا توجد فواتير':'No invoices yet'}</p></div>` : `
+    ${invoices.length === 0 ? `${emptyState(lang==='ar'?'لا توجد فواتير':'No invoices yet')}` : `
     <div class="table-container"><table>
       <thead><tr>
         <th>#</th>
@@ -6444,8 +6675,8 @@ function renderRCPBilling(main, lang) {
 
 function showBillingForm() {
   const lang = currentLanguage();
-  const depts = dbAll(`SELECT dept_id, name_ar, name_en FROM departments WHERE type='clinical' ORDER BY name_en`);
-  const today = new Date().toISOString().substring(0,10);
+  const depts = dbAll(`SELECT dept_id, name_ar, name_en FROM departments WHERE type NOT IN ('admin','support') ORDER BY name_en`);
+  const today = todayISO();
 
   const deptOpts = `<option value="">${lang==='ar'?'-- اختر --':'-- Select --'}</option>` +
     depts.map(d=>`<option value="${d.dept_id}">${escapeHtml(lang==='ar'?d.name_ar:d.name_en)}</option>`).join('');
@@ -6604,12 +6835,15 @@ async function handleMarkPaid(invoiceId) {
 // ============================================================
 
 function renderSurgicalSchedule(main, lang, readOnly) {
-  const today = new Date().toISOString().slice(0,10);
+  const today = todayISO();
+  // LEFT JOIN users: an INNER JOIN silently dropped any case whose surgeon_id
+  // didn't resolve (e.g. legacy rows booked with surgeon_id=0), so a consented,
+  // NPO'd patient could vanish from the OR board entirely.
   const cases = dbAll(`SELECT sc.*, p.full_name_ar, p.full_name_en, p.mrn,
     u.full_name_ar as surgeon_ar, u.full_name_en as surgeon_en
     FROM surgical_cases sc
     JOIN patients p ON sc.patient_id = p.patient_id
-    JOIN users u ON sc.surgeon_id = u.user_id
+    LEFT JOIN users u ON sc.surgeon_id = u.user_id
     ORDER BY sc.scheduled_date DESC, sc.scheduled_time`);
 
   const todayCases = cases.filter(c => c.scheduled_date === today);
@@ -6638,25 +6872,30 @@ function renderSurgicalSchedule(main, lang, readOnly) {
       <table><thead><tr>
         <th>${t('patient_name')}</th><th>MRN</th><th>${t('procedure_name')}</th>
         <th>${t('or_room')}</th><th>${t('scheduled_date')}</th><th>${t('scheduled_time')}</th>
-        <th>${t('anesthesia_type')}</th><th>${t('status')}</th>
+        <th>${t('anesthesia_type')}</th><th>${t('pre_op_checklist')}</th><th>${t('status')}</th>
         ${!readOnly ? '<th>'+t('actions')+'</th>' : ''}
       </tr></thead><tbody>
-        ${cases.length ? cases.map(c => `<tr class="surg-status-${c.status}">
-          <td>${lang==='ar'?c.full_name_ar:c.full_name_en}</td>
+        ${cases.length ? cases.map(c => {
+          const ckDone = ['consent_signed','site_marked','npo_verified','blood_type_confirmed','allergies_reviewed'].reduce((s,k)=>s+(c[k]?1:0),0);
+          const ckBadge = `<span class="badge ${ckDone===5?'badge-success':'badge-warning'}">${ckDone}/5</span>`;
+          return `<tr class="surg-status-${c.status}">
+          <td>${escapeHtml(lang==='ar'?c.full_name_ar:c.full_name_en)}</td>
           <td>${c.mrn}</td>
           <td>${escapeHtml(c.procedure_name)}</td>
           <td>${c.or_room}</td>
           <td>${c.scheduled_date}</td>
           <td>${c.scheduled_time}</td>
           <td>${t('anesthesia_'+c.anesthesia_type.toLowerCase()) || c.anesthesia_type}</td>
+          <td>${ckBadge}</td>
           <td>${statusBadge(c.status)}</td>
           ${!readOnly ? `<td>
+            ${(c.status==='scheduled'||c.status==='pre_op') ? `<button class="btn btn-sm btn-secondary" onclick="showSurgeryChecklistForm(${c.case_id})">${t('pre_op_checklist')}</button>` : ''}
             ${c.status==='scheduled' ? `<button class="btn btn-sm btn-warning" onclick="handleUpdateSurgeryStatus(${c.case_id},'pre_op')">${t('start_pre_op')}</button>
               <button class="btn btn-sm btn-danger" onclick="handleUpdateSurgeryStatus(${c.case_id},'cancelled')">${t('cancel_surgery')}</button>` : ''}
             ${c.status==='pre_op' ? `<button class="btn btn-sm btn-danger" onclick="handleUpdateSurgeryStatus(${c.case_id},'in_progress')">${t('begin_surgery')}</button>` : ''}
             ${c.status==='in_progress' ? `<button class="btn btn-sm btn-success" onclick="handleCompleteSurgery(${c.case_id})">${t('complete_surgery')}</button>` : ''}
           </td>` : ''}
-        </tr>`).join('') : `<tr><td colspan="${readOnly?8:9}" class="text-center text-muted">${t('no_data')}</td></tr>`}
+        </tr>`;}).join('') : `<tr><td colspan="${readOnly?9:10}" class="text-center text-muted">${t('no_data')}</td></tr>`}
       </tbody></table>
     </div>
     <div id="surgical-form-area"></div>
@@ -6667,8 +6906,19 @@ function showSurgicalForm() {
   const lang = currentLanguage();
   const patients = dbAll(`SELECT a.admission_id, a.bed_number, p.patient_id, p.full_name_ar, p.full_name_en, p.mrn
     FROM admissions a JOIN patients p ON a.patient_id = p.patient_id WHERE a.status='active' ORDER BY p.full_name_en`);
-  const surgeons = dbAll(`SELECT user_id, full_name_ar, full_name_en FROM users
-    WHERE role IN ('consultant','doctor') AND department_id = 3 AND is_active=1`);
+  // Surgeons: previously hardcoded department_id = 3 — a magic number that only
+  // matches the demo seed's "Surgery" row. With no users in dept 3 the form fell
+  // back to a hidden surgeon_id='' (inserted as 0) and the booked case vanished
+  // from the OR board (INNER JOIN). Look surgical departments up by name, and if
+  // none match, offer ALL active doctors/consultants so the booker chooses.
+  let surgeons = dbAll(`SELECT u.user_id, u.full_name_ar, u.full_name_en FROM users u
+    JOIN departments d ON u.department_id = d.dept_id
+    WHERE u.role IN ('consultant','doctor') AND u.is_active=1
+      AND (LOWER(d.name_en) LIKE '%surg%' OR LOWER(d.name_en) LIKE '%operating%' OR d.name_ar LIKE '%جراح%' OR d.name_ar LIKE '%عمليات%')`);
+  if (!surgeons.length) {
+    surgeons = dbAll(`SELECT user_id, full_name_ar, full_name_en FROM users
+      WHERE role IN ('consultant','doctor') AND is_active=1`);
+  }
 
   const area = document.getElementById('surgical-form-area');
   area.innerHTML = `
@@ -6701,10 +6951,13 @@ function showSurgicalForm() {
           <div class="form-group"><label>${t('estimated_duration')}</label><input type="number" name="duration" value="60" min="15" max="720"></div>
         </div>
         <div class="form-group"><label>${t('pre_op_diagnosis')}</label><textarea name="pre_op_diagnosis" rows="2"></textarea></div>
-        ${surgeons.length > 1 ? `<div class="form-group"><label>${lang==='ar'?'الجراح':'Surgeon'}</label>
-          <select name="surgeon_id">${surgeons.map(s =>
+        ${surgeons.length ? `<div class="form-group"><label>${lang==='ar'?'الجراح':'Surgeon'}</label>
+          <select name="surgeon_id" required>${surgeons.map(s =>
             `<option value="${s.user_id}">${lang==='ar'?escapeHtml(s.full_name_ar):escapeHtml(s.full_name_en)}</option>`).join('')}
-          </select></div>` : `<input type="hidden" name="surgeon_id" value="${surgeons[0]?.user_id || ''}">`}
+          </select></div>`
+        : `<div class="form-group" style="color:var(--danger);font-weight:600">${lang==='ar'
+            ? '⚠ لا يوجد جرّاحون نشطون مسجّلون — أضف طبيباً/استشارياً نشطاً أولاً.'
+            : '⚠ No active surgeons configured — add an active doctor/consultant first.'}</div>`}
         <div class="form-section"><h4>${t('pre_op_checklist')}</h4>
           <div class="pre-op-checklist">
             <label><input type="checkbox" name="consent_signed"><span>${t('consent_signed')}</span></label>
@@ -6737,11 +6990,19 @@ async function handleBookSurgery(e) {
   const lang = currentLanguage();
   const user = getCurrentUser();
   const admRow = dbGet('SELECT patient_id FROM admissions WHERE admission_id=?', [f.admission_id.value]);
+  // Validate the surgeon BEFORE inserting: with no surgeon configured the old
+  // form submitted surgeon_id='' (coerced to 0), the INSERT succeeded (no FK
+  // enforcement client-side), and the case disappeared from every schedule view.
+  const surgeonId = parseInt(f.surgeon_id?.value, 10);
+  if (!surgeonId || !dbGet('SELECT user_id FROM users WHERE user_id=? AND is_active=1', [surgeonId])) {
+    showError(lang==='ar' ? 'اختر جرّاحاً نشطاً صالحاً قبل الحجز.' : 'Select a valid active surgeon before booking.');
+    return;
+  }
   dbRun(`INSERT INTO surgical_cases (patient_id, admission_id, surgeon_id, procedure_name, anesthesia_type, or_room,
     scheduled_date, scheduled_time, estimated_duration_min, pre_op_diagnosis, consent_signed, site_marked, npo_verified,
     blood_type_confirmed, allergies_reviewed, surgical_team_notes, equipment_notes, status, created_by, created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [admRow.patient_id, +f.admission_id.value, +f.surgeon_id.value, f.procedure_name.value, f.anesthesia_type.value,
+    [admRow.patient_id, +f.admission_id.value, surgeonId, f.procedure_name.value, f.anesthesia_type.value,
      f.or_room.value, f.scheduled_date.value, f.scheduled_time.value, +f.duration.value, f.pre_op_diagnosis.value,
      f.consent_signed.checked?1:0, f.site_marked.checked?1:0, f.npo_verified.checked?1:0,
      f.blood_type_confirmed.checked?1:0, f.allergies_reviewed.checked?1:0,
@@ -6752,12 +7013,74 @@ async function handleBookSurgery(e) {
   renderSurgicalSchedule(document.getElementById('main-content'), lang, false);
 }
 
+// The five WHO-style pre-op checklist flags, with display labels.
+const SURGERY_CHECKLIST_FLAGS = [
+  ['consent_signed', 'consent_signed'],
+  ['site_marked', 'site_marked'],
+  ['npo_verified', 'npo_verified'],
+  ['blood_type_confirmed', 'blood_type_confirmed'],
+  ['allergies_reviewed', 'allergies_reviewed'],
+];
+
 async function handleUpdateSurgeryStatus(caseId, newStatus) {
   const lang = currentLanguage();
   const user = getCurrentUser();
+  // STOP-THE-LINE: the checklist flags were stored at booking but never read —
+  // "Begin Surgery" used to succeed with consent_signed=0 and site_marked=0,
+  // defeating the entire purpose of a pre-op safety checklist (wrong-site /
+  // no-consent / aspiration never-events). Block the in_progress transition
+  // until every flag is complete; the Checklist button lets staff complete
+  // flags between booking and incision.
+  if (newStatus === 'in_progress') {
+    const c = dbGet('SELECT * FROM surgical_cases WHERE case_id=?', [caseId]);
+    if (!c) return;
+    const missing = SURGERY_CHECKLIST_FLAGS.filter(([col]) => !c[col]).map(([, key]) => t(key));
+    if (missing.length) {
+      await logAction('SURGERY_START_BLOCKED', `${user.full_name_en} blocked from starting surgery #${caseId}: incomplete checklist (${missing.join(', ')})`);
+      saveDBToIndexedDB();
+      showError((lang === 'ar'
+        ? 'لا يمكن بدء العملية — قائمة التحقق غير مكتملة: '
+        : 'Cannot begin surgery — pre-op checklist incomplete: ') + missing.join(', '));
+      return;
+    }
+  }
   dbRun('UPDATE surgical_cases SET status=? WHERE case_id=?', [newStatus, caseId]);
   await logAction('SURGERY_STATUS_UPDATED', `${user.full_name_en} updated surgery #${caseId} to ${newStatus}`);
   await saveDBToIndexedDB();
+  showSuccess(t('surgery_updated'));
+  renderSurgicalSchedule(document.getElementById('main-content'), lang, false);
+}
+
+// Post-booking checklist editor — previously the five flags were write-once at
+// booking with no way to record consent obtained later, so a case booked before
+// consent could never be corrected (and would now be permanently blocked).
+function showSurgeryChecklistForm(caseId) {
+  const lang = currentLanguage();
+  const c = dbGet('SELECT * FROM surgical_cases WHERE case_id=?', [caseId]);
+  if (!c) return;
+  showModal(`
+    <h2 style="margin-top:0">${t('pre_op_checklist')} — #${caseId}</h2>
+    <div class="pre-op-checklist" style="display:flex;flex-direction:column;gap:8px;margin:12px 0">
+      ${SURGERY_CHECKLIST_FLAGS.map(([col, key]) =>
+        `<label><input type="checkbox" id="sclk-${col}" ${c[col] ? 'checked' : ''}> <span>${t(key)}</span></label>`).join('')}
+    </div>
+    <div class="flex gap-1" style="justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('cancel_btn')}</button>
+      <button class="btn btn-primary" onclick="handleSaveSurgeryChecklist(${caseId})">${lang === 'ar' ? 'حفظ' : 'Save'}</button>
+    </div>
+  `);
+}
+
+async function handleSaveSurgeryChecklist(caseId) {
+  const lang = currentLanguage();
+  const user = getCurrentUser();
+  const vals = SURGERY_CHECKLIST_FLAGS.map(([col]) => document.getElementById('sclk-' + col)?.checked ? 1 : 0);
+  dbRun(`UPDATE surgical_cases SET ${SURGERY_CHECKLIST_FLAGS.map(([col]) => col + '=?').join(', ')} WHERE case_id=?`,
+    [...vals, caseId]);
+  const done = vals.reduce((s, v) => s + v, 0);
+  await logAction('SURGERY_CHECKLIST_UPDATED', `${user.full_name_en} updated pre-op checklist for surgery #${caseId} (${done}/${SURGERY_CHECKLIST_FLAGS.length} complete)`);
+  await saveDBToIndexedDB();
+  closeModal();
   showSuccess(t('surgery_updated'));
   renderSurgicalSchedule(document.getElementById('main-content'), lang, false);
 }
@@ -6818,7 +7141,7 @@ function renderDTOrders(main, lang) {
       <div class="diet-card diet-${o.diet_type.toLowerCase()}">
         <div class="flex justify-between items-center">
           <div>
-            <strong>${lang==='ar'?o.full_name_ar:o.full_name_en}</strong> (${o.mrn})
+            <strong>${escapeHtml(lang==='ar'?o.full_name_ar:o.full_name_en)}</strong> (${o.mrn})
             <span class="badge badge-info">${o.bed_number}</span>
             <span class="badge badge-neutral">${lang==='ar'?o.dept_ar:o.dept_en}</span>
           </div>
@@ -6834,7 +7157,7 @@ function renderDTOrders(main, lang) {
           <button class="btn btn-sm btn-danger" onclick="handleDiscontinueDiet(${o.order_id})">${t('discontinue')}</button>
         </div>
       </div>
-    `).join('') : `<div class="empty-state"><p>${t('no_data')}</p></div>`}
+    `).join('') : `${emptyState()}`}
   `;
 }
 
@@ -6869,7 +7192,7 @@ function renderDTMeals(main, lang) {
         <th>${t('patient_name')}</th><th>MRN</th><th>${t('bed')}</th><th>${t('diet_type')}</th><th>${t('actions')}</th>
       </tr></thead><tbody>
         ${orders.map(o => `<tr>
-          <td>${lang==='ar'?o.full_name_ar:o.full_name_en}</td><td>${o.mrn}</td><td>${o.bed_number}</td>
+          <td>${escapeHtml(lang==='ar'?o.full_name_ar:o.full_name_en)}</td><td>${o.mrn}</td><td>${escapeHtml(o.bed_number)}</td>
           <td><span class="badge ${o.diet_type==='NPO'?'badge-danger':'badge-info'}">${o.diet_type}</span></td>
           <td><button class="btn btn-sm btn-primary" onclick="showMealLogForm(${o.order_id}, ${o.admission_id})">${t('log_meal')}</button></td>
         </tr>`).join('')}
@@ -6883,7 +7206,7 @@ function renderDTMeals(main, lang) {
         <th>${t('intake_percentage')}</th><th>${t('notes')}</th>
       </tr></thead><tbody>
         ${logs.map(l => `<tr>
-          <td>${lang==='ar'?l.pname_ar:l.pname_en}</td>
+          <td>${escapeHtml(lang==='ar'?l.pname_ar:l.pname_en)}</td>
           <td>${t('meal_'+l.meal_type)}</td>
           <td>${escapeHtml(l.items_served||'')}</td>
           <td><span class="intake-${l.intake_pct}">${l.intake_pct}% <span class="intake-bar"><span class="intake-bar-fill"></span></span></span></td>
@@ -6981,7 +7304,7 @@ function renderDTAssessments(main, lang) {
       <th>${t('nutritional_risk')}</th><th>${t('notes')}</th>
     </tr></thead><tbody>
       ${assessments.length ? assessments.map(a => `<tr>
-        <td>${lang==='ar'?a.full_name_ar:a.full_name_en}</td><td>${a.mrn}</td><td>${a.bed_number}</td>
+        <td>${escapeHtml(lang==='ar'?a.full_name_ar:a.full_name_en)}</td><td>${a.mrn}</td><td>${escapeHtml(a.bed_number)}</td>
         <td>${a.weight_kg}</td><td>${a.height_cm}</td>
         <td><strong>${a.bmi ? a.bmi.toFixed(1) : '-'}</strong></td>
         <td><span class="badge ${a.nutritional_risk==='high'?'badge-danger':a.nutritional_risk==='moderate'?'badge-warning':'badge-success'}">${t('risk_'+a.nutritional_risk)}</span></td>
@@ -7092,6 +7415,7 @@ function renderSWCases(main, lang) {
   const highRisk = cases.filter(c => c.risk_level === 'high');
   const medRisk = cases.filter(c => c.risk_level === 'medium');
   const followUp = cases.filter(c => c.follow_up_needed === 1);
+  const contactsByCase = collectSWContacts(cases);
 
   main.innerHTML = `
     <div class="page-header"><h1>${t('sw_cases')}</h1></div>
@@ -7102,13 +7426,13 @@ function renderSWCases(main, lang) {
       <div class="stat-card"><div class="stat-value">${followUp.length}</div><div class="stat-label">${t('needs_follow_up')}</div></div>
     </div>
     ${cases.length ? cases.map(c => {
-      const contacts = dbAll('SELECT * FROM sw_contacts WHERE case_id=? ORDER BY contact_date DESC', [c.case_id]);
+      const contacts = contactsByCase.get(c.case_id) || [];
       const statusMap = { open: 'badge-info', in_progress: 'badge-warning', resolved: 'badge-success', closed: 'badge-neutral' };
       return `
       <div class="sw-case-card risk-${c.risk_level}">
         <div class="flex justify-between items-center flex-wrap">
           <div>
-            <strong style="font-size:1.1rem">${lang==='ar'?c.full_name_ar:c.full_name_en}</strong> (${c.mrn})
+            <strong style="font-size:1.1rem">${escapeHtml(lang==='ar'?c.full_name_ar:c.full_name_en)}</strong> (${c.mrn})
             <span class="badge badge-info">${c.bed_number}</span>
             <span class="badge badge-neutral">${lang==='ar'?c.dept_ar:c.dept_en}</span>
           </div>
@@ -7143,7 +7467,7 @@ function renderSWCases(main, lang) {
         </div>
         <div id="sw-contact-form-${c.case_id}"></div>
       </div>`;
-    }).join('') : `<div class="empty-state"><p>${t('no_data')}</p></div>`}
+    }).join('') : `${emptyState()}`}
   `;
 }
 
@@ -7162,7 +7486,7 @@ function showSWContactForm(caseId) {
               <option value="community">${t('contact_community')}</option>
             </select></div>
           <div class="form-group"><label>${t('scheduled_date')}</label>
-            <input type="date" name="contact_date" value="${new Date().toISOString().slice(0,10)}"></div>
+            <input type="date" name="contact_date" value="${todayISO()}"></div>
         </div>
         <div class="form-group"><label>${t('notes')}</label><textarea name="notes" rows="3" required></textarea></div>
         <button type="submit" class="btn btn-primary">${t('log_contact')}</button>
@@ -7191,7 +7515,7 @@ async function handleSWStatus(caseId, newStatus) {
   dbRun('UPDATE social_work_cases SET status=?, updated_at=? WHERE case_id=?', [newStatus, nowISO(), caseId]);
   await logAction('SW_STATUS_UPDATED', `${user.full_name_en} updated case #${caseId} to ${newStatus}`);
   await saveDBToIndexedDB();
-  showSuccess(t('surgery_updated'));
+  showSuccess(t('sw_status_updated'));
   navigateTo('sw-cases');
 }
 
@@ -7210,7 +7534,7 @@ function renderSWNew(main, lang) {
         <div class="form-group"><label>${t('psychosocial_assessment')}</label>
           <textarea name="psychosocial_assessment" rows="5" required placeholder="${lang==='ar'?'وصف شامل للوضع النفسي والاجتماعي للمريض...':'Comprehensive description of patient psychosocial status...'}"></textarea></div>
         <div class="form-row">
-          <div class="form-group"><label>${t('nutritional_risk')}</label>
+          <div class="form-group"><label>${t('psychosocial_risk')}</label>
             <select name="risk_level">
               <option value="low">${t('risk_low')}</option>
               <option value="medium">${t('risk_moderate')}</option>
@@ -7267,6 +7591,20 @@ async function handleCreateSWCase(e) {
   navigateTo('sw-cases');
 }
 
+// All contacts for a set of SW cases in one query, newest-first per case
+// (was one query per case card).
+function collectSWContacts(cases) {
+  const byCase = new Map();
+  if (!cases.length) return byCase;
+  const ids = cases.map(c => c.case_id);
+  dbAll(`SELECT * FROM sw_contacts WHERE case_id IN (${ids.map(() => '?').join(',')}) ORDER BY contact_date DESC`, ids)
+    .forEach(ct => {
+      if (!byCase.has(ct.case_id)) byCase.set(ct.case_id, []);
+      byCase.get(ct.case_id).push(ct);
+    });
+  return byCase;
+}
+
 function renderSWDischarge(main, lang) {
   const cases = dbAll(`SELECT sw.*, p.full_name_ar, p.full_name_en, p.mrn, a.bed_number,
     d.name_ar as dept_ar, d.name_en as dept_en
@@ -7276,14 +7614,16 @@ function renderSWDischarge(main, lang) {
     WHERE sw.follow_up_needed = 1 AND sw.status IN ('open','in_progress')
     ORDER BY sw.risk_level DESC, sw.created_at`);
 
+  const contactsByCase = collectSWContacts(cases);
+
   main.innerHTML = `
     <div class="page-header"><h1>${t('sw_discharge_plan')}</h1></div>
     ${cases.length ? cases.map(c => {
-      const contacts = dbAll('SELECT * FROM sw_contacts WHERE case_id=? ORDER BY contact_date DESC LIMIT 3', [c.case_id]);
+      const contacts = (contactsByCase.get(c.case_id) || []).slice(0, 3);
       return `
       <div class="sw-case-card risk-${c.risk_level}">
         <div class="flex justify-between items-center">
-          <strong>${lang==='ar'?c.full_name_ar:c.full_name_en}</strong> (${c.mrn}) — ${c.bed_number}
+          <strong>${escapeHtml(lang==='ar'?c.full_name_ar:c.full_name_en)}</strong> (${c.mrn}) — ${escapeHtml(c.bed_number)}
           <span class="badge ${c.risk_level==='high'?'badge-danger':'badge-warning'}">${t('risk_'+c.risk_level)}</span>
         </div>
         ${c.discharge_needs ? `<div class="mt-1"><strong>${t('discharge_needs')}:</strong><p style="font-size:0.875rem">${escapeHtml(c.discharge_needs)}</p></div>` : ''}
@@ -7299,7 +7639,7 @@ function renderSWDischarge(main, lang) {
         </div>
         <div id="sw-contact-form-${c.case_id}"></div>
       </div>`;
-    }).join('') : `<div class="empty-state"><p>${lang==='ar'?'لا توجد حالات تحتاج تخطيط تخريج':'No cases needing discharge planning'}</p></div>`}
+    }).join('') : `${emptyState(lang==='ar'?'لا توجد حالات تحتاج تخطيط تخريج':'No cases needing discharge planning')}`}
   `;
 }
 
@@ -7371,17 +7711,28 @@ async function confirmSWDischargeTransport(caseId, patientId, admissionId) {
   const notes = document.getElementById('swdt-notes').value.trim();
   if (!name || !phone) { showError(lang === 'ar' ? 'الاسم والهاتف مطلوبان' : 'Name and phone required'); return; }
 
-  // Update patient's emergency_contact_* fields so discharge form auto-fills correctly
-  dbRun(`UPDATE patients SET emergency_contact_name = ?, emergency_contact_phone = ?, emergency_contact_relation = ?, emergency_contact = ? WHERE patient_id = ?`,
-    [name, phone, rel || null, `${name} - ${phone}${rel ? ' (' + rel + ')' : ''}`, patientId]);
+  // All three writes together or roll the UI back with an error. The previous
+  // version ALWAYS threw on the third write — the sw_contacts INSERT named a
+  // column (social_worker_id) that does not exist on that table — so the two
+  // UPDATEs above half-applied, no contact-log/audit row was written, the modal
+  // never closed, and each retry appended a duplicate [TRANSPORT PLAN] block.
+  const transportNote = `[TRANSPORT PLAN ${todayISO()}] Mode: ${mode}. Receiver: ${name} (${phone})${rel ? ', ' + rel : ''}.${notes ? ' Notes: ' + notes : ''}`;
+  try {
+    // Update patient's emergency_contact_* fields so discharge form auto-fills correctly
+    dbRun(`UPDATE patients SET emergency_contact_name = ?, emergency_contact_phone = ?, emergency_contact_relation = ?, emergency_contact = ? WHERE patient_id = ?`,
+      [name, phone, rel || null, `${name} - ${phone}${rel ? ' (' + rel + ')' : ''}`, patientId]);
 
-  // Append to SW case discharge_needs as structured note
-  const transportNote = `[TRANSPORT PLAN ${new Date().toISOString().slice(0,10)}] Mode: ${mode}. Receiver: ${name} (${phone})${rel ? ', ' + rel : ''}.${notes ? ' Notes: ' + notes : ''}`;
-  dbRun(`UPDATE social_work_cases SET discharge_needs = COALESCE(discharge_needs || char(10), '') || ? WHERE case_id = ?`, [transportNote, caseId]);
+    // Append to SW case discharge_needs as structured note
+    dbRun(`UPDATE social_work_cases SET discharge_needs = COALESCE(discharge_needs || char(10), '') || ? WHERE case_id = ?`, [transportNote, caseId]);
 
-  // Log contact for audit
-  dbRun(`INSERT INTO sw_contacts (case_id, contact_type, contact_date, notes, social_worker_id) VALUES (?, 'transport_arranged', ?, ?, ?)`,
-    [caseId, nowISO(), transportNote, user.user_id]);
+    // Log contact for audit (schema-correct columns — matches handleLogSWContact)
+    dbRun(`INSERT INTO sw_contacts (case_id, contact_type, contact_date, notes, recorded_by, recorded_at) VALUES (?, 'transport_arranged', ?, ?, ?, ?)`,
+      [caseId, nowISO(), transportNote, user.user_id, nowISO()]);
+  } catch (err) {
+    console.error('Transport plan save failed:', err);
+    showError(lang === 'ar' ? 'فشل حفظ خطة النقل — لم تُسجَّل' : 'Failed to save transport plan — NOT recorded');
+    return;
+  }
 
   await logAction('SW_TRANSPORT_PLANNED',
     `Social worker ${user.full_name_en} arranged discharge transport for case ${caseId} (mode: ${mode}, receiver: ${name})`,
@@ -7414,7 +7765,7 @@ function renderNRMAR(main, lang) {
     JOIN patients pa ON a.patient_id = pa.patient_id
     JOIN users u ON p.doctor_id = u.user_id
     LEFT JOIN users v ON p.verified_by = v.user_id
-    WHERE a.status = 'active' AND p.status = 'active'
+    WHERE a.status = 'active' AND p.status IN ('active', 'dispensed')
       ${deptId ? 'AND a.dept_id = ?' : ''}
     ORDER BY a.bed_number, p.prescribed_at DESC
   `, deptId ? [deptId] : []);
@@ -7427,11 +7778,22 @@ function renderNRMAR(main, lang) {
     byPatient[key].rxs.push(rx);
   }
 
+  // Last administration per prescription, batched in one query (was one
+  // query per rx row in the table loop below).
+  const lastMarByRx = new Map();
+  if (rxRows.length) {
+    const rxIds = rxRows.map(r => r.rx_id);
+    dbAll(`SELECT *, MAX(administered_at) AS _latest FROM med_admin_records
+      WHERE prescription_id IN (${rxIds.map(() => '?').join(',')}) GROUP BY prescription_id`, rxIds)
+      .forEach(r => lastMarByRx.set(r.prescription_id, r));
+  }
+
   // Stats
-  const today = new Date().toISOString().slice(0,10);
-  const givenToday   = dbGet(`SELECT COUNT(*) as c FROM med_admin_records WHERE status='given' AND administered_at LIKE ?`, [today+'%']);
-  const pendingCount = dbGet(`SELECT COUNT(*) as c FROM med_admin_records WHERE status='pending' AND (administered_at IS NULL)`);
-  const heldCount    = dbGet(`SELECT COUNT(*) as c FROM med_admin_records WHERE status='held' AND administered_at LIKE ?`, [today+'%']);
+  const today = todayISO();
+  // Range (not LIKE-prefix) so idx_mar_status_time turns this into a SEARCH —
+  // '~' (0x7E) sorts after 'T' + digits, upper-bounding every same-day ISO stamp.
+  const givenToday   = dbGet(`SELECT COUNT(*) as c FROM med_admin_records WHERE status='given' AND administered_at >= ? AND administered_at < ?`, [today, today+'~']);
+  const heldCount    = dbGet(`SELECT COUNT(*) as c FROM med_admin_records WHERE status='held' AND administered_at >= ? AND administered_at < ?`, [today, today+'~']);
 
   main.innerHTML = `
     <div class="page-header">
@@ -7439,17 +7801,17 @@ function renderNRMAR(main, lang) {
     </div>
     <div class="stat-cards">
       <div class="stat-card"><div class="stat-value text-success">${givenToday ? givenToday.c : 0}</div><div class="stat-label">${t('mar_given_count')}</div></div>
-      <div class="stat-card"><div class="stat-value text-warning">${Object.values(byPatient).reduce((s,p)=>s+p.rxs.length,0)}</div><div class="stat-label">${t('mar_pending_count')}</div></div>
+      <div class="stat-card"><div class="stat-value text-warning">${Object.values(byPatient).reduce((s,p)=>s+p.rxs.length,0)}</div><div class="stat-label">${t('mar_active_orders')}</div></div>
       <div class="stat-card"><div class="stat-value text-danger">${heldCount ? heldCount.c : 0}</div><div class="stat-label">${t('mar_held_count')}</div></div>
     </div>
 
-    ${Object.keys(byPatient).length === 0 ? `<div class="empty-state"><p>${t('no_data')}</p></div>` :
+    ${Object.keys(byPatient).length === 0 ? `${emptyState()}` :
       Object.values(byPatient).map(pt => `
         <div class="mar-patient-block" id="mar-block-${pt.admId}">
           <div class="mar-patient-header">
             <strong>${escapeHtml(pt.name)}</strong>
             <span class="spb-badge spb-bed" style="margin-left:8px">&#128717; ${escapeHtml(pt.bed||'')}</span>
-            <span class="text-muted" style="font-size:0.85rem;margin-left:8px">${pt.mrn}</span>
+            <span class="text-muted" style="font-size:0.85rem;margin-left:8px">${escapeHtml(pt.mrn||'')}</span>
           </div>
           <div class="table-container" style="margin:0">
           <table>
@@ -7464,21 +7826,21 @@ function renderNRMAR(main, lang) {
               <th>${t('actions')}</th>
             </tr></thead>
             <tbody>${pt.rxs.map(rx => {
-              const lastMar = dbGet(`SELECT * FROM med_admin_records WHERE prescription_id=? ORDER BY administered_at DESC LIMIT 1`, [rx.rx_id]);
+              const lastMar = lastMarByRx.get(rx.rx_id);
               const lastStatus = lastMar ? lastMar.status : 'pending';
               const lastTime = lastMar && lastMar.administered_at ? formatDateTime(lastMar.administered_at) : '—';
               const statusBadge = lastStatus === 'given' ? 'badge-success' : lastStatus === 'held' ? 'badge-danger' : lastStatus === 'refused' ? 'badge-warning' : 'badge-neutral';
               const isVerified = !!rx.verified_at;
               const pharmBadge = isVerified
-                ? `<span class="badge badge-success" title="${rx.verifier_en||''}">✓ ${lang==='ar'?'مُعتمد':'Verified'}</span>`
+                ? `<span class="badge badge-success" title="${escapeHtml(rx.verifier_en||'')}">✓ ${lang==='ar'?'مُعتمد':'Verified'}</span>`
                 : `<span class="badge ph-badge-pending">⏳ ${lang==='ar'?'بانتظار الصيدلة':'Awaiting Pharmacy'}</span>`;
               const actionBtn = isVerified
-                ? `<button class="btn btn-sm btn-primary" onclick="showMARLogForm(${rx.rx_id}, ${pt.admId}, '${escapeHtml(rx.drug_name).replace(/'/g,'')}', '${escapeHtml(rx.dose)}', '${rx.route}')">${t('mar_log_btn')}</button>`
+                ? `<button class="btn btn-sm btn-primary" onclick="showMARLogForm(${rx.rx_id}, ${pt.admId}, '${jsAttr(rx.drug_name)}', '${jsAttr(rx.dose)}', '${jsAttr(rx.route)}')">${t('mar_log_btn')}</button>`
                 : `<button class="btn btn-sm btn-secondary" disabled title="${lang==='ar'?'يجب أن يعتمد الصيدلاني أولاً':'Pharmacist must verify first'}" style="cursor:not-allowed;opacity:0.5;">🔒 ${lang==='ar'?'ينتظر':'Locked'}</button>`;
               return `<tr style="${!isVerified?'background:#fff8f8;':''}">
                 <td><strong>${escapeHtml(rx.drug_name)}</strong></td>
                 <td>${escapeHtml(rx.dose)}</td>
-                <td>${rx.route}</td>
+                <td>${escapeHtml(rx.route)}</td>
                 <td style="font-size:0.8rem">${lang==='ar'?escapeHtml(rx.doc_ar):escapeHtml(rx.doc_en)}</td>
                 <td style="font-size:0.8rem">${lastTime}</td>
                 <td><span class="badge ${statusBadge}">${t('mar_'+lastStatus)}</span></td>
@@ -7511,6 +7873,13 @@ function showMARLogForm(rxId, admissionId, drugName, dose, route) {
     ? dbAll(`SELECT user_id, full_name_en, full_name_ar FROM users WHERE role IN ('nurse','senior_nurse') AND is_active = 1 AND user_id != ? ORDER BY full_name_en`, [currentUser ? currentUser.user_id : 0])
     : [];
 
+  // NPSG.01.01.01 — two patient identifiers at the point of medication
+  // administration: full name + MRN + DOB, matched against the wristband
+  // BEFORE charting (room/bed is NOT an acceptable identifier).
+  const marPt = dbGet(`SELECT p.full_name_ar, p.full_name_en, p.mrn, p.date_of_birth
+    FROM admissions a JOIN patients p ON a.patient_id = p.patient_id
+    WHERE a.admission_id = ?`, [admissionId]);
+
   const overlay = document.createElement('div');
   overlay.className = 'alert-overlay';
   const now = new Date();
@@ -7519,7 +7888,14 @@ function showMARLogForm(rxId, admissionId, drugName, dose, route) {
   overlay.innerHTML = `
     <div class="alert-modal" style="max-width:540px">
       <h2>${t('mar_log_btn')}${isHighAlert ? ' ⚠️' : ''}</h2>
-      <p class="text-muted">${escapeHtml(drugName)} — ${escapeHtml(dose)} — ${route}</p>
+      ${marPt ? `<div style="background:#eff6ff;color:#1e3a8a;border-left:4px solid #2563eb;padding:10px 14px;border-radius:6px;margin-bottom:12px;font-size:0.9rem">
+        <strong>${escapeHtml(lang==='ar' ? (marPt.full_name_ar || marPt.full_name_en) : (marPt.full_name_en || marPt.full_name_ar))}</strong><br>
+        <span style="font-family:monospace">${escapeHtml(marPt.mrn || '')}</span> · ${lang==='ar'?'تاريخ الميلاد':'DOB'}: ${escapeHtml(marPt.date_of_birth || '—')}<br>
+        <span style="font-size:0.78rem;color:#1e40af">${lang==='ar'
+          ? '✓ طابق الاسم وتاريخ الميلاد/الرقم الطبي مع سوار المريض قبل الإعطاء'
+          : '✓ Match name + DOB/MRN against the patient wristband before administering'}</span>
+      </div>` : ''}
+      <p class="text-muted">${escapeHtml(drugName)} — ${escapeHtml(dose)} — ${escapeHtml(route)}</p>
       ${isHighAlert ? `<div style="background:#fef2f2;border-left:4px solid #dc2626;padding:10px 14px;border-radius:6px;margin-bottom:12px;font-size:0.88rem;color:#991b1b;">
         <strong>⚠️ ${lang === 'ar' ? 'دواء عالي التحذير' : 'HIGH-ALERT MEDICATION'}</strong><br>
         ${lang === 'ar' ? 'يتطلب توقيع ممرضة ثانية للتحقق المزدوج (إجراء سلامة)' : 'Second-nurse witness required (Joint Commission double-check)'}
@@ -7570,6 +7946,26 @@ function showMARLogForm(rxId, admissionId, drugName, dose, route) {
 async function handleLogMAR(overlay, rxId, admissionId, drugName, dose, route) {
   const user = getCurrentUser();
   if (!user) return;
+
+  // Re-validate at save time, not just when the form was opened: the patient
+  // may have been discharged or the order discontinued/refused while the form
+  // sat open. Also re-read drug/dose/route from the DB so the charted values
+  // can never drift from the order (the args are render-time snapshots).
+  const fresh = dbGet(`SELECT p.rx_id, p.admission_id, p.status, p.verified_at, p.drug_name, p.dose, p.route,
+      a.status AS adm_status
+    FROM prescriptions p JOIN admissions a ON p.admission_id = a.admission_id
+    WHERE p.rx_id = ?`, [rxId]);
+  if (!fresh || fresh.admission_id !== admissionId || !fresh.verified_at
+      || fresh.adm_status !== 'active' || !['active', 'dispensed'].includes(fresh.status)) {
+    overlay.remove();
+    showError(currentLanguage() === 'ar'
+      ? 'تغيّرت حالة الوصفة أو المريض — لا يمكن تسجيل الإعطاء. حدّث الصفحة وراجع الأمر.'
+      : 'This order or admission changed since the form was opened (discharged/discontinued/unverified) — administration not recorded. Refresh and re-check the order.');
+    renderNRMAR(document.getElementById('main-content'), currentLanguage());
+    return;
+  }
+  drugName = fresh.drug_name; dose = fresh.dose; route = fresh.route;
+
   const status = overlay.querySelector('#mar-status').value;
   const timeVal = overlay.querySelector('#mar-time').value;
   const holdReason = overlay.querySelector('#mar-hold-reason') ? overlay.querySelector('#mar-hold-reason').value.trim() : '';
@@ -7701,15 +8097,41 @@ const HIS_CHANNEL = (function() {
   try {
     const ch = new BroadcastChannel('his_live_updates');
     ch.onmessage = function(e) {
-      const { table, view } = e.data || {};
+      const { table, view, type } = e.data || {};
+      // Multi-tab presence handshake (local mode only). Each tab holds its own
+      // sql.js copy and full-DB saves are last-writer-wins — split-tab editing
+      // can silently lose committed writes. Server mode is exempt: one shared
+      // DB behind /api, tabs are just views.
+      if (type === 'tab-hello' || type === 'tab-here') {
+        if (typeof SERVER_MODE !== 'undefined' && SERVER_MODE) return;
+        if (type === 'tab-hello') { try { ch.postMessage({ type: 'tab-here' }); } catch (err) {} }
+        _warnMultiTab();
+        return;
+      }
       handleLiveUpdate(table, view);
     };
+    try { ch.postMessage({ type: 'tab-hello' }); } catch (err) {}
     return ch;
   } catch (err) {
     console.warn('[HIS] BroadcastChannel not supported, live updates disabled');
     return null;
   }
 })();
+
+let _multiTabWarned = false;
+function _warnMultiTab() {
+  if (_multiTabWarned) return;
+  _multiTabWarned = true;
+  const ar = currentLanguage() === 'ar';
+  const banner = document.createElement('div');
+  banner.id = 'multi-tab-warning';
+  banner.setAttribute('style', 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#b91c1c;color:#fff;padding:8px 14px;font-size:0.9rem;display:flex;gap:10px;align-items:center;justify-content:center;');
+  banner.innerHTML = `<span>&#9888; ${ar
+    ? 'OpenWard مفتوح في تبويب آخر — التعديل من تبويبين قد يفقد بيانات محفوظة. استخدم تبويباً واحداً للإدخال.'
+    : 'OpenWard is open in another tab — editing in two tabs can lose saved data. Use ONE tab for data entry.'}</span>
+    <button onclick="this.parentNode.remove()" style="background:transparent;border:1px solid #fff;color:#fff;border-radius:4px;padding:2px 10px;cursor:pointer;">${ar ? 'فهمت' : 'Got it'}</button>`;
+  document.body.appendChild(banner);
+}
 
 function broadcastUpdate(table) {
   if (HIS_CHANNEL) {
@@ -7748,12 +8170,23 @@ function handleLiveUpdate(table, senderView) {
   if (_liveUpdateThrottle) return;
   _liveUpdateThrottle = setTimeout(() => {
     _liveUpdateThrottle = null;
+    // Never yank the view out from under active data entry: a re-render
+    // destroys every in-progress form field. If the user is focused in an
+    // input or a modal/alert is open, show the indicator as a hint only.
+    const ae = document.activeElement;
+    const typing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable);
+    const modalOpen = document.querySelector('.modal-overlay, .alert-overlay');
+
     // Show a subtle refresh indicator
     const indicator = document.createElement('div');
     indicator.className = 'live-update-indicator';
-    indicator.textContent = currentLanguage() === 'ar' ? '🔄 تحديث مباشر' : '🔄 Live update';
+    indicator.textContent = (typing || modalOpen)
+      ? (currentLanguage() === 'ar' ? '🔄 تحديثات متاحة' : '🔄 Updates available')
+      : (currentLanguage() === 'ar' ? '🔄 تحديث مباشر' : '🔄 Live update');
     document.body.appendChild(indicator);
     setTimeout(() => indicator.remove(), 2000);
+
+    if (typing || modalOpen) return;
 
     // Re-render current view
     renderView(currentView);
@@ -7774,13 +8207,14 @@ function renderNRAssessments(main, lang) {
     WHERE a.status='active' AND na.nurse_id=?
     ORDER BY a.bed_number`, [session.user_id]);
 
+  // EXISTS, not JOIN: a patient assigned to this nurse on several shift dates
+  // fanned out to one duplicate history row per nurse_assignments match.
   const recentAssessments = dbAll(`
     SELECT ca.*, p.full_name_ar, p.full_name_en
     FROM clinical_assessments ca
     JOIN admissions a ON ca.admission_id = a.admission_id
     JOIN patients p ON a.patient_id = p.patient_id
-    JOIN nurse_assignments na ON a.admission_id = na.admission_id
-    WHERE na.nurse_id=?
+    WHERE EXISTS (SELECT 1 FROM nurse_assignments na WHERE na.admission_id = a.admission_id AND na.nurse_id = ?)
     ORDER BY ca.assessed_at DESC LIMIT 20`, [session.user_id]);
 
   const riskBadge = (level) => {
@@ -7798,11 +8232,11 @@ function renderNRAssessments(main, lang) {
             <div style="font-weight:600;margin-bottom:6px;">${lang==='ar'?escapeHtml(p.full_name_ar):escapeHtml(p.full_name_en||p.full_name_ar)}</div>
             <div style="color:#666;font-size:0.85rem;margin-bottom:10px;">${t('bed')}: ${p.bed_number} | MRN: ${p.mrn}</div>
             <div style="display:flex;flex-wrap:wrap;gap:6px;">
-              <button class="btn btn-sm btn-primary" onclick="showBradenForm(${p.admission_id}, '${escapeHtml(p.full_name_ar||'')}', '${escapeHtml(p.full_name_en||'')}')">🛏 ${t('braden_scale')}</button>
-              <button class="btn btn-sm btn-warning" onclick="showMorseForm(${p.admission_id}, '${escapeHtml(p.full_name_ar||'')}', '${escapeHtml(p.full_name_en||'')}')">🚶 ${t('morse_fall')}</button>
-              <button class="btn btn-sm btn-info" onclick="showGCSForm(${p.admission_id}, '${escapeHtml(p.full_name_ar||'')}', '${escapeHtml(p.full_name_en||'')}')">🧠 ${t('gcs_scale')}</button>
-              <button class="btn btn-sm btn-secondary" onclick="showPainForm(${p.admission_id}, '${escapeHtml(p.full_name_ar||'')}', '${escapeHtml(p.full_name_en||'')}')">💊 ${t('pain_nrs')}</button>
-              <button class="btn btn-sm btn-success" onclick="showCarePlanForm(${p.admission_id}, '${escapeHtml(p.full_name_ar||'')}', '${escapeHtml(p.full_name_en||'')}')">📋 ${t('care_plan_title')}</button>
+              <button class="btn btn-sm btn-primary" onclick="showBradenForm(${p.admission_id}, '${jsAttr(p.full_name_ar||'')}', '${jsAttr(p.full_name_en||'')}')">🛏 ${t('braden_scale')}</button>
+              <button class="btn btn-sm btn-warning" onclick="showMorseForm(${p.admission_id}, '${jsAttr(p.full_name_ar||'')}', '${jsAttr(p.full_name_en||'')}')">🚶 ${t('morse_fall')}</button>
+              <button class="btn btn-sm btn-info" onclick="showGCSForm(${p.admission_id}, '${jsAttr(p.full_name_ar||'')}', '${jsAttr(p.full_name_en||'')}')">🧠 ${t('gcs_scale')}</button>
+              <button class="btn btn-sm btn-secondary" onclick="showPainForm(${p.admission_id}, '${jsAttr(p.full_name_ar||'')}', '${jsAttr(p.full_name_en||'')}')">💊 ${t('pain_nrs')}</button>
+              <button class="btn btn-sm btn-success" onclick="showCarePlanForm(${p.admission_id}, '${jsAttr(p.full_name_ar||'')}', '${jsAttr(p.full_name_en||'')}')">📋 ${t('care_plan_title')}</button>
             </div>
           </div>
         `).join('')}
@@ -8191,15 +8625,22 @@ function renderNRFluids(main, lang) {
     WHERE a.status='active' AND na.nurse_id=?
     ORDER BY a.bed_number`, [session.user_id]);
 
-  const today = new Date().toISOString().slice(0,10);
+  const today = todayISO();
+
+  // Today's intake/output totals for all patients in one query (was two
+  // queries per patient).
+  const fluidTotals = new Map();
+  if (myPatients.length) {
+    const admIds = myPatients.map(p => p.admission_id);
+    dbAll(`SELECT admission_id, type, SUM(amount_ml) as total FROM fluid_balance
+      WHERE admission_id IN (${admIds.map(() => '?').join(',')}) AND date(recorded_at)=? GROUP BY admission_id, type`,
+      [...admIds, today])
+      .forEach(r => fluidTotals.set(r.admission_id + ':' + r.type, r.total));
+  }
 
   const rows = myPatients.map(p => {
-    const intake = dbAll(`SELECT SUM(amount_ml) as total FROM fluid_balance
-      WHERE admission_id=? AND type='intake' AND date(recorded_at)=?`, [p.admission_id, today]);
-    const output = dbAll(`SELECT SUM(amount_ml) as total FROM fluid_balance
-      WHERE admission_id=? AND type='output' AND date(recorded_at)=?`, [p.admission_id, today]);
-    const inTotal = intake[0]?.total || 0;
-    const outTotal = output[0]?.total || 0;
+    const inTotal = fluidTotals.get(p.admission_id + ':intake') || 0;
+    const outTotal = fluidTotals.get(p.admission_id + ':output') || 0;
     const balance = inTotal - outTotal;
     const balColor = balance < -500 ? '#dc3545' : balance > 1000 ? '#fd7e14' : '#28a745';
     return { ...p, inTotal, outTotal, balance, balColor };
@@ -8227,9 +8668,9 @@ function renderNRFluids(main, lang) {
             <td style="color:#6c757d;font-weight:600;">${r.outTotal} mL</td>
             <td style="color:${r.balColor};font-weight:700;">${r.balance >= 0 ? '+' : ''}${r.balance} mL</td>
             <td>
-              <button class="btn btn-sm btn-primary" onclick="showFluidLogForm(${r.admission_id}, '${lang==='ar'?escapeHtml(r.full_name_ar):escapeHtml(r.full_name_en||r.full_name_ar)}', 'intake')">${t('log_intake')}</button>
-              <button class="btn btn-sm btn-secondary" onclick="showFluidLogForm(${r.admission_id}, '${lang==='ar'?escapeHtml(r.full_name_ar):escapeHtml(r.full_name_en||r.full_name_ar)}', 'output')">${t('log_output')}</button>
-              <button class="btn btn-sm btn-info" onclick="showFluidDetails(${r.admission_id}, '${lang==='ar'?escapeHtml(r.full_name_ar):escapeHtml(r.full_name_en||r.full_name_ar)}')">${t('details')}</button>
+              <button class="btn btn-sm btn-primary" onclick="showFluidLogForm(${r.admission_id}, '${jsAttr(lang==='ar'?(r.full_name_ar||''):(r.full_name_en||r.full_name_ar||''))}', 'intake')">${t('log_intake')}</button>
+              <button class="btn btn-sm btn-secondary" onclick="showFluidLogForm(${r.admission_id}, '${jsAttr(lang==='ar'?(r.full_name_ar||''):(r.full_name_en||r.full_name_ar||''))}', 'output')">${t('log_output')}</button>
+              <button class="btn btn-sm btn-info" onclick="showFluidDetails(${r.admission_id}, '${jsAttr(lang==='ar'?(r.full_name_ar||''):(r.full_name_en||r.full_name_ar||''))}')">${t('details')}</button>
             </td>
           </tr>`).join('')}
         </tbody>
@@ -8298,7 +8739,7 @@ async function handleFluidLog(admissionId, type) {
 
 function showFluidDetails(admissionId, patientName) {
   const lang = currentLanguage();
-  const today = new Date().toISOString().slice(0,10);
+  const today = todayISO();
   const records = dbAll(`SELECT fb.*, u.full_name_en, u.full_name_ar FROM fluid_balance fb
     JOIN users u ON fb.recorded_by = u.user_id
     WHERE fb.admission_id=? AND date(fb.recorded_at)=?
@@ -8461,15 +8902,31 @@ async function handleApplyOrderSet(setName, patientId, admissionId) {
   if (!os) return;
   const lang = currentLanguage();
 
+  // Role alignment: order sets create lab orders and prescriptions — doctor
+  // acts (the db.js role triggers refuse a non-doctor actor id outright, and
+  // used to crash this batch halfway when a TRIAGE NURSE applied a smart
+  // suggestion at registration). A non-doctor still gets the smart trigger's
+  // value: every lab and med is parked as a pending order_set_exception
+  // (reason 'requires_doctor') that the doctor sees and resolves on the
+  // patient detail view — nothing is silently dropped, nothing is prescribed
+  // under a nurse's id.
+  const isDoctor = DOCTOR_ROLES.includes(user.role);
+
   // Log order set application
   dbRun(`INSERT INTO order_set_log (admission_id, set_name, applied_by, applied_at) VALUES (?, ?, ?, ?)`,
     [admissionId, setName, user.user_id, nowISO()]);
 
   // Create lab orders (schema column is doctor_id; valid initial status is 'ordered')
   os.labs.forEach(labName => {
-    dbRun(`INSERT INTO lab_orders (admission_id, doctor_id, test_name, priority, status, ordered_at)
-      VALUES (?, ?, ?, 'stat', 'ordered', ?)`,
-      [admissionId, user.user_id, labName, nowISO()]);
+    if (isDoctor) {
+      dbRun(`INSERT INTO lab_orders (admission_id, doctor_id, test_name, priority, status, ordered_at)
+        VALUES (?, ?, ?, 'stat', 'ordered', ?)`,
+        [admissionId, user.user_id, labName, nowISO()]);
+    } else {
+      dbRun(`INSERT INTO order_set_exceptions (admission_id, set_name, item_type, drug_name, reason, created_by, created_at, status)
+        VALUES (?, ?, 'lab', ?, 'requires_doctor', ?, ?, 'pending')`,
+        [admissionId, setName, labName, user.user_id, nowISO()]);
+    }
   });
 
   // Create prescriptions only when the protocol med maps to a REAL formulary
@@ -8477,24 +8934,69 @@ async function handleApplyOrderSet(setName, patientId, admissionId) {
   // protocol") are recorded as order_set_exceptions for a clinician to prescribe
   // manually — NOT as a fake nurse task (the doctor isn't a nurse, and that task
   // view filtered by nurse_id and showed rows as already done).
+  //
+  // SAFETY: the batch path enforces the SAME guard rails as handlePrescribe.
+  // A med that hits a documented allergy (incl. cross-reactivity) or a
+  // red/yellow interaction with an active rx is NOT auto-prescribed — it is
+  // routed to order_set_exceptions so a clinician prescribes it through the
+  // interactive flow, where the override-with-reason dialog applies.
+  const patientAllergies = dbAll('SELECT * FROM patient_allergies WHERE patient_id = ?', [patientId]);
+  const patientCondCodes = dbAll('SELECT condition_code FROM patient_conditions WHERE patient_id = ?', [patientId]).map(r => r.condition_code);
   let createdRx = 0;
   const manualMeds = [];
-  os.meds.forEach(med => {
+  const flaggedMeds = [];
+  for (const med of os.meds) {
     const now = nowISO();
+    if (!isDoctor) {
+      dbRun(`INSERT INTO order_set_exceptions (admission_id, set_name, item_type, drug_name, dose, route, frequency, reason, created_by, created_at, status)
+        VALUES (?, ?, 'med', ?, ?, ?, ?, 'requires_doctor', ?, ?, 'pending')`,
+        [admissionId, setName, med.drug, med.dose, med.route, med.frequency, user.user_id, now]);
+      manualMeds.push(med.drug);
+      continue;
+    }
     const d = dbGet('SELECT drug_id FROM drugs WHERE name_generic = ? OR name_brand = ? OR name_generic LIKE ? LIMIT 1',
       [med.drug, med.drug, '%' + med.drug + '%']);
-    if (d) {
-      dbRun(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
-        [admissionId, user.user_id, d.drug_id, med.drug, med.dose, med.route, med.frequency, now.slice(0, 10), now]);
-      createdRx++;
-    } else {
+    if (!d) {
       dbRun(`INSERT INTO order_set_exceptions (admission_id, set_name, item_type, drug_name, dose, route, frequency, reason, created_by, created_at, status)
         VALUES (?, ?, 'med', ?, ?, ?, ?, 'not_in_formulary', ?, ?, 'pending')`,
         [admissionId, setName, med.drug, med.dose, med.route, med.frequency, user.user_id, now]);
       manualMeds.push(med.drug);
+      continue;
     }
-  });
+    const allergyHit = checkDrugAllergy(med.drug, patientAllergies);
+    let interactionHit = null;
+    if (!allergyHit) {
+      // re-query inside the loop so meds inserted earlier in THIS batch count
+      const activeRxs = dbAll("SELECT drug_id FROM prescriptions WHERE admission_id = ? AND status = 'active'", [admissionId]);
+      for (const rx of activeRxs) {
+        const inter = dbGet('SELECT * FROM drug_interactions WHERE (drug_a_id = ? AND drug_b_id = ?) OR (drug_a_id = ? AND drug_b_id = ?)',
+          [d.drug_id, rx.drug_id, rx.drug_id, d.drug_id]);
+        if (inter && (inter.severity === 'red' || inter.severity === 'yellow')) { interactionHit = inter; break; }
+      }
+    }
+    // Drug-vs-condition contraindications get the same treatment as allergy/
+    // interaction hits: parked for the interactive prescribe flow, never auto-issued.
+    let condHit = null;
+    if (!allergyHit && !interactionHit) {
+      const cw = checkDrugConditionInteractions(med.drug, patientCondCodes);
+      if (cw.length) condHit = cw.sort((a, b) => (b.severity === 'red' ? 1 : 0) - (a.severity === 'red' ? 1 : 0))[0];
+    }
+    if (allergyHit || interactionHit || condHit) {
+      const why = allergyHit ? 'allergy_flagged' : interactionHit ? 'interaction_flagged' : 'condition_flagged';
+      dbRun(`INSERT INTO order_set_exceptions (admission_id, set_name, item_type, drug_name, dose, route, frequency, reason, created_by, created_at, status)
+        VALUES (?, ?, 'med', ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        [admissionId, setName, med.drug, med.dose, med.route, med.frequency, why, user.user_id, now]);
+      flaggedMeds.push(med.drug + (allergyHit
+        ? ` (allergy: ${allergyHit.allergen})`
+        : interactionHit ? ` (${interactionHit.severity} interaction)`
+        : ` (${condHit.severity} condition contraindication)`));
+      continue;
+    }
+    dbRun(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+      [admissionId, user.user_id, d.drug_id, med.drug, med.dose, med.route, med.frequency, now.slice(0, 10), now]);
+    createdRx++;
+  }
 
   // Order-set TASKS as pending follow-ups (item_type='task'), NOT nursing_tasks:
   // those were inserted with nurse_id = the doctor and a done_at, so the nurse
@@ -8506,12 +9008,19 @@ async function handleApplyOrderSet(setName, patientId, admissionId) {
   });
 
   const setLabel = lang==='ar' ? os.ar : os.en;
-  await logAction('ORDER_SET_APPLIED',
-    `${user.full_name_en} applied order set: ${setLabel} (${os.labs.length} labs, ${createdRx} meds prescribed, ${manualMeds.length} need manual prescribing, ${os.tasks.length} tasks)`,
+  await logAction('ORDER_SET_APPLIED', isDoctor
+    ? `${user.full_name_en} applied order set: ${setLabel} (${os.labs.length} labs, ${createdRx} meds prescribed, ${manualMeds.length} need manual prescribing, ${os.tasks.length} tasks)`
+    : `${user.full_name_en} (${user.role}) flagged order set for doctor: ${setLabel} (${os.labs.length} labs + ${os.meds.length} meds parked as pending protocol items)`,
     null, patientId, '', '');
 
   saveDBToIndexedDB();
   closeModal();
+  if (!isDoctor) {
+    showSuccess(lang==='ar'
+      ? `✅ ${setLabel} — عُلّقت بنود البروتوكول للطبيب وستظهر في صفحة المريض`
+      : `✅ ${setLabel} — protocol items flagged for the doctor (Pending Protocol Items on the patient chart)`);
+    return;
+  }
   const manualNote = manualMeds.length
     ? (lang==='ar' ? ` — ${manualMeds.length} دواء يحتاج وصفة يدوية: ${manualMeds.join(', ')}` : ` — ${manualMeds.length} need manual Rx: ${manualMeds.join(', ')}`)
     : '';
@@ -8618,8 +9127,11 @@ function printWristband(patientId, admissionId) {
 // CODE BLUE / RAPID RESPONSE
 // ============================================================
 function showCodeBlueButton() {
-  // Floating global button — injected once on login
-  if (document.getElementById('code-blue-fab')) return;
+  // Floating global button — injected once on login. A patient-portal session
+  // hides it with display:none; un-hide on the next staff login in the same
+  // page lifetime instead of returning with it still invisible.
+  const existing = document.getElementById('code-blue-fab');
+  if (existing) { existing.style.display = ''; return; }
   const fab = document.createElement('button');
   fab.id = 'code-blue-fab';
   fab.innerHTML = '🚨 CODE BLUE';
@@ -8630,9 +9142,11 @@ function showCodeBlueButton() {
 
 function showCodeBlueForm() {
   const lang = currentLanguage();
+  // admissions.status enum is 'active'/'discharged' — the old 'admitted'
+  // filter matched nothing, so the Code Blue patient picker was always empty.
   const admissions = dbAll(`SELECT a.admission_id, a.bed_number, p.full_name_ar, p.full_name_en, p.mrn
     FROM admissions a JOIN patients p ON a.patient_id = p.patient_id
-    WHERE a.status='admitted' ORDER BY a.bed_number`);
+    WHERE a.status='active' ORDER BY a.bed_number`);
 
   showModal(`
     <div style="padding:20px;max-width:480px;text-align:center;">
@@ -9128,7 +9642,7 @@ async function saveHomeMed(patientId, admissionId) {
 
 function renderPPOverview(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `<div class="empty-state"><p>${t('patient_login_required')}</p></div>`; return; }
+  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
 
   // Get latest visit/admission
   const activeAdm = dbGet(`SELECT a.*, d.name_ar as dept_ar, d.name_en as dept_en
@@ -9139,7 +9653,7 @@ function renderPPOverview(main, lang) {
   const labCount     = dbGet(`SELECT COUNT(*) as c FROM lab_orders lo JOIN admissions a ON lo.admission_id=a.admission_id WHERE a.patient_id = ? AND lo.status='resulted'`, [patient.patient_id]);
   const rxCount      = dbGet(`SELECT COUNT(*) as c FROM prescriptions p JOIN admissions a ON p.admission_id=a.admission_id WHERE a.patient_id = ? AND p.status='active'`, [patient.patient_id]);
   const apptCount    = dbGet(`SELECT COUNT(*) as c FROM appointments WHERE national_id = ? AND status='scheduled' AND appt_date >= ?`,
-    [patient.national_id || '__none__', new Date().toISOString().substring(0,10)]);
+    [patient.national_id || '__none__', todayISO()]);
   const unreadMsgs   = dbGet(`SELECT COUNT(*) as c FROM portal_messages WHERE patient_id = ? AND from_type='staff' AND read_at IS NULL`, [patient.patient_id]);
 
   // Allergies & conditions
@@ -9255,7 +9769,7 @@ function renderPPOverview(main, lang) {
 
 function renderPPVisits(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `<div class="empty-state"><p>${t('patient_login_required')}</p></div>`; return; }
+  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
 
   const visits = dbAll(`
     SELECT a.*, d.name_ar as dept_ar, d.name_en as dept_en
@@ -9267,7 +9781,7 @@ function renderPPVisits(main, lang) {
 
   main.innerHTML = `
     <div class="page-header"><h1>&#128196; ${t('pp_visits')}</h1></div>
-    ${visits.length === 0 ? `<div class="empty-state"><p>${lang==='ar'?'لا توجد زيارات سابقة':'No previous visits'}</p></div>` : `
+    ${visits.length === 0 ? `${emptyState(lang==='ar'?'لا توجد زيارات سابقة':'No previous visits')}` : `
       <div style="display:flex;flex-direction:column;gap:12px">
         ${visits.map(v => `
           <div class="card">
@@ -9349,7 +9863,7 @@ function ppInterpretLab(testName, flag, value, lang) {
 
 function renderPPLabs(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `<div class="empty-state"><p>${t('patient_login_required')}</p></div>`; return; }
+  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
 
   const labs = dbAll(`
     SELECT lo.*, u.full_name_ar as ordered_by_ar, u.full_name_en as ordered_by_en
@@ -9362,7 +9876,7 @@ function renderPPLabs(main, lang) {
 
   main.innerHTML = `
     <div class="page-header"><h1>&#128300; ${t('pp_labs')}</h1></div>
-    ${labs.length === 0 ? `<div class="empty-state"><p>${lang==='ar'?'لا توجد نتائج مختبر':'No lab results available'}</p></div>` : `
+    ${labs.length === 0 ? `${emptyState(lang==='ar'?'لا توجد نتائج مختبر':'No lab results available')}` : `
       <p style="color:#666;font-size:0.88rem;margin-bottom:12px;">${lang === 'ar' ? 'انقر على ▸ بجانب أي نتيجة لمعرفة معناها بلغة بسيطة.' : 'Click ▸ next to any result for a plain-English explanation.'}</p>
       <div style="display:flex;flex-direction:column;gap:8px;">
         ${labs.map((lo, i) => {
@@ -9393,7 +9907,7 @@ function renderPPLabs(main, lang) {
 
 function renderPPPrescriptions(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `<div class="empty-state"><p>${t('patient_login_required')}</p></div>`; return; }
+  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
 
   const rxs = dbAll(`
     SELECT p.*, u.full_name_ar as dr_ar, u.full_name_en as dr_en
@@ -9433,26 +9947,32 @@ function renderPPPrescriptions(main, lang) {
     <div class="page-header"><h1>&#128138; ${t('pp_prescriptions')}</h1></div>
     ${active.length > 0 ? `<h3 style="margin:8px 0">${lang==='ar'?'الأدوية النشطة':'Active Medications'} (${active.length})</h3>${active.map(rxCard).join('')}` : ''}
     ${past.length > 0 ? `<h3 style="margin:16px 0 8px">${lang==='ar'?'سجل الأدوية السابقة':'Previous Medications'}</h3>${past.map(rxCard).join('')}` : ''}
-    ${rxs.length === 0 ? `<div class="empty-state"><p>${lang==='ar'?'لا توجد وصفات طبية':'No prescriptions on record'}</p></div>` : ''}
+    ${rxs.length === 0 ? `${emptyState(lang==='ar'?'لا توجد وصفات طبية':'No prescriptions on record')}` : ''}
   `;
 }
 
 function renderPPAppointments(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `<div class="empty-state"><p>${t('patient_login_required')}</p></div>`; return; }
+  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
 
+  // Match on STRONG identifiers only (portal patient link, national id, MRN).
+  // The old query also matched patient_name_ar/_en unconditionally — with common
+  // names that showed OTHER people's appointments (department, doctor, and the
+  // free-text visit reason) in this patient's portal: a PHI leak. Name-only
+  // matching is gone; legacy reception-booked rows without any strong identifier
+  // are intentionally not shown rather than risk cross-patient disclosure.
   const appts = dbAll(`
     SELECT a.*, d.name_ar as dept_ar, d.name_en as dept_en, u.full_name_ar as dr_ar, u.full_name_en as dr_en
     FROM appointments a
     LEFT JOIN departments d ON a.dept_id = d.dept_id
     LEFT JOIN users u ON a.doctor_id = u.user_id
-    WHERE (a.national_id = ? AND a.national_id IS NOT NULL AND a.national_id != '')
-       OR a.patient_name_ar = ?
-       OR a.patient_name_en = ?
+    WHERE a.requested_by_patient_id = ?
+       OR (a.national_id = ? AND a.national_id IS NOT NULL AND a.national_id != '')
+       OR (a.mrn = ? AND a.mrn IS NOT NULL AND a.mrn != '')
     ORDER BY a.appt_date DESC, a.appt_time DESC LIMIT 50
-  `, [patient.national_id || '___none___', patient.full_name_ar, patient.full_name_en || '___none___']);
+  `, [patient.patient_id, patient.national_id || '___none___', patient.mrn || '___none___']);
 
-  const today = new Date().toISOString().substring(0,10);
+  const today = todayISO();
   const upcoming = appts.filter(a => a.appt_date >= today && a.status === 'scheduled');
   const past     = appts.filter(a => a.appt_date < today || a.status !== 'scheduled');
 
@@ -9488,18 +10008,22 @@ function renderPPAppointments(main, lang) {
 
 function renderPPMessages(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `<div class="empty-state"><p>${t('patient_login_required')}</p></div>`; return; }
+  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
 
   // Mark staff-to-patient messages as read on view
   dbRun(`UPDATE portal_messages SET read_at = ? WHERE patient_id = ? AND from_type='staff' AND read_at IS NULL`,
     [nowISO(), patient.patient_id]);
   saveDBToIndexedDB();
 
+  // from_type filter is defense-in-depth: staff STEMI/stroke pages were stored
+  // in this same table keyed by staff USER id, and users.user_id can collide
+  // with patients.patient_id (independent AUTOINCREMENTs) — an unrelated patient
+  // could read an incoming patient's full clinical page in their own inbox.
   const msgs = dbAll(`
     SELECT pm.*, u.full_name_ar as sender_ar, u.full_name_en as sender_en, u.role as sender_role
     FROM portal_messages pm
     LEFT JOIN users u ON pm.from_id = u.user_id AND pm.from_type='staff'
-    WHERE pm.patient_id = ?
+    WHERE pm.patient_id = ? AND pm.from_type IN ('staff','patient')
     ORDER BY pm.sent_at DESC LIMIT 100
   `, [patient.patient_id]);
 
@@ -9509,7 +10033,7 @@ function renderPPMessages(main, lang) {
       <button class="btn btn-primary" onclick="showPPNewMessage()">+ ${lang==='ar'?'رسالة جديدة':'New Message'}</button>
     </div>
     <div id="pp-message-form-container"></div>
-    ${msgs.length === 0 ? `<div class="empty-state"><p>${lang==='ar'?'لا توجد رسائل':'No messages yet'}</p></div>` : `
+    ${msgs.length === 0 ? `${emptyState(lang==='ar'?'لا توجد رسائل':'No messages yet')}` : `
       <div style="display:flex;flex-direction:column;gap:12px">
         ${msgs.map(m => {
           const isPatient = m.from_type === 'patient';
@@ -9597,8 +10121,8 @@ function sendPPMessage() {
 // Patient portal: book new appointment (status=requested → receptionist confirms)
 function showPPBookAppt() {
   const lang = currentLanguage();
-  const depts = dbAll(`SELECT dept_id, name_ar, name_en FROM departments WHERE type='clinical' ORDER BY name_en`);
-  const today = new Date().toISOString().slice(0, 10);
+  const depts = dbAll(`SELECT dept_id, name_ar, name_en FROM departments WHERE type NOT IN ('admin','support') ORDER BY name_en`);
+  const today = todayISO();
   document.getElementById('pp-book-appt-form').innerHTML = `
     <div class="card mb-3" style="border-left:4px solid #3b82f6;">
       <div class="card-header"><h3>${lang === 'ar' ? 'طلب موعد جديد' : 'Request New Appointment'}</h3></div>
@@ -9648,9 +10172,20 @@ async function submitPPBookAppt() {
   const time = document.getElementById('ppba-time').value;
   const reason = document.getElementById('ppba-reason').value.trim();
   if (!deptId || !date || !reason) { showError(lang === 'ar' ? 'يرجى ملء جميع الحقول' : 'Please fill all required fields'); return; }
-  dbRun(`INSERT INTO appointments (patient_name_ar, patient_name_en, national_id, mrn, dept_id, appt_date, appt_time, reason, status, created_at, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, NULL)`,
-    [patient.full_name_ar, patient.full_name_en, patient.national_id, patient.mrn, deptId, date, time, reason, nowISO()]);
+  // Cap portal requests at 5/day per patient: an unbounded loop (or an angry
+  // thumb) flooding 'requested' rows is a reception-queue DoS, and rows have
+  // no delete flow. Counted by creation day, not appt_date, so spreading the
+  // requested dates doesn't dodge the cap.
+  const todayReqs = dbGet(`SELECT COUNT(*) AS c FROM appointments WHERE requested_by_patient_id = ? AND substr(created_at, 1, 10) = ?`,
+    [patient.patient_id, todayISO()]);
+  if (todayReqs && todayReqs.c >= 5) {
+    showError(lang === 'ar' ? 'وصلت للحد الأقصى من طلبات المواعيد اليوم (5) — تواصل مع الاستقبال' : 'Daily appointment-request limit reached (5) — please contact reception');
+    return;
+  }
+  // created_by is NOT NULL and references staff users; 0 marks patient-originated rows
+  dbRun(`INSERT INTO appointments (patient_name_ar, patient_name_en, national_id, mrn, dept_id, appt_date, appt_time, reason, status, created_at, created_by, requested_by_patient_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, 0, ?)`,
+    [patient.full_name_ar, patient.full_name_en, patient.national_id, patient.mrn, deptId, date, time, reason, nowISO(), patient.patient_id]);
   await logAction('APPOINTMENT_REQUESTED',
     `Patient ${patient.full_name_en || patient.full_name_ar} (MRN ${patient.mrn}) requested appointment for ${date} ${time} — ${reason}`,
     null, patient.patient_id, patient.full_name_en || patient.full_name_ar, patient.mrn);
@@ -9664,7 +10199,13 @@ async function requestRxRefill(rxId) {
   const lang = currentLanguage();
   const patient = getCurrentPatient();
   if (!patient) return;
-  const rx = dbGet('SELECT p.*, u.full_name_en as dr_en FROM prescriptions p LEFT JOIN users u ON p.doctor_id = u.user_id WHERE p.rx_id = ?', [rxId]);
+  // Ownership check (IDOR guard): only a prescription on one of THIS patient's
+  // admissions — a tampered rx_id must not leak another patient's drug/dose/
+  // doctor into the message body or the audit row.
+  const rx = dbGet(`SELECT p.*, u.full_name_en as dr_en FROM prescriptions p
+    JOIN admissions a ON p.admission_id = a.admission_id
+    LEFT JOIN users u ON p.doctor_id = u.user_id
+    WHERE p.rx_id = ? AND a.patient_id = ?`, [rxId, patient.patient_id]);
   if (!rx) return;
   // Create a portal_message addressed to the prescribing doctor
   const subj = (lang === 'ar' ? 'طلب إعادة صرف' : 'Refill request') + ': ' + rx.drug_name;
@@ -9715,7 +10256,7 @@ function showCarePlanForm(admissionId, nameAr, nameEn) {
             ${p.goal_text ? `<div style="margin-top:6px;padding:6px 10px;background:#f9fafb;border-radius:4px;font-size:0.85rem">${escapeHtml(p.goal_text)}</div>` : ''}
             <div style="font-size:0.75rem;color:#6b7280;margin-top:6px">
               ${escapeHtml(lang==='ar'?(p.creator_ar||'—'):(p.creator_en||'—'))} • ${escapeHtml(p.created_at.substring(0,16).replace('T',' '))}
-              ${p.status === 'active' ? `<button class="btn btn-sm" style="background:#10b981;color:white;margin-left:8px;font-size:0.75rem" onclick="resolveCarePlan(${p.plan_id}, ${admissionId}, '${escapeHtml(nameAr||'')}', '${escapeHtml(nameEn||'')}')">${lang==='ar'?'تم الحل':'Mark Resolved'}</button>` : ''}
+              ${p.status === 'active' ? `<button class="btn btn-sm" style="background:#10b981;color:white;margin-left:8px;font-size:0.75rem" onclick="resolveCarePlan(${p.plan_id}, ${admissionId}, '${jsAttr(nameAr||'')}', '${jsAttr(nameEn||'')}')">${lang==='ar'?'تم الحل':'Mark Resolved'}</button>` : ''}
             </div>
           </div>
         </div>`;
@@ -9733,7 +10274,7 @@ function showCarePlanForm(admissionId, nameAr, nameEn) {
 
       <hr style="margin:16px 0">
       <h3 style="font-size:1rem">${t('add_care_plan')}</h3>
-      <form id="care-plan-form" onsubmit="event.preventDefault(); saveCarePlan(${admissionId}, '${escapeHtml(nameAr||'')}', '${escapeHtml(nameEn||'')}')">
+      <form id="care-plan-form" onsubmit="event.preventDefault(); saveCarePlan(${admissionId}, '${jsAttr(nameAr||'')}', '${jsAttr(nameEn||'')}')">
         <div class="form-group">
           <label>${t('nanda_label')} *</label>
           <select id="cp-nanda" required>
@@ -9814,6 +10355,23 @@ function _destroyAnalyticsCharts() {
   _analyticsCharts = [];
 }
 
+// Chart.js (~200KB) is used ONLY by the hospital-manager analytics view, so it
+// is no longer in index.html — every other role was paying its parse cost on
+// every boot. Loaded on demand the first time analytics renders.
+let _chartJsLoading = null;
+function ensureChartJs() {
+  if (typeof Chart !== 'undefined') return Promise.resolve();
+  if (_chartJsLoading) return _chartJsLoading;
+  _chartJsLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'vendor/chart.umd.min.js';
+    s.onload = resolve;
+    s.onerror = () => { _chartJsLoading = null; reject(new Error('Chart.js failed to load')); };
+    document.head.appendChild(s);
+  });
+  return _chartJsLoading;
+}
+
 function _analyticsPeriodDays() {
   const sel = document.getElementById('analytics-period');
   return parseInt(sel?.value || '30');
@@ -9859,8 +10417,10 @@ function renderHMAnalytics(main, lang) {
     </div>
   `;
 
-  // Wait for canvas elements to mount, then render
-  requestAnimationFrame(() => _renderAllAnalyticsCharts(lang));
+  // Wait for canvas elements to mount AND Chart.js to be fetched, then render
+  requestAnimationFrame(() => ensureChartJs()
+    .then(() => _renderAllAnalyticsCharts(lang))
+    .catch(e => console.error('[Analytics]', e.message)));
 }
 
 function _renderAllAnalyticsCharts(lang) {
@@ -9987,7 +10547,7 @@ function _renderDeptOccupancy(isAr) {
     SELECT d.name_${isAr?'ar':'en'} as name, COUNT(a.admission_id) as c
     FROM departments d
     LEFT JOIN admissions a ON d.dept_id = a.dept_id AND a.status='active'
-    WHERE d.type='clinical'
+    WHERE d.type NOT IN ('admin','support')
     GROUP BY d.dept_id
     HAVING c > 0
     ORDER BY c DESC LIMIT 10

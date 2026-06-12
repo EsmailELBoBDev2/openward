@@ -10,13 +10,38 @@ Override (use with care — this puts the dev server on your network):
 """
 import http.server
 import os
+import re
 import socketserver
+import urllib.parse
 
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8080"))
 
+# Allowlist of servable paths — same policy as server/server.js STATIC_ALLOW.
+# Without it this server happily served the WHOLE repo root: .git/, server/data/
+# (openward.sqlite with PHI, audit.key), tests, tools. Allowlist, not denylist,
+# so nothing leaks by default.
+ALLOW = re.compile(r"^$|^(?:index\.html|favicon\.ico)$|^(?:js|css|vendor)/[\w./-]+$")
+
 
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
+    def _allowed(self):
+        path = self.path.split("?", 1)[0].split("#", 1)[0]
+        rel = urllib.parse.unquote(path).lstrip("/")
+        return bool(ALLOW.fullmatch(rel)) and ".." not in rel
+
+    def do_GET(self):
+        if not self._allowed():
+            self.send_error(403, "forbidden")
+            return
+        super().do_GET()
+
+    def do_HEAD(self):
+        if not self._allowed():
+            self.send_error(403, "forbidden")
+            return
+        super().do_HEAD()
+
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
         self.send_header('Pragma', 'no-cache')

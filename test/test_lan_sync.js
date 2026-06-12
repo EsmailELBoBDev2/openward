@@ -69,7 +69,36 @@ const eq = (a, b) => norm(a) === norm(b);
   assert(!b.has('note'), 'delete (tombstone) replicates to peer');
 }
 
-// 7. REAL transport: two connect() clients in one room exchange state over
+// 7. ADVERSARIAL: wire data is untrusted — malformed entries must be rejected
+//    without throwing, and a far-future timestamp must not wedge the local clock.
+{
+  const s = LANSync.makeStore('A');
+  s.set('k', 'good', 100);
+  let threw = false;
+  try {
+    assert(s.mergeEntry('k', undefined) === false, 'mergeEntry(undefined) rejected, no throw');
+    assert(s.mergeEntry('k', null) === false, 'mergeEntry(null) rejected');
+    assert(s.mergeEntry('k', { v: 'x' }) === false, 'entry without timestamp rejected');
+    assert(s.mergeEntry('k', { v: 'x', t: 'high', n: 'Z' }) === false, 'non-numeric timestamp rejected');
+    assert(s.mergeEntry('k', { v: 'x', t: Infinity, n: 'Z' }) === false, 'non-finite timestamp rejected');
+    assert(s.mergeSnapshot(null) === false && s.mergeSnapshot('junk') === false, 'mergeSnapshot of junk rejected');
+  } catch (e) { threw = true; }
+  assert(!threw, 'malformed wire data never throws');
+  assert(s.get('k') === 'good', 'state untouched by malformed merges');
+}
+{
+  // clock poisoning: the poisoned entry still wins LWW (convergence-safe — all
+  // replicas apply the same rule), but our own clock must stay near wall time
+  // so future legitimate writes are not stamped years in the future.
+  const s = LANSync.makeStore('A');
+  const poisonT = Date.now() + 10 * 365 * 24 * 3600000; // ~10 years ahead
+  s.mergeEntry('bed', { v: 'evil', t: poisonT, n: 'Z' });
+  assert(s.get('bed') === 'evil', 'poisoned entry still merges by LWW (replicas converge)');
+  const mine = s.set('other', 'legit'); // no injected now -> uses real clock
+  assert(mine.t <= Date.now() + 300000 + 1000, 'local clock clamped: own writes not stamped with the poisoned future time');
+}
+
+// 8. REAL transport: two connect() clients in one room exchange state over
 //    BroadcastChannel (Node provides it), incl. the hello/state catch-up handshake.
 (async () => {
   const c1 = LANSync.connect('test-room', { nodeId: 'n1' });
@@ -81,7 +110,19 @@ const eq = (a, b) => norm(a) === norm(b);
   c2.set('ack', 'ok-from-2');
   await new Promise(r => setTimeout(r, 40));
   assert(c1.get('ack') === 'ok-from-2', 'a live op on one client propagates to the other (peer sync works)');
-  c1.close(); c2.close();
+
+  // 9. a hostile peer floods the room with malformed messages; clients must
+  //    survive and keep syncing (the op handler may not throw out of dispatch).
+  const evil = new BroadcastChannel('openward-lan-test-room');
+  evil.postMessage({ type: 'op', key: 'x' });                       // op with no entry
+  evil.postMessage({ type: 'op', key: 'x', entry: 'garbage' });     // junk entry
+  evil.postMessage({ type: 'state', snap: 'garbage' });             // junk snapshot
+  evil.postMessage(42);                                             // not even an object
+  await new Promise(r => setTimeout(r, 40));
+  c1.set('after-junk', 'still-alive');
+  await new Promise(r => setTimeout(r, 40));
+  assert(c2.get('after-junk') === 'still-alive', 'clients survive a malformed-message flood and keep syncing');
+  evil.close(); c1.close(); c2.close();
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

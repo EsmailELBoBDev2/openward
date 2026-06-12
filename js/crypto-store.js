@@ -14,10 +14,12 @@
 //   NO   Not a substitute for a server. This is still a client-only app, and a
 //        forgotten passphrase is unrecoverable (no backend to reset it).
 //
-// Encryption is device-level, not user-level: the key is set once per page
-// session (at boot, or when enabled) and intentionally persists across user
-// logouts so the app keeps saving encrypted. It is only cleared by a page
-// reload (memory wiped) -> the next boot prompts to unlock again.
+// Encryption is device-level, not user-level: the key is set at boot (unlock
+// prompt) or when enabled from System Settings, and lives only in memory.
+// LOGOUT PURGES IT: auth.js logout() awaits the final encrypted save, then
+// calls encDisable() and reloads the page, landing the next user on the boot
+// unlock prompt (shared-workstation safety; the 15-min idle auto-logout takes
+// the same path). The remaining boundary is the live LOGGED-IN session only.
 // ============================================================
 
 const ENC_VERSION = 1;
@@ -181,11 +183,15 @@ async function toggleDeviceEncryption() {
     if (typeof showError === 'function') showError(ar ? 'التشفير يتطلب HTTPS أو localhost' : 'Encryption requires HTTPS or localhost');
     return;
   }
+  // Both branches force a FULL-tier rewrite (resetSnapshotCadence), not just
+  // db_current: a leftover envelope after disable re-locks the app at boot,
+  // and a leftover plaintext tier after enable defeats encryption-at-rest.
   if (encIsActive()) {
     if (!window.confirm(ar ? 'إيقاف التشفير وحفظ البيانات بدون تشفير على هذا الجهاز؟'
                            : 'Disable encryption and store data unencrypted on this device?')) return;
     encDisable();
     if (typeof markDbDirty === 'function') markDbDirty();
+    if (typeof resetSnapshotCadence === 'function') resetSnapshotCadence();
     await saveDBToIndexedDB();
     if (typeof showSuccess === 'function') showSuccess(ar ? 'تم إيقاف التشفير' : 'Encryption disabled');
   } else {
@@ -193,6 +199,7 @@ async function toggleDeviceEncryption() {
     if (!pass) return;
     await encEnable(pass);
     if (typeof markDbDirty === 'function') markDbDirty();
+    if (typeof resetSnapshotCadence === 'function') resetSnapshotCadence();
     await saveDBToIndexedDB();
     if (typeof showSuccess === 'function') showSuccess(ar ? 'تم تفعيل التشفير' : 'Encryption enabled');
   }

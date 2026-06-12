@@ -138,8 +138,7 @@ const CLINICAL_CALCULATORS = [
       const score = ['h','a','s','b','l','e','d'].filter(k => i[k]).length;
       let interp = '', color = '';
       if (score < 3)        { interp = 'Low bleeding risk'; color = '#10b981'; }
-      else if (score === 3) { interp = 'Moderate risk — caution'; color = '#f59e0b'; }
-      else                  { interp = 'High bleeding risk — reassess anticoagulation'; color = '#dc2626'; }
+      else                  { interp = 'High bleeding risk (≥3) — caution, regular review; not a reason to withhold anticoagulation by itself'; color = '#dc2626'; }
       return { value: score, unit: 'points', interpretation: interp, color };
     }
   },
@@ -168,7 +167,7 @@ const CLINICAL_CALCULATORS = [
       if (i.hemop) score += 1;
       if (i.cancer) score += 1;
       let interp = '', color = '';
-      if (score <= 1)      { interp = 'Low probability — consider D-dimer'; color = '#10b981'; }
+      if (score < 2)       { interp = 'Low probability — consider D-dimer'; color = '#10b981'; }
       else if (score <= 6) { interp = 'Moderate probability — D-dimer/CT-PA'; color = '#f59e0b'; }
       else                 { interp = 'High probability — CT-PA, consider empiric anticoagulation'; color = '#dc2626'; }
       return { value: score, unit: 'points', interpretation: interp, color };
@@ -298,15 +297,21 @@ const CLINICAL_CALCULATORS = [
       if (i.rr <= 8 || i.rr >= 25) s += 3;
       else if (i.rr >= 21) s += 2;
       else if (i.rr <= 11) s += 1;
-      // SaO2 (scale 1, non-COPD)
+      // SaO2 — Scale 1 only (non-COPD). For chronic hypercapnic patients (COPD,
+      // SpO2 target 88–92%) use the bedside vitals entry, which applies NEWS2
+      // Scale 2; this quick-reference widget does not expose a scale toggle.
       if (i.sat <= 91) s += 3;
       else if (i.sat <= 93) s += 2;
       else if (i.sat <= 95) s += 1;
       // Supp O2
       if (i.on_o2) s += 2;
-      // Temp
-      if (i.temp <= 35.0 || i.temp >= 39.1) s += 2;
-      else if (i.temp <= 36 || i.temp >= 38.1) s += 1;
+      // Temp — RCP NEWS2 (2017): hypothermia <=35.0 scores 3 (the max sub-score),
+      // NOT 2. The high-fever end (>=39.1) scores 2; the parameter is asymmetric.
+      if (i.temp <= 35.0) s += 3;
+      else if (i.temp <= 36.0) s += 1;
+      else if (i.temp <= 38.0) s += 0;
+      else if (i.temp <= 39.0) s += 1;
+      else s += 2;
       // SBP
       if (i.sbp <= 90 || i.sbp >= 220) s += 3;
       else if (i.sbp <= 100) s += 2;
@@ -344,11 +349,13 @@ const CLINICAL_CALCULATORS = [
       const bili = Math.max(1, i.bili);
       const inr = Math.max(1, i.inr);
       const meld = Math.round(3.78 * Math.log(bili) + 11.2 * Math.log(inr) + 9.57 * Math.log(cr) + 6.43);
+      // 3-month mortality bands per Wiesner et al. 2003 (hospitalized):
+      // <10 ~1.9%, 10-19 ~6.0%, 20-29 ~19.6%, 30-39 ~52.6%, ≥40 ~71.3%.
       let interp = '', color = '';
-      if (meld < 10)      { interp = 'Low priority for transplant'; color = '#10b981'; }
-      else if (meld < 15) { interp = 'Mortality ~6% at 3 months'; color = '#84cc16'; }
-      else if (meld < 20) { interp = 'Mortality ~19% at 3 months'; color = '#f59e0b'; }
-      else if (meld < 30) { interp = 'Mortality ~52% at 3 months'; color = '#ef4444'; }
+      if (meld < 10)      { interp = 'Mortality ~2% at 3 months — low priority'; color = '#10b981'; }
+      else if (meld < 20) { interp = 'Mortality ~6% at 3 months'; color = '#84cc16'; }
+      else if (meld < 30) { interp = 'Mortality ~20% at 3 months'; color = '#f59e0b'; }
+      else if (meld < 40) { interp = 'Mortality ~53% at 3 months'; color = '#ef4444'; }
       else                { interp = 'Mortality ~71% at 3 months — high priority'; color = '#7f1d1d'; }
       return { value: meld, unit: 'pts', interpretation: interp, color };
     }
@@ -370,8 +377,8 @@ const CLINICAL_CALCULATORS = [
       const score = Object.values(i).filter(v => v).length;
       let interp = '', color = '';
       if (score <= 2)      { interp = 'Mortality < 2% — outpatient possible'; color = '#10b981'; }
-      else if (score === 3){ interp = 'Mortality ~5-8%'; color = '#f59e0b'; }
-      else                 { interp = 'Mortality > 20% — ICU admission'; color = '#dc2626'; }
+      else if (score === 3){ interp = 'Mortality ~8-13%'; color = '#f59e0b'; }
+      else                 { interp = 'Mortality ~20-30% — ICU admission'; color = '#dc2626'; }
       return { value: score, unit: '/5', interpretation: interp, color };
     }
   },
@@ -447,8 +454,8 @@ const CLINICAL_CALCULATORS = [
       s += parseInt(i.gait) || 0;
       s += parseInt(i.mental) || 0;
       let interp = '', color = '';
-      if (s < 25)      { interp = 'No risk — standard care'; color = '#10b981'; }
-      else if (s < 45) { interp = 'Low risk — implement standard precautions'; color = '#f59e0b'; }
+      if (s < 25)      { interp = 'Low risk — standard care'; color = '#10b981'; }
+      else if (s < 45) { interp = 'Moderate risk — standard fall precautions'; color = '#f59e0b'; }
       else             { interp = 'High risk — implement high-fall precautions'; color = '#dc2626'; }
       return { value: s, unit: 'pts', interpretation: interp, color };
     }

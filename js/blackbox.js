@@ -146,8 +146,25 @@ async function _logToBlackboxInner(entry) {
   ]);
 
   const logId = dbLastId();
-  saveDBToIndexedDB();
+  _scheduleBlackboxFlush();
   return logId;
+}
+
+// Persisting per audit row forced a FULL db.export() (+ AES-GCM re-encrypt when
+// device encryption is on) on every PHI-view navigation — the single hottest
+// idle-path cost in browser mode. Audit rows ride dbRun's dirty flag, so they
+// are flushed by the explicit saves every clinical handler already does, by the
+// 30s timer, and by the visibilitychange/pagehide flush. This short debounce
+// only narrows the crash window for READ-audits (navigations that trigger no
+// other save) to ~5s while collapsing a click-burst into one export.
+let _bbFlushTimer = null;
+function _scheduleBlackboxFlush() {
+  if (_bbFlushTimer) return;
+  _bbFlushTimer = setTimeout(() => {
+    _bbFlushTimer = null;
+    try { saveDBToIndexedDB(); } catch (e) { /* save path reports its own errors */ }
+  }, 5000);
+  if (_bbFlushTimer && typeof _bbFlushTimer.unref === 'function') _bbFlushTimer.unref();   // Node tests: don't hold the process open
 }
 
 /**

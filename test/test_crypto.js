@@ -50,9 +50,14 @@ function bytesEqual(a, b) { if (a.length !== b.length) return false; for (let i 
   const env2 = await c.encEncrypt(plain);
   assert(!bytesEqual(env.iv, env2.iv), 'each encryption uses a fresh random IV');
 
-  // 8) disable clears the active flag
+  // 8) disable clears the active flag AND makes the key unusable. The logout
+  //    purge (auth.js logout -> encDisable + reload) relies on this: after
+  //    encDisable() there is no path that can encrypt with a stale key.
   c.encDisable();
   assert(c.encIsActive() === false, 'encIsActive() false after disable');
+  let lockedThrew = false;
+  try { await c.encEncrypt(plain); } catch (e) { lockedThrew = true; }
+  assert(lockedThrew, 'encEncrypt throws after disable (key truly purged, not just flagged)');
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

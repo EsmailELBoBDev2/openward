@@ -37,6 +37,15 @@ function noThrow(label, fn) { try { fn(); pass++; console.log('  ok  - ' + label
 
   // a real formulary drug so order-set / MAR reference something
   d.run("INSERT INTO drugs (drug_id, name_generic, unit, is_high_alert) VALUES (1, 'Regular Insulin', 'units', 1)");
+  // a real DOCTOR user: trg_rx_doctor_role is NULL-proof now (COALESCE), so a
+  // prescription's doctor_id must reference an actual doctor-role user — the
+  // old test rode the NULL NOT IN hole with a nonexistent doctor_id=1
+  d.run("INSERT INTO users (user_id, username, password_hash, salt, full_name_ar, full_name_en, role, is_active, created_at) VALUES (1, 'doc1', 'x', 'x', 'دكتور', 'Doctor One', 'doctor', 1, '2026-06-06T00:00:00Z')");
+  // a real ACTIVE admission: the discharge-block triggers are NULL-proof now
+  // (COALESCE), so labs/rx on a dangling admission_id=1 would abort
+  d.run("INSERT INTO departments (dept_id, name_ar, name_en, type) VALUES (1, 'طوارئ', 'ER', 'emergency')");
+  d.run("INSERT INTO patients (patient_id, mrn, full_name_ar, registered_at) VALUES (1, 'HIS-1', 'مريض', '2026-06-06T00:00:00Z')");
+  d.run("INSERT INTO admissions (admission_id, patient_id, dept_id, admitted_at, status) VALUES (1, 1, 1, '2026-06-06T00:00:00Z', 'active')");
 
   // ---- #1: the operations the reviewer named must run on a FRESH db ----------
   noThrow('record vitals with NEWS2/qSOFA fields', () => {
@@ -58,6 +67,14 @@ function noThrow(label, fn) { try { fn(); pass++; console.log('  ok  - ' + label
     d.run(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
       VALUES (1, 1, 1, 'Regular Insulin', '0.1 u/kg/hr', 'IV', 'continuous', '2026-06-06', 'active', '2026-06-06T10:00:00Z')`);
   });
+
+  // ---- negative control: the NULL NOT IN hole stays closed -------------------
+  let brokeGhostDoctor = false;
+  try {
+    d.run(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, start_date, status, prescribed_at)
+      VALUES (1, 999, 1, 'X', '1mg', 'IV', 'stat', '2026-06-06', 'active', '2026-06-06T10:00:00Z')`);
+  } catch (e) { brokeGhostDoctor = true; }
+  assert(brokeGhostDoctor, 'prescription with a NONEXISTENT doctor_id is rejected (trg_rx_doctor_role NULL hole closed)');
 
   // ---- order-set UNMATCHED med: records an exception, creates NO prescription --
   assert(tableExists('order_set_exceptions'), 'fresh DB has the order_set_exceptions table');
