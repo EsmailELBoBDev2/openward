@@ -2071,3 +2071,12 @@ body[dir="rtl"] .calc-fab {
   50% { transform: translate(-40%, -10%) scale(0.72); }
   100% { transform: translate(-40%, -10%) scale(1); }
 }
+
+/* The guide window glides to its anchored position near the spotlit target */
+#tour-panel.tour-anchored {
+  transition: left 0.45s cubic-bezier(0.3, 0.8, 0.35, 1), top 0.45s cubic-bezier(0.3, 0.8, 0.35, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  #tour-panel.tour-anchored { transition: none; }
+  #tour-cursor { transition: none; }
+}
