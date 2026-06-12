@@ -809,22 +809,41 @@ function demoTourOffer(force) {
         ? 'تابع مريضاً واحداً من باب الطوارئ حتى سجل التدقيق — عبر سبعة أدوار: تسجيل، وصفة يرفضها النظام، دم وأشعة، بوتاسيوم حرج، صيدلية، تمريض، وإدارة.'
         : 'Follow one patient from the ER door to the audit log — across seven staff roles: registration, a prescription the app refuses, bloods + X-ray, a critical potassium, pharmacy, nursing, and management.'}</p>
       <div style="display:flex;flex-direction:column;gap:8px">
-        <button class="btn btn-primary" onclick="this.closest('.alert-overlay').remove(); demoTourStart(false)">${ar ? '🖱️ أرشدني — أنا أضغط وهي تدلّني' : '🖱️ Guide me — I click, it points the way'}</button>
-        <button class="btn btn-secondary" onclick="this.closest('.alert-overlay').remove(); demoTourStart(true)">${ar ? '▶ شغّلها تلقائياً — أنا أشاهد فقط' : '▶ Or sit back — it demos itself'}</button>
+        <button class="btn btn-primary" onclick="this.closest('.alert-overlay').remove(); demoTourStart('step')">${ar ? '▶ ابدأ الجولة — هي تعمل وأنت تقرأ وتضغط «متابعة»' : '▶ Start the tour — it does the work, you just press Continue'}</button>
+        <button class="btn btn-secondary btn-sm" onclick="this.closest('.alert-overlay').remove(); demoTourStart('auto')">${ar ? '🤖 تلقائي بالكامل — أشاهد فقط' : '🤖 Fully automatic — I\'ll just watch'}</button>
+        <button class="btn btn-secondary btn-sm" onclick="this.closest('.alert-overlay').remove(); demoTourStart('manual')">${ar ? '🖱️ يدوي — أنا أضغط أزرار التطبيق بنفسي' : '🖱️ Hands-on — I\'ll click the app myself'}</button>
         <button class="btn btn-secondary btn-sm" onclick="this.closest('.alert-overlay').remove()">${ar ? 'أستكشف بنفسي' : 'I\'ll explore on my own'}</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
 }
 
-function demoTourStart(autoplay) {
+function demoTourStart(pace) {
   if (!tourIsDemoInstall()) return;
+  // pace: 'step' (default — the tour acts, the visitor reads + presses
+  // Continue), 'auto' (fully timer-driven), 'manual' (visitor clicks the
+  // real app controls). Legacy booleans from old callers still map sanely.
+  if (pace === true) pace = 'auto';
+  if (!pace || pace === false) pace = 'step';
   // Per-run patient identity: a REPLAY must register a fresh Salem (a reused
   // national id would make step 1 auto-skip, and a reused bed would trip the
   // bed-conflict guard against the previous run's Salem).
   const nonce = String(Date.now()).slice(-6);
-  tourSave({ i: 0, auto: !!autoplay, natId: '10998' + nonce, bed: 'B-3' + nonce.slice(-2) });
+  tourSave({ i: 0, pace, auto: pace === 'auto', natId: '10998' + nonce, bed: 'B-3' + nonce.slice(-2) });
   demoTourRunStep();
+}
+
+// Continue button (step pace): the visitor read the beat — now the tour
+// performs it. Arms the tick's action loop (which retries multi-phase
+// modals); info beats just advance.
+function demoTourContinue() {
+  const s = tourState(); if (!s) return;
+  const step = TOUR_STEPS[s.i]; if (!step) return;
+  if (step.mode === 'info') { _tourAdvance(); return; }
+  s.armed = true; tourSave(s);
+  _tourLastFire = 0;             // fire on the next tick, no extra wait
+  const btn = document.getElementById('tour-continue-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ ' + (currentLanguage() === 'ar' ? 'يعمل…' : 'working…'); }
 }
 
 function demoTourMaybeResume() {
@@ -843,8 +862,10 @@ function demoTourEnd() {
 
 function demoTourToggleAuto() {
   const s = tourState(); if (!s) return;
-  s.auto = !s.auto; tourSave(s);
-  if (!s.auto) _tourCursorHide();
+  const isAuto = (s.pace || (s.auto ? 'auto' : '')) === 'auto';
+  s.pace = isAuto ? 'step' : 'auto';
+  s.auto = !isAuto; s.armed = false; tourSave(s);
+  if (isAuto) _tourCursorHide();
   _tourShownAt = Date.now();   // give a fresh read-beat on resume
   const step = TOUR_STEPS[s.i];
   if (step) _tourRenderPanel(step, s);
@@ -972,22 +993,26 @@ function _tourTick(step) {
     }
     _tourPositionPanel(_tourHighlighted);   // the guide window follows its target
   } catch (e) {}
-  // AUTOPLAY: after the read-beat, drive the step via the simulated cursor.
+  // SELF-DRIVING: the tour performs the step via the simulated cursor.
+  //  - pace 'auto': fires after a text-length read-beat (timer-driven).
+  //  - pace 'step': fires once the visitor pressed Continue (s.armed).
   // The retry cadence (2.6s) makes multi-phase steps (register→review,
   // ack-button→ack-modal) progress phase by phase; done() still gates advance.
   try {
-    if (s.auto && step.mode !== 'final') {
-      const now = Date.now();
-      if (now - _tourShownAt > _tourReadMs(step) && now - _tourLastFire > 2600) {
-        _tourLastFire = now;
-        const act = () => {
-          try {
-            if (step.mode === 'info') _tourAdvance();
-            else if (step.auto) step.auto(s);
-          } catch (e) {}
-        };
-        _tourCursorTo(liveTarget || _tourHighlighted, act);
-      }
+    const pace = s.pace || (s.auto ? 'auto' : 'manual');
+    const wants = step.mode !== 'final' && (
+      (pace === 'auto' && Date.now() - _tourShownAt > _tourReadMs(step)) ||
+      (pace === 'step' && s.armed)
+    );
+    if (wants && Date.now() - _tourLastFire > 2600) {
+      _tourLastFire = Date.now();
+      const act = () => {
+        try {
+          if (step.mode === 'info') _tourAdvance();
+          else if (step.auto) step.auto(s);
+        } catch (e) {}
+      };
+      _tourCursorTo(liveTarget || _tourHighlighted, act);
     }
   } catch (e) {}
   // auto-advance the moment the real-world effect is in the database
@@ -998,7 +1023,7 @@ function _tourAdvance() {
   const s = tourState(); if (!s) return;
   if (_tourTimer) { clearInterval(_tourTimer); _tourTimer = null; }
   _tourClearHighlight();
-  s.i += 1; tourSave(s);
+  s.i += 1; s.armed = false; tourSave(s);   // each beat re-arms via its own Continue
   if (s.i >= TOUR_STEPS.length) { demoTourEnd(); return; }
   // hand off via microtask: it escapes the tick's call stack (and its
   // try/catch) like setTimeout(0) would, but is IMMUNE to background-tab
@@ -1023,10 +1048,10 @@ if (typeof document !== 'undefined' && document.addEventListener) {
   document.addEventListener('pointerdown', (e) => {
     try {
       const s = tourState();
-      if (!s || !s.auto) return;
+      if (!s || (s.pace || (s.auto ? 'auto' : '')) !== 'auto') return;
       if (e.target.closest && (e.target.closest('#tour-panel') || e.target.closest('#tour-offer-overlay'))) return;
       if (!e.isTrusted) return;   // the tour's own synthetic clicks don't pause it
-      s.auto = false; tourSave(s);
+      s.pace = 'step'; s.auto = false; s.armed = false; tourSave(s);   // yield: downgrade to Continue-paced
       _tourCursorHide();
       const step = TOUR_STEPS[s.i]; if (step) _tourRenderPanel(step, s);
     } catch (err) {}
@@ -1035,7 +1060,7 @@ if (typeof document !== 'undefined' && document.addEventListener) {
     try {
       if (document.visibilityState !== 'hidden') return;
       const s = tourState();
-      if (s && s.auto) { s.auto = false; tourSave(s); _tourCursorHide(); }
+      if (s && (s.pace === 'auto' || s.auto)) { s.pace = 'step'; s.auto = false; s.armed = false; tourSave(s); _tourCursorHide(); }
     } catch (err) {}
   });
 }
@@ -1050,24 +1075,31 @@ function _tourRenderPanel(step, s) {
     : (step.ch ? (ar ? step.ch.ar : step.ch.en) : 'OpenWard');
   const chChip = step.ch ? `<span style="background:#eef2ff;color:#3730a3;border-radius:12px;padding:2px 8px;font-size:0.68rem;font-weight:600;margin-inline-start:6px">${ar ? step.ch.ar : step.ch.en}</span>` : '';
   const counter = `${s.i + 1} / ${TOUR_STEPS.length}`;
-  const autoBtn = step.mode === 'final' ? '' : (s.auto
+  const pace = s.pace || (s.auto ? 'auto' : 'manual');
+  const paceChip = pace === 'auto' ? (ar ? ' · تلقائي ▶' : ' · AUTO ▶') : '';
+  const autoBtn = step.mode === 'final' ? '' : (pace === 'auto'
     ? `<button class="btn btn-sm btn-secondary" onclick="demoTourToggleAuto()">⏸ ${ar ? 'إيقاف مؤقت' : 'Pause'}</button>`
-    : `<button class="btn btn-sm btn-secondary" onclick="demoTourToggleAuto()">▶ ${ar ? 'تشغيل تلقائي' : 'Autoplay'}</button>`);
+    : `<button class="btn btn-sm btn-secondary" onclick="demoTourToggleAuto()" style="font-size:0.7rem">🤖 ${ar ? 'تلقائي كامل' : 'Full auto'}</button>`);
+  // pace 'step': ONE uniform button — read, press Continue, watch the tour act
+  const continueBtn = (pace === 'step' && step.mode !== 'final')
+    ? `<button class="btn btn-primary" id="tour-continue-btn" onclick="demoTourContinue()" ${s.armed ? 'disabled' : ''} style="flex:1">${s.armed ? '⏳ ' + (ar ? 'يعمل…' : 'working…') : (step.mode === 'info' ? (ar ? 'متابعة ←' : 'Continue →') : '▶ ' + (ar ? 'متابعة — نفّذها' : 'Continue — do it'))}</button>`
+    : '';
   panel.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
       <div class="tour-panel-role">🎬 ${roleBadge}${step.role ? chChip : ''}</div>
-      <div style="font-size:0.72rem;color:var(--text-secondary);white-space:nowrap">${counter}${s.auto && step.mode !== 'final' ? (ar ? ' · تلقائي ▶' : ' · AUTO ▶') : ''}</div>
+      <div style="font-size:0.72rem;color:var(--text-secondary);white-space:nowrap">${counter}${step.mode !== 'final' ? paceChip : ''}</div>
     </div>
     ${step.role ? `<div style="font-size:0.7rem;color:var(--text-secondary);margin:4px 0 2px">🔑 ${ar ? 'سجّلتُ دخولك بـ' : 'I logged you in with'} <code>${step.role[0]} / ${step.role[1]}</code> ${ar ? '(حسابات تجريبية)' : '(demo credentials)'}</div>` : ''}
     <h3>${ar ? step.title.ar : step.title.en}</h3>
     <p>${ar ? step.body.ar : step.body.en}</p>
     <div class="tour-panel-dots">${dots}</div>
     <div class="tour-panel-btns">
-      ${autoBtn}
-      ${step.mode === 'click' && !s.auto ? `<button class="btn btn-sm btn-secondary" onclick="(function(){var st=tourState();var sp=TOUR_STEPS[st.i];try{sp.auto(st);}catch(e){}})()">${ar ? '🤖 افعلها عني' : '🤖 Do it for me'}</button>` : ''}
-      ${step.mode === 'info' && !s.auto ? `<button class="btn btn-sm btn-primary" onclick="_tourAdvance()">${ar ? 'التالي ←' : 'Next →'}</button>` : ''}
+      ${continueBtn}
+      ${pace === 'manual' && step.mode === 'click' ? `<button class="btn btn-sm btn-secondary" onclick="(function(){var st=tourState();var sp=TOUR_STEPS[st.i];try{sp.auto(st);}catch(e){}})()">${ar ? '🤖 افعلها عني' : '🤖 Do it for me'}</button>` : ''}
+      ${pace === 'manual' && step.mode === 'info' ? `<button class="btn btn-sm btn-primary" onclick="_tourAdvance()">${ar ? 'التالي ←' : 'Next →'}</button>` : ''}
+      ${step.mode !== 'final' && pace !== 'manual' ? autoBtn : ''}
       ${step.mode === 'final' ? `<button class="btn btn-sm btn-primary" onclick="demoTourEnd();switchToProduction()">${ar ? '🚀 جهّزه للتشغيل الفعلي' : '🚀 Set up for production'}</button>` : ''}
       ${step.mode === 'final' ? `<button class="btn btn-sm btn-secondary" onclick="demoTourEnd();demoTourOffer(true)">${ar ? '🔁 إعادة الجولة' : '🔁 Replay'}</button>` : ''}
-      <button class="btn btn-sm btn-secondary" onclick="demoTourEnd()">${ar ? 'إنهاء الجولة' : 'End tour'}</button>
+      <button class="btn btn-sm btn-secondary" onclick="demoTourEnd()">${ar ? 'إنهاء' : 'End'}</button>
     </div>`;
 }

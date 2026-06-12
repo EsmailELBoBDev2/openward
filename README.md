@@ -117,16 +117,22 @@ Open <http://localhost:8080>.
 | Nurse | `nurse` | `nurse123` |
 | Consultant | `consultant` | `doctor123` |
 
-**🎬 Guided tour (the fastest way to see it):** on a demo install, the login
-screen offers **“Guided tour: follow a patient through the hospital”** — it
-registers a real patient through the real forms and walks you across role
-logins: ER arrival → the app **blocking an unsafe penicillin order** for an
-allergic patient → the safe prescription → pharmacy verify/dispense → bedside
-MAR charting with two-identifier checks → the manager's tamper-evident audit
-trail of everything you just did. Every click runs the real handlers; nothing
-is mocked. There's also a one-click **role picker** (no typing credentials) and
-a **“Set up for production”** button that wipes the demo and creates a
-zero-default-credential install on the spot.
+**🎬 Guided tour (the fastest way to see it):** a fresh demo install offers the
+tour right after setup — **33 beats, all 15 roles, one patient**, from the
+login page to the patient portal. The default mode needs exactly one gesture
+from you: *read the card, press Continue, watch the tour do the work* — it
+fills the real forms, presses the real buttons, and switches the logins
+itself (an anchored guide window glides around the app pointing at things).
+The story: ambulance pre-arrival → ER registration → consultant hand-off →
+the app **blocking an unsafe penicillin order** → stat bloods + chest X-ray →
+a **critical potassium caught and acknowledged on the record** → pharmacy →
+named-nurse assignment and two-identifier MAR charting → diet, meals,
+discharge planning → an ID-linked follow-up booking → the manager's
+tamper-evident audit of every step → **Salem reading his own results in the
+patient portal**. Fully-automatic and hands-on modes are one click away;
+nothing is mocked. There's also a one-click **role picker** (no typing
+credentials) and a **“Set up for production”** button that wipes the demo and
+creates a zero-default-credential install on the spot.
 
 **Legacy browser / standalone demo accounts** — only seeded when you pick
 **Demo** on the first-run screen (a fresh browser install asks *Demo or

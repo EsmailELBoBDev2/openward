@@ -102,7 +102,8 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   assert(/showRadResultForm/.test(tour) && /rad-submit/.test(tour), 'tour includes the radiologist report beat');
   assert(/critical-banner-/.test(tour) && /showCriticalAckModal/.test(tour) && /ack-confirm-btn/.test(tour) && /lab_critical_acks/.test(tour), 'tour shows the doctor the critical-lab banner and drives the on-the-record acknowledgement');
   // Autoplay engine: opt-in, paced by text length, pausable, yields to real clicks
-  assert(/demoTourStart\(true\)/.test(tour) && /demoTourStart\(false\)/.test(tour), 'offer popup gives both sit-back autoplay and hands-on start');
+  assert(/demoTourStart\('step'\)/.test(tour) && /demoTourStart\('auto'\)/.test(tour) && /demoTourStart\('manual'\)/.test(tour), 'offer gives all three paces — Continue-paced (primary), full-auto, hands-on');
+  assert(/demoTourContinue/.test(tour) && /tour-continue-btn/.test(tour) && /s\.armed/.test(tour), "default pace: the tour acts, the visitor just reads + presses Continue (armed/fire loop)");
   assert(/_tourReadMs/.test(tour) && /tour-cursor/.test(tour), 'autoplay paces by text length and drives a simulated cursor');
   assert(/demoTourToggleAuto/.test(tour) && /pointerdown/.test(tour) && /isTrusted/.test(tour) && /visibilitychange/.test(tour), 'autoplay is pausable, yields to real user clicks, and pauses in hidden tabs');
   // ALL-ROLES story: every persona appears, from the login page to the patient portal
