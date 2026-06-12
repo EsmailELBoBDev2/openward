@@ -108,10 +108,21 @@ const TOUR_STEPS = [
     target(s) { return `[onclick*="showPatientDetail(${s.patientId},"]`; },
     done() { const m = document.getElementById('main-content'); return !!(m && /Penicillin/.test(m.innerHTML)); },
   },
-  { // 2 — the unsafe order (the app must refuse)
+  { // 2 — look around the ER: the features that are ALWAYS one tap away
+    role: ['dr.omar', 'doctor123', 'ER Doctor', 'طبيب الطوارئ'],
+    view: 'er-cases', mode: 'info',
+    title: { en: '3 · Always within reach', ar: '٣ · دائماً في المتناول' },
+    body: {
+      en: 'Watch the spotlight rotate — these live on <em>every</em> screen:<br>🚨 <strong>Code Blue</strong> — one tap summons the resus team with the patient context attached.<br>🧮 <strong>Clinical calculators</strong> — NEWS2, GCS, MELD, Wells… 18 of them, citation-pinned.<br>🔍 <strong>Global search</strong> — any patient by name or MRN from anywhere.',
+      ar: 'تابع الإضاءة المتنقلة — هذه متوفرة في <em>كل</em> شاشة:<br>🚨 <strong>النداء الأزرق</strong> — لمسة واحدة تستدعي فريق الإنعاش مع سياق المريض.<br>🧮 <strong>الحاسبات السريرية</strong> — NEWS2 وGCS وMELD وغيرها، 18 حاسبة موثقة المراجع.<br>🔍 <strong>البحث الشامل</strong> — أي مريض بالاسم أو الرقم الطبي من أي مكان.',
+    },
+    targets: ['#code-blue-fab', '#calc-fab', '#global-search'],
+    target() { return null; }, done() { return false; },
+  },
+  { // 3 — the unsafe order (the app must refuse)
     role: ['dr.sarah', 'doctor123', 'Ward Doctor', 'طبيبة الجناح'],
     view: 'doc-rx', mode: 'click',
-    title: { en: '3 · Try to prescribe the WRONG drug', ar: '٣ · جرّب وصف الدواء الخاطئ' },
+    title: { en: '4 · Try to prescribe the WRONG drug', ar: '٤ · جرّب وصف الدواء الخاطئ' },
     body: {
       en: 'You are Dr. Sarah on the ward now (the tour assigned Salem to her). I selected <strong>Amoxicillin</strong> — a penicillin-class drug for a patient with a <strong>documented penicillin allergy</strong>.<br><br>👉 <strong>You do it: click “Prescribe”.</strong> The app should stop you. That is the point.',
       ar: 'أنت الآن د. سارة في الجناح (الجولة أسندت سالم إليها). اخترتُ <strong>أموكسيسيلين</strong> — من فئة البنسلين لمريض لديه <strong>حساسية بنسلين موثقة</strong>.<br><br>👉 <strong>دورك: اضغط «وصف الدواء».</strong> يجب أن يوقفك النظام — وهذا هو المطلوب.',
@@ -140,7 +151,7 @@ const TOUR_STEPS = [
   { // 3 — read the refusal, take the way out
     role: ['dr.sarah', 'doctor123', 'Ward Doctor', 'طبيبة الجناح'],
     view: 'doc-rx', mode: 'click',
-    title: { en: '4 · The app said no', ar: '٤ · النظام رفض' },
+    title: { en: '5 · The app said no', ar: '٥ · النظام رفض' },
     body: {
       en: 'This is the <strong>red allergy alert</strong>: it names the allergen, the severity, and demands a <em>typed reason</em> from anyone who overrides it — which lands in the permanent audit log.<br><br>👉 <strong>Choose the safe way out (Cancel / decline)</strong> and we’ll order something sensible instead.',
       ar: 'هذا هو <strong>تنبيه الحساسية الأحمر</strong>: يذكر المادة والشدة ويطلب <em>سبباً مكتوباً</em> من أي شخص يتجاوزه — ويُسجَّل في سجل التدقيق الدائم.<br><br>👉 <strong>اختر الخيار الآمن (إلغاء)</strong> وسنصف بديلاً مناسباً.',
@@ -155,7 +166,7 @@ const TOUR_STEPS = [
   { // 4 — the safe order goes through (watch me)
     role: ['dr.sarah', 'doctor123', 'Ward Doctor', 'طبيبة الجناح'],
     view: 'doc-rx', mode: 'auto',
-    title: { en: '5 · Order the right drug', ar: '٥ · وصف الدواء الصحيح' },
+    title: { en: '6 · Order the right drug', ar: '٦ · وصف الدواء الصحيح' },
     body: {
       en: 'Watch — I’m prescribing <strong>Paracetamol 500mg</strong> instead: no allergy match, no condition conflict, so it goes straight through to the pharmacy queue.',
       ar: 'شاهد — أصف الآن <strong>باراسيتامول 500mg</strong>: لا حساسية ولا تعارض مع حالته، فيمرّ مباشرة إلى طابور الصيدلية.',
@@ -179,7 +190,7 @@ const TOUR_STEPS = [
   { // 5 — pharmacist verifies
     role: ['pharm.ali', 'pharm123', 'Pharmacist', 'الصيدلاني'],
     view: 'ph-queue', mode: 'click',
-    title: { en: '6 · Pharmacy is the second pair of eyes', ar: '٦ · الصيدلية عين ثانية' },
+    title: { en: '7 · Pharmacy is the second pair of eyes', ar: '٧ · الصيدلية عين ثانية' },
     body: {
       en: 'You are the pharmacist now — and there is Salem’s Paracetamol, waiting. Pharmacy re-runs the allergy check independently before anything reaches a nurse.<br><br>👉 <strong>Click “✓ Verify”</strong> on Salem’s order.',
       ar: 'أنت الصيدلاني الآن — وهذه وصفة سالم بانتظارك. الصيدلية تعيد فحص الحساسية باستقلالية قبل أن يصل أي دواء للتمريض.<br><br>👉 <strong>اضغط «تحقق»</strong> على وصفة سالم.',
@@ -191,7 +202,7 @@ const TOUR_STEPS = [
   { // 6 — dispense (stock-guarded)
     role: ['pharm.ali', 'pharm123', 'Pharmacist', 'الصيدلاني'],
     view: 'ph-queue', mode: 'click',
-    title: { en: '7 · Dispense it', ar: '٧ · صرف الدواء' },
+    title: { en: '8 · Dispense it', ar: '٨ · صرف الدواء' },
     body: {
       en: 'Verified → now dispense. Dispensing atomically claims the order and deducts stock — two pharmacists can’t double-dispense the same order even by clicking at the same instant.<br><br>👉 <strong>Click “Dispense”.</strong>',
       ar: 'تم التحقق → الآن الصرف. الصرف يحجز الوصفة ويخصم المخزون بعملية واحدة — لا يمكن لصيدليين صرف نفس الوصفة مرتين حتى لو ضغطا معاً.<br><br>👉 <strong>اضغط «صرف».</strong>',
@@ -200,10 +211,21 @@ const TOUR_STEPS = [
     target(s) { return `[onclick*="handleDispense(${s.rxId})"]`; },
     done(s) { const rx = dbGet("SELECT status FROM prescriptions WHERE rx_id = ?", [s.rxId]); return !!(rx && rx.status === 'dispensed'); },
   },
-  { // 7 — nurse charts it on the MAR (two identifiers!)
+  { // — look around the pharmacy
+    role: ['pharm.ali', 'pharm123', 'Pharmacist', 'الصيدلاني'],
+    view: 'ph-queue', mode: 'info',
+    title: { en: '9 · More in the pharmacy', ar: '٩ · المزيد في الصيدلية' },
+    body: {
+      en: 'The spotlight is rotating through the rest of the pharmacist\'s world: 📦 <strong>live inventory</strong> with low-stock thresholds, 📥 <strong>receive stock</strong>, and the 📜 <strong>dispense log</strong> — every pill accounted for.<br><br>Press <strong>Next</strong> to follow Salem\'s dose to the ward.',
+      ar: 'الإضاءة تتنقل عبر بقية عالم الصيدلاني: 📦 <strong>مخزون حيّ</strong> مع حدود النقص، 📥 <strong>استلام مخزون</strong>، و📜 <strong>سجل الصرف</strong> — كل حبة محسوبة.<br><br>اضغط <strong>التالي</strong> لمتابعة جرعة سالم إلى الجناح.',
+    },
+    targets: ['.nav-btn[data-view="ph-inventory"]', '.nav-btn[data-view="ph-receive"]', '.nav-btn[data-view="ph-log"]'],
+    target() { return null; }, done() { return false; },
+  },
+  { // — nurse charts it on the MAR (two identifiers!)
     role: ['nurse.mona', 'nurse123', 'Ward Nurse', 'ممرضة الجناح'],
     view: 'nr-mar', mode: 'click',
-    title: { en: '8 · Give the dose — to the RIGHT patient', ar: '٨ · إعطاء الجرعة — للمريض الصحيح' },
+    title: { en: '10 · Give the dose — to the RIGHT patient', ar: '١٠ · إعطاء الجرعة — للمريض الصحيح' },
     body: {
       en: 'You are Salem’s nurse. Open the charting dialog and look at the top: <strong>name + MRN + date of birth</strong> — two-identifier verification against the wristband (room numbers don’t count). Mark it <em>Given</em> and save.<br><br>👉 <strong>Click “Log” on Salem’s Paracetamol, then Save.</strong>',
       ar: 'أنت ممرضة سالم. افتحي نافذة التوثيق وانظري أعلاها: <strong>الاسم + الرقم الطبي + تاريخ الميلاد</strong> — تحقق بمعرّفين مقابل سوار المعصم (رقم الغرفة لا يُعتد به). اختاري <em>أُعطي</em> واحفظي.<br><br>👉 <strong>اضغطي «إعطاء» على باراسيتامول سالم ثم احفظي.</strong>',
@@ -216,10 +238,21 @@ const TOUR_STEPS = [
     target(s) { return document.getElementById('mar-save-btn') || `[onclick*="showMARLogForm(${s.rxId},"]`; },
     done(s) { return !!dbGet("SELECT mar_id FROM med_admin_records WHERE prescription_id = ? AND status = 'given' LIMIT 1", [s.rxId]); },
   },
-  { // 8 — the manager sees everything in the audit trail
+  { // — look around the nurse's world
+    role: ['nurse.mona', 'nurse123', 'Ward Nurse', 'ممرضة الجناح'],
+    view: 'nr-mar', mode: 'info',
+    title: { en: '11 · A nurse\'s shift, organized', ar: '١١ · وردية الممرضة، منظمة' },
+    body: {
+      en: 'Beyond the MAR, the spotlight shows the nurse\'s other tools: ✅ <strong>prioritized tasks</strong> (a "what needs me now" list), 💧 <strong>fluids I/O balance</strong>, 📋 <strong>assessments</strong> (Morse falls, Braden, pain) — and the 🧮 calculators are right there too.<br><br><strong>Next</strong>: the view from the top.',
+      ar: 'إلى جانب سجل الإعطاء، تعرض الإضاءة بقية أدوات الممرضة: ✅ <strong>مهام مرتّبة بالأولوية</strong>، 💧 <strong>ميزان السوائل</strong>، 📋 <strong>التقييمات</strong> (مورس، برادن، الألم) — والحاسبات 🧮 في المتناول أيضاً.<br><br><strong>التالي</strong>: المشهد من الأعلى.',
+    },
+    targets: ['.nav-btn[data-view="nr-tasks"]', '.nav-btn[data-view="nr-fluids"]', '.nav-btn[data-view="nr-assessments"]', '#calc-fab'],
+    target() { return null; }, done() { return false; },
+  },
+  { // — the manager sees everything in the audit trail
     role: ['manager', 'manager123', 'Hospital Manager', 'مدير المستشفى'],
     view: 'hm-blackbox', mode: 'info',
-    title: { en: '9 · Everything you did is on the record', ar: '٩ · كل ما فعلته مسجَّل' },
+    title: { en: '12 · Everything you did is on the record', ar: '١٢ · كل ما فعلته مسجَّل' },
     body: {
       en: 'The manager’s “black box”: registration, the <strong>refused Amoxicillin alert</strong>, the prescription, the verification, the dispense, the MAR entry — every step you just took, hash-chained so silent edits are detectable. This audit trail is the spine of the whole system.<br><br>Press <strong>Next</strong> for the finale.',
       ar: '«الصندوق الأسود» للمدير: التسجيل، <strong>تنبيه الأموكسيسيلين المرفوض</strong>، الوصفة، التحقق، الصرف، توثيق الإعطاء — كل خطوة قمت بها الآن، مسلسلة التجزئة بحيث يُكشف أي تعديل خفي.<br><br>اضغط <strong>التالي</strong> للختام.',
@@ -227,7 +260,18 @@ const TOUR_STEPS = [
     target() { return '#main-content table'; },
     done() { return false; },   // advances via the Next button
   },
-  { // 9 — finale
+  { // — look around the manager's cockpit
+    role: ['manager', 'manager123', 'Hospital Manager', 'مدير المستشفى'],
+    view: 'hm-overview', mode: 'info',
+    title: { en: '13 · The manager\'s cockpit', ar: '١٣ · قمرة قيادة المدير' },
+    body: {
+      en: 'The spotlight tours the oversight tools: 📊 <strong>live analytics</strong> (admissions, LOS, critical labs — lazy-loaded charts), 🛏️ <strong>the bed map</strong>, and 📑 <strong>reports</strong>. The manager sees the hospital, not patient charts — oversight roles deliberately have no prescribing or charting rights.',
+      ar: 'الإضاءة تستعرض أدوات الإشراف: 📊 <strong>تحليلات حيّة</strong> (التنويمات، مدة الإقامة، الفحوصات الحرجة)، 🛏️ <strong>خريطة الأسرّة</strong>، و📑 <strong>التقارير</strong>. المدير يرى المستشفى لا ملفات المرضى — أدوار الإشراف بلا صلاحيات وصف أو توثيق عمداً.',
+    },
+    targets: ['.nav-btn[data-view="hm-analytics"]', '.nav-btn[data-view="hm-beds"]', '.nav-btn[data-view="hm-reports"]'],
+    target() { return null; }, done() { return false; },
+  },
+  { // — finale
     role: ['manager', 'manager123', 'Hospital Manager', 'مدير المستشفى'],
     view: 'hm-overview', mode: 'final',
     title: { en: '🎉 That was the whole loop', ar: '🎉 هذه هي الدورة كاملة' },
@@ -244,6 +288,31 @@ const TOUR_STEPS = [
 let _tourTimer = null;
 let _tourHighlighted = null;
 let _tourRunToken = 0;   // stale async runSteps (double-clicks, debug calls) go inert
+let _tourSpotIdx = 0;    // rotating-spotlight position for steps with `targets: [...]`
+
+// Pops once after a fresh Demo install (and never again): "want the tour?"
+function demoTourOffer() {
+  if (!tourIsDemoInstall() || tourState()) return;
+  if (localStorage.getItem('ow_tour_offered')) return;
+  if (typeof getCurrentSession === 'function' && getCurrentSession()) return;   // already inside the app
+  localStorage.setItem('ow_tour_offered', '1');
+  const ar = currentLanguage() === 'ar';
+  const overlay = document.createElement('div');
+  overlay.className = 'alert-overlay';
+  overlay.innerHTML = `
+    <div class="alert-modal" style="max-width:460px;text-align:center">
+      <div style="font-size:2.5rem">🎬</div>
+      <h2 style="margin:6px 0 8px">${ar ? 'جولة إرشادية؟' : 'Want the guided tour?'}</h2>
+      <p class="text-muted" style="font-size:0.9rem;margin-bottom:16px">${ar
+        ? 'تابع مريضاً واحداً من باب الطوارئ حتى سجل التدقيق — عبر خمسة أدوار. أنا أقود وأبدّل تسجيلات الدخول، وأنت تضغط الأزرار المهمة (بما فيها الزر الذي سيرفضه النظام عمداً).'
+        : 'Follow one patient from the ER door to the audit log — across five staff roles. I drive and switch the logins; you press the buttons that matter (including the one the app will refuse, on purpose).'}</p>
+      <div class="alert-buttons" style="justify-content:center">
+        <button class="btn btn-primary" onclick="this.closest('.alert-overlay').remove(); demoTourStart()">${ar ? '🎬 ابدأ الجولة' : '🎬 Start the tour'}</button>
+        <button class="btn btn-secondary" onclick="this.closest('.alert-overlay').remove()">${ar ? 'أستكشف بنفسي' : 'I\'ll explore on my own'}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
 
 function demoTourStart() {
   if (!tourIsDemoInstall()) return;
@@ -293,6 +362,7 @@ async function demoTourRunStep() {
   _tourRenderPanel(step, s);
 
   if (_tourTimer) clearInterval(_tourTimer);
+  _tourSpotIdx = 0;
   _tourTimer = setInterval(() => _tourTick(step), 900);
   _tourTick(step);
 
@@ -303,12 +373,24 @@ async function demoTourRunStep() {
 function _tourTick(step) {
   const s = tourState();
   if (!s || TOUR_STEPS[s.i] !== step) return;
-  // (re-)apply the highlight — view re-renders wipe it
+  // (re-)apply the highlight — view re-renders wipe it. Steps with a
+  // `targets` array get a ROTATING spotlight (one element per tick).
   try {
-    let t = step.target ? step.target(s) : null;
-    if (typeof t === 'string') t = document.querySelector(t);
-    if (t && t !== _tourHighlighted) { _tourClearHighlight(); t.classList.add('tour-spot'); t.scrollIntoView({ block: 'center', behavior: 'smooth' }); _tourHighlighted = t; }
-    if (!t) _tourClearHighlight();
+    let t = null;
+    if (step.targets && step.targets.length) {
+      for (let k = 0; k < step.targets.length && !t; k++) {
+        t = document.querySelector(step.targets[_tourSpotIdx % step.targets.length]);
+        if (!t) _tourSpotIdx++;   // missing element (e.g. FAB hidden) — try the next
+      }
+      _tourSpotIdx++;
+      if (t && t !== _tourHighlighted) { _tourClearHighlight(); t.classList.add('tour-spot'); _tourHighlighted = t; }
+      // (no scrollIntoView for spotlights — the rotation shouldn't yank the page around)
+    } else {
+      t = step.target ? step.target(s) : null;
+      if (typeof t === 'string') t = document.querySelector(t);
+      if (t && t !== _tourHighlighted) { _tourClearHighlight(); t.classList.add('tour-spot'); t.scrollIntoView({ block: 'center', behavior: 'smooth' }); _tourHighlighted = t; }
+      if (!t) _tourClearHighlight();
+    }
   } catch (e) {}
   // auto-advance the moment the real-world effect is in the database
   try { if (step.done && step.done(s)) _tourAdvance(); } catch (e) {}
@@ -320,7 +402,18 @@ function _tourAdvance() {
   _tourClearHighlight();
   s.i += 1; tourSave(s);
   if (s.i >= TOUR_STEPS.length) { demoTourEnd(); return; }
-  demoTourRunStep();
+  // run outside the tick's call stack (and its try/catch) so a throw inside
+  // the next step can't be swallowed into a silent stall
+  setTimeout(() => demoTourRunStep(), 0);
+}
+
+// Self-heal watchdog: the tour must never silently stall. If state says a tour
+// is active but no step-loop is ticking (a runStep died mid-flight — e.g. an
+// exception inside a view handler it triggered), re-enter the current step.
+if (typeof window !== 'undefined' && typeof setInterval === 'function') {
+  setInterval(() => {
+    try { if (!_tourTimer && tourState() && tourIsDemoInstall()) demoTourRunStep(); } catch (e) {}
+  }, 2500);
 }
 
 function _tourRenderPanel(step, s) {
@@ -331,6 +424,7 @@ function _tourRenderPanel(step, s) {
   const roleBadge = `${ar ? step.role[3] : step.role[2]} · ${step.role[0]}`;
   panel.innerHTML = `
     <div class="tour-panel-role">🎬 ${roleBadge}</div>
+    <div style="font-size:0.7rem;color:var(--text-secondary);margin:4px 0 2px">🔑 ${ar ? 'سجّلتُ دخولك بـ' : 'I logged you in with'} <code>${step.role[0]} / ${step.role[1]}</code> ${ar ? '(حسابات تجريبية)' : '(demo credentials)'}</div>
     <h3>${ar ? step.title.ar : step.title.en}</h3>
     <p>${ar ? step.body.ar : step.body.en}</p>
     <div class="tour-panel-dots">${dots}</div>

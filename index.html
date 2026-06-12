@@ -248,8 +248,10 @@
         setupShowcaseLogin();
 
         // Resume a guided demo tour in progress (it spans role logins, so its
-        // state lives in localStorage; no-op outside demo installs).
+        // state lives in localStorage; no-op outside demo installs) — and on a
+        // demo install that never saw the offer, pop it once at the login screen.
         if (typeof demoTourMaybeResume === 'function') demoTourMaybeResume();
+        if (typeof demoTourOffer === 'function') demoTourOffer();
 
         // Check if there's an active session. In server mode, restore it from
         // the HttpOnly cookie (survives reload) rather than localStorage.
@@ -856,7 +858,12 @@
       const finish = () => { overlay.remove(); document.getElementById('login-btn').disabled = false; };
       document.getElementById('fr-demo').onclick = async () => {
         setBusy(true);
-        try { await completeFirstRun('demo'); finish(); }
+        try {
+          await completeFirstRun('demo');
+          finish();
+          setupShowcaseLogin();   // picker + demo notice appear without a reload
+          if (typeof demoTourOffer === 'function') demoTourOffer();   // "want the tour?"
+        }
         catch (e) { setBusy(false); alert((ar ? 'فشل الإعداد: ' : 'Setup failed: ') + e.message); }
       };
       document.getElementById('fr-prod').onclick = () => {

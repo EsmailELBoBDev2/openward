@@ -96,6 +96,10 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   assert(/handleVerifyRx/.test(tour) && /showMARLogForm|mar-save-btn/.test(tour) && /requestSubmit/.test(tour), 'tour drives the REAL handlers (register form, verify, MAR), not mocks');
   assert(/amoxicillin/i.test(tour) && /paracetamol/i.test(tour), 'tour includes the blocked-unsafe-order beat and the safe alternative');
   assert(/demo-tour\.js/.test(idx) && /demoTourMaybeResume/.test(idx) && /demoTourStart/.test(idx), 'index.html loads the tour, resumes it at boot, and offers it in the demo picker');
+  assert(/demoTourOffer/.test(tour) && /ow_tour_offered/.test(tour) && (idx.match(/demoTourOffer/g) || []).length >= 2, 'tour auto-OFFERS itself once: right after Demo first-run AND at the login screen of an un-toured demo install');
+  assert(/setupShowcaseLogin\(\);\s*\/\/ picker \+ demo notice appear without a reload/.test(idx), 'persona picker appears immediately after choosing Demo (no reload needed)');
+  assert(/targets:/.test(tour) && /_tourSpotIdx/.test(tour) && /code-blue-fab/.test(tour) && /ph-inventory/.test(tour) && /hm-analytics/.test(tour), 'tour includes rotating-spotlight "look around" beats for ER/pharmacy/nurse/manager features');
+  assert(/I logged you in with/.test(tour), 'tour panel discloses the demo credentials it used for each role switch');
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
