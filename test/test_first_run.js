@@ -89,6 +89,14 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   assert(/SERVER_MODE/.test(showcase) && /central hospital server/.test(showcase), 'server mode replaces the (false-there) local-only notice with the central-server notice');
   assert(/ow_first_run/.test(idx.slice(idx.indexOf('function switchToProduction'))) && /localStorage\.getItem\('ow_first_run'\) === 'production'/.test(idx), 'one-click production switch wipes demo data and lands directly on the admin-creation form');
 
+  // Guided demo tour: gated on demo installs, follows a REAL patient through
+  // real handlers, and is wired into boot + the demo picker.
+  const tour = fs.readFileSync(require('path').resolve(__dirname, '../js/demo-tour.js'), 'utf8');
+  assert(/tourIsDemoInstall/.test(tour) && /dr\.omar/.test(tour) && /SERVER_MODE/.test(tour), 'tour refuses to run outside demo installs (dr.omar + SERVER_MODE gates)');
+  assert(/handleVerifyRx/.test(tour) && /showMARLogForm|mar-save-btn/.test(tour) && /requestSubmit/.test(tour), 'tour drives the REAL handlers (register form, verify, MAR), not mocks');
+  assert(/amoxicillin/i.test(tour) && /paracetamol/i.test(tour), 'tour includes the blocked-unsafe-order beat and the safe alternative');
+  assert(/demo-tour\.js/.test(idx) && /demoTourMaybeResume/.test(idx) && /demoTourStart/.test(idx), 'index.html loads the tour, resumes it at boot, and offers it in the demo picker');
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('  FAIL- harness error: ' + e.message); process.exit(1); });

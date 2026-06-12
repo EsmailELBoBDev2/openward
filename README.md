@@ -117,6 +117,17 @@ Open <http://localhost:8080>.
 | Nurse | `nurse` | `nurse123` |
 | Consultant | `consultant` | `doctor123` |
 
+**🎬 Guided tour (the fastest way to see it):** on a demo install, the login
+screen offers **“Guided tour: follow a patient through the hospital”** — it
+registers a real patient through the real forms and walks you across role
+logins: ER arrival → the app **blocking an unsafe penicillin order** for an
+allergic patient → the safe prescription → pharmacy verify/dispense → bedside
+MAR charting with two-identifier checks → the manager's tamper-evident audit
+trail of everything you just did. Every click runs the real handlers; nothing
+is mocked. There's also a one-click **role picker** (no typing credentials) and
+a **“Set up for production”** button that wipes the demo and creates a
+zero-default-credential install on the spot.
+
 **Legacy browser / standalone demo accounts** — only seeded when you pick
 **Demo** on the first-run screen (a fresh browser install asks *Demo or
 Production*; Production seeds **no accounts at all** — you create the IT admin

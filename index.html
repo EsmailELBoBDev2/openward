@@ -194,6 +194,7 @@
   <script src="js/calculators.js" defer></script>
   <script src="js/easy-features.js" defer></script>
   <script src="js/router.js" defer></script>
+  <script src="js/demo-tour.js" defer></script>
 
   <script>
     // ============================================================
@@ -245,6 +246,10 @@
         // Showcase polish: truthful per-mode storage notice + demo persona
         // picker (demo installs only — production/server never get quick-logins).
         setupShowcaseLogin();
+
+        // Resume a guided demo tour in progress (it spans role logins, so its
+        // state lives in localStorage; no-op outside demo installs).
+        if (typeof demoTourMaybeResume === 'function') demoTourMaybeResume();
 
         // Check if there's an active session. In server mode, restore it from
         // the HttpOnly cookie (survives reload) rather than localStorage.
@@ -753,6 +758,9 @@
             ${DEMO_PERSONAS.map((p, i) => `<option value="${i}">${p[0]} ${p[1]} — ${p[2]}</option>`).join('')}
             ${portalOpt}
           </select>
+        </div>
+        <div style="text-align:center;margin-bottom:6px">
+          <button type="button" class="btn btn-primary" id="tour-start-btn" style="width:100%" onclick="demoTourStart()">🎬 ${currentLanguage() === 'ar' ? 'جولة إرشادية: تابع مريضاً عبر المستشفى' : 'Guided tour: follow a patient through the hospital'}</button>
         </div>
         <div style="text-align:center;margin-bottom:14px">
           <button type="button" class="btn btn-sm btn-secondary" id="prod-setup-btn" style="font-size:0.72rem" onclick="switchToProduction()">🚀 Set up for production — wipes ALL demo data</button>
