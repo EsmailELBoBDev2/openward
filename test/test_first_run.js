@@ -82,6 +82,13 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   // Help modal must not print demo credentials unconditionally
   assert(/demoInstall \? `/.test(idx) && /dr\.omar/.test(idx), 'Help modal gates demo credentials on a demo install');
 
+  // Showcase login: the persona picker renders ONLY on demo installs, and
+  // production browser installs keep the (true) local-only storage warning.
+  const showcase = idx.slice(idx.indexOf('function setupShowcaseLogin'), idx.indexOf('function switchToProduction'));
+  assert(/dr\.omar/.test(showcase) && /if \(!demo\) return;/.test(showcase), 'persona picker is gated on the demo install check (production gets NO quick-logins)');
+  assert(/SERVER_MODE/.test(showcase) && /central hospital server/.test(showcase), 'server mode replaces the (false-there) local-only notice with the central-server notice');
+  assert(/ow_first_run/.test(idx.slice(idx.indexOf('function switchToProduction'))) && /localStorage\.getItem\('ow_first_run'\) === 'production'/.test(idx), 'one-click production switch wipes demo data and lands directly on the admin-creation form');
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('  FAIL- harness error: ' + e.message); process.exit(1); });

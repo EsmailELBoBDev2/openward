@@ -52,14 +52,21 @@
         <button type="button" class="btn btn-sm btn-secondary" onclick="clearDatabase()" style="font-size: 0.75rem;">🔄 Reset Database</button>
       </div>
 
-      <!-- Local-only data scope notice: this app stores data in THIS browser's
-           IndexedDB. Hosting the files over an IP does NOT share the database
-           between computers — each browser has its own. Warn staff so they don't
-           manage the same patients from two workstations and collide. -->
-      <div style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
+      <!-- Data-scope notice. The static default below is the BROWSER-mode truth
+           (per-device IndexedDB, nothing shared). setupShowcaseLogin() rewrites
+           it at boot for the other modes: server mode = data is central and
+           shared (the warning below would be FALSE there); demo install = demo
+           showcase framing. Browser-mode production installs keep this warning,
+           because for them it is true and important. -->
+      <div id="data-scope-notice" style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
         &#9888; <strong>Local device only</strong> — data is stored in <strong>this browser on this computer</strong> and is <strong>not shared</strong> with other workstations. Do not manage the same patients from multiple devices.<br>
         <span dir="rtl">البيانات مخزّنة في هذا المتصفح على هذا الجهاز فقط، ولا تتم مشاركتها مع الأجهزة الأخرى.</span>
       </div>
+
+      <!-- Demo persona picker + one-click production switch (populated by
+           setupShowcaseLogin() ONLY on demo installs — production and server
+           installs never render credentials or quick-logins). -->
+      <div id="demo-login-picker"></div>
 
       <!-- Login Mode Toggle -->
       <div class="login-mode-toggle" id="login-mode-toggle">
@@ -234,6 +241,10 @@
         if (typeof DB_NEEDS_FIRST_RUN !== 'undefined' && DB_NEEDS_FIRST_RUN) {
           showFirstRunChooser();
         }
+
+        // Showcase polish: truthful per-mode storage notice + demo persona
+        // picker (demo installs only — production/server never get quick-logins).
+        setupShowcaseLogin();
 
         // Check if there's an active session. In server mode, restore it from
         // the HttpOnly cookie (survives reload) rather than localStorage.
@@ -679,6 +690,111 @@
     })();
 
     // ============================================================
+    // Showcase login (demo installs only): truthful storage notice,
+    // one-click persona login, one-click switch to production
+    // ============================================================
+
+    // Demo seed credentials (constants from seedHospitalData — a demo install
+    // ships these on purpose; production installs never render this list).
+    const DEMO_PERSONAS = [
+      ['🛠️', 'IT Admin', 'مدير النظام', 'admin', 'HIS@2024'],
+      ['🏥', 'Hospital Manager', 'مدير المستشفى', 'manager', 'manager123'],
+      ['🩺', 'Consultant', 'استشاري', 'dr.ahmed', 'doctor123'],
+      ['🩺', 'Doctor (ward)', 'طبيب', 'dr.sarah', 'doctor123'],
+      ['🚑', 'ER Doctor', 'طبيب طوارئ', 'dr.omar', 'doctor123'],
+      ['🚨', 'Triage Nurse', 'ممرضة فرز', 'nurse.noura', 'nurse123'],
+      ['👩‍⚕️', 'Senior Nurse', 'ممرضة أولى', 'nurse.fatima', 'nurse123'],
+      ['👩‍⚕️', 'Ward Nurse', 'ممرضة', 'nurse.mona', 'nurse123'],
+      ['💊', 'Pharmacist', 'صيدلاني', 'pharm.ali', 'pharm123'],
+      ['🔬', 'Lab Tech', 'تقني مختبر', 'lab.nasser', 'lab123'],
+      ['🩻', 'Radiologist', 'أخصائي أشعة', 'rad.mohammed', 'rad123'],
+      ['🛎️', 'Receptionist', 'موظفة استقبال', 'reception.sara', 'recept123'],
+      ['🥗', 'Dietitian', 'أخصائية تغذية', 'diet.amira', 'diet123'],
+      ['🤝', 'Social Worker', 'أخصائية اجتماعية', 'sw.hessa', 'social123'],
+    ];
+
+    function setupShowcaseLogin() {
+      const notice = document.getElementById('data-scope-notice');
+      const isServer = typeof SERVER_MODE !== 'undefined' && SERVER_MODE;
+      if (isServer) {
+        // The local-only warning is FALSE in server mode — data is central.
+        if (notice) notice.outerHTML = `
+          <div style="background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
+            🟢 <strong>Connected to the central hospital server</strong> — data is shared across all workstations in real time and stored on the server, not in this browser.<br>
+            <span dir="rtl">متصل بخادم المستشفى المركزي — البيانات مشتركة بين جميع الأجهزة فورياً ومخزّنة على الخادم.</span>
+          </div>`;
+        return;
+      }
+      let demo = false;
+      try { demo = typeof dbGet === 'function' && !!dbGet("SELECT user_id FROM users WHERE username = 'dr.omar'"); } catch (e) {}
+      if (!demo) return;   // production browser install: keep the local-only warning, no quick-logins
+
+      if (notice) notice.outerHTML = `
+        <div style="background:#eff6ff;border:1px solid #93c5fd;color:#1e40af;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
+          🧪 <strong>Demo showcase</strong> — a full fictional hospital, stored locally in this browser. Pick a role below and look around; nothing here is real.<br>
+          <span dir="rtl">عرض تجريبي — مستشفى وهمي كامل مخزّن محلياً في هذا المتصفح. اختر دوراً وجرّب؛ لا شيء هنا حقيقي.</span>
+        </div>`;
+
+      // Patient-portal demo identity comes from the DB (MRNs embed the seed date,
+      // so a hardcoded one would rot).
+      let portalOpt = '';
+      try {
+        const pp = dbGet('SELECT mrn, date_of_birth FROM patients WHERE portal_enabled = 1 LIMIT 1');
+        if (pp) portalOpt = `<option value="patient|${pp.mrn}|${pp.date_of_birth}">👤 Patient Portal — بوابة المريض</option>`;
+      } catch (e) {}
+
+      const picker = document.getElementById('demo-login-picker');
+      if (!picker) return;
+      picker.innerHTML = `
+        <div class="form-group" style="margin-bottom:10px">
+          <label for="demo-persona" style="font-size:0.85rem">🎭 Quick demo login — دخول تجريبي سريع</label>
+          <select id="demo-persona" aria-label="Quick demo login">
+            <option value="">— ${currentLanguage() === 'ar' ? 'اختر دوراً' : 'pick a role'} —</option>
+            ${DEMO_PERSONAS.map((p, i) => `<option value="${i}">${p[0]} ${p[1]} — ${p[2]}</option>`).join('')}
+            ${portalOpt}
+          </select>
+        </div>
+        <div style="text-align:center;margin-bottom:14px">
+          <button type="button" class="btn btn-sm btn-secondary" id="prod-setup-btn" style="font-size:0.72rem" onclick="switchToProduction()">🚀 Set up for production — wipes ALL demo data</button>
+        </div>`;
+      document.getElementById('demo-persona').addEventListener('change', function () {
+        if (this.value === '') return;
+        if (this.value.startsWith('patient|')) {
+          const [, mrn, dob] = this.value.split('|');
+          setLoginMode('patient');
+          document.getElementById('patient-mrn').value = mrn;
+          document.getElementById('patient-dob').value = dob || '';
+          document.getElementById('patient-password').value = '';
+        } else {
+          const p = DEMO_PERSONAS[parseInt(this.value, 10)];
+          setLoginMode('staff');
+          document.getElementById('login-username').value = p[3];
+          document.getElementById('login-password').value = p[4];
+        }
+        // Showcase smoothness: picking a persona just logs you in.
+        document.getElementById('login-form').requestSubmit();
+      });
+    }
+
+    // One click from showcase to real: wipe ALL local demo data and reopen
+    // straight into the production setup form (no chooser detour).
+    async function switchToProduction() {
+      const ar = currentLanguage() === 'ar';
+      if (!confirm(ar
+        ? 'سيتم مسح كل البيانات التجريبية نهائياً وإنشاء قاعدة بيانات فارغة بدون أي حسابات افتراضية — ستنشئ حساب مدير النظام بنفسك. متابعة؟'
+        : 'This permanently wipes ALL demo data and creates an empty database with NO default accounts — you will create the IT-admin account yourself. Continue?')) return;
+      try {
+        localStorage.clear();
+        const dbs = (indexedDB.databases ? await indexedDB.databases() : [{ name: 'HIS_Storage' }]);
+        for (const d of dbs) {
+          await new Promise((res) => { const r = indexedDB.deleteDatabase(d.name); r.onsuccess = r.onerror = r.onblocked = () => res(); });
+        }
+      } catch (e) {}
+      localStorage.setItem('ow_first_run', 'production');   // boot opens the prod form directly
+      location.reload();
+    }
+
+    // ============================================================
     // First-run chooser (browser mode): Demo vs Production
     // ============================================================
 
@@ -749,6 +865,12 @@
         try { await completeFirstRun('production', { username: u, password: p }); finish(); }
         catch (e) { setBusy(false); err.textContent = e.message; }
       };
+      // One-click "Set up for production" (from the demo login screen) lands
+      // here after the wipe — skip straight to the admin-creation form.
+      if (localStorage.getItem('ow_first_run') === 'production') {
+        localStorage.removeItem('ow_first_run');
+        document.getElementById('fr-prod').click();
+      }
     }
 
     // ============================================================
