@@ -2703,8 +2703,10 @@ function renderRCPRegister(main, lang) {
         <div class="form-group">
           <label>${lang==='ar'?'طريقة الدفع':'Payment'}</label>
           <select id="rcp-payment" onchange="toggleInsurance()">
-            <option value="insurance">${lang==='ar'?'تأمين':'Insurance'}</option>
             <option value="cash">${lang==='ar'?'نقدي':'Cash'}</option>
+            <option value="mobile_wallet">${lang==='ar'?'محفظة إلكترونية':'Mobile Wallet'}</option>
+            <option value="instapay">${lang==='ar'?'انستاباي':'InstaPay'}</option>
+            <option value="insurance">${lang==='ar'?'تأمين':'Insurance'}</option>
           </select>
         </div>
         <div class="form-group" id="rcp-ins-group">
@@ -3028,37 +3030,43 @@ function showBillingForm() {
         </div>
         <div class="form-row">
           <div class="form-group"><label>${lang==='ar'?'رقم الهوية':'National ID'}</label><input type="text" id="bill-nid" maxlength="10"></div>
-          <div class="form-group"><label>${lang==='ar'?'القسم':'Department'}</label><select id="bill-dept">${deptOpts}</select></div>
+          <div class="form-group"><label>${lang==='ar'?'التخصص':'Specialty'}</label><select id="bill-dept">${deptOpts}</select></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>${lang==='ar'?'التاريخ *':'Date *'}</label><input type="date" id="bill-date" required value="${today}"></div>
           <div class="form-group">
-            <label>${lang==='ar'?'طريقة الدفع':'Payment Type'}</label>
-            <select id="bill-payment" onchange="toggleBillInsurance()">
-              <option value="insurance">${lang==='ar'?'تأمين':'Insurance'}</option>
+            <label>${lang==='ar'?'طريقة الدفع':'Payment Method'}</label>
+            <select id="bill-payment" onchange="toggleBillPayment()">
               <option value="cash">${lang==='ar'?'نقدي':'Cash'}</option>
+              <option value="mobile_wallet">${lang==='ar'?'محفظة إلكترونية':'Mobile Wallet'}</option>
+              <option value="instapay">${lang==='ar'?'انستاباي':'InstaPay'}</option>
+              <option value="insurance">${lang==='ar'?'تأمين':'Insurance'}</option>
             </select>
           </div>
         </div>
-        <div class="form-group" id="bill-ins-group">
+        <div class="form-group" id="bill-ins-group" style="display:none">
           <label>${lang==='ar'?'شركة التأمين':'Insurance Company'}</label>
           <select id="bill-insurance">
             <option value="BUPA">BUPA Arabia</option>
             <option value="Tawuniya">Tawuniya</option>
             <option value="MedGulf">MedGulf</option>
             <option value="AXA">AXA Cooperative</option>
-            <option value="SAICO">SAICO</option>
             <option value="Other">${lang==='ar'?'أخرى':'Other'}</option>
           </select>
         </div>
+        <div class="form-group" id="bill-proof-group" style="display:none">
+          <label>📎 ${lang==='ar'?'إثبات الدفع (صورة المحفظة / انستاباي)':'Payment proof (wallet / InstaPay screenshot)'}</label>
+          <input type="file" id="bill-proof" accept="image/*">
+        </div>
         <hr>
-        <h4>${lang==='ar'?'البنود':'Line Items'}</h4>
+        <h4>${lang==='ar'?'البنود — اختر من الإجراءات الشائعة أو «أخرى»':'Line items — pick a common procedure or "Other"'}</h4>
         <div id="bill-items">
           <div class="form-row bill-item-row">
-            <div class="form-group" style="flex:3"><label>${lang==='ar'?'الخدمة (عربي)':'Service (Arabic)'}</label><input type="text" class="item-ar" required></div>
-            <div class="form-group" style="flex:3"><label>${lang==='ar'?'الخدمة (إنجليزي)':'Service (English)'}</label><input type="text" class="item-en" required></div>
-            <div class="form-group" style="flex:1"><label>${lang==='ar'?'الكمية':'Qty'}</label><input type="number" class="item-qty" value="1" min="1"></div>
-            <div class="form-group" style="flex:2"><label>${lang==='ar'?'السعر':'Price (SAR)'}</label><input type="number" class="item-price" step="0.01" min="0" oninput="updateBillTotal()"></div>
+            <div class="form-group" style="flex:3"><label>${lang==='ar'?'الإجراء':'Procedure'}</label><select class="item-proc" onchange="billItemPicked(this)">${billProcOptions(lang)}</select></div>
+            <div class="form-group" style="flex:2"><label>${lang==='ar'?'الوصف (عربي)':'Desc (Arabic)'}</label><input type="text" class="item-ar" required></div>
+            <div class="form-group" style="flex:2"><label>${lang==='ar'?'الوصف (إنجليزي)':'Desc (English)'}</label><input type="text" class="item-en"></div>
+            <div class="form-group" style="flex:1"><label>${lang==='ar'?'الكمية':'Qty'}</label><input type="number" class="item-qty" value="1" min="1" oninput="updateBillTotal()"></div>
+            <div class="form-group" style="flex:1"><label>${lang==='ar'?'السعر':'Price'}</label><input type="number" class="item-price" step="0.01" min="0" oninput="updateBillTotal()"></div>
           </div>
         </div>
         <button type="button" class="btn btn-sm btn-secondary mb-2" onclick="addBillItem()">${lang==='ar'?'+ إضافة بند':'+ Add Item'}</button>
@@ -3072,9 +3080,41 @@ function showBillingForm() {
   `;
 }
 
-function toggleBillInsurance() {
+function toggleBillPayment() {
   const val = document.getElementById('bill-payment').value;
-  document.getElementById('bill-ins-group').style.display = val === 'insurance' ? '' : 'none';
+  const ins = document.getElementById('bill-ins-group'); if (ins) ins.style.display = val === 'insurance' ? '' : 'none';
+  const proof = document.getElementById('bill-proof-group'); if (proof) proof.style.display = (val === 'mobile_wallet' || val === 'instapay') ? '' : 'none';
+}
+
+// Common dental procedures for billing, grouped by category, from the catalog
+// (e.g. حشو ضرس / Filling, خلع ضرس / Extraction …) + an "Other / custom" catch-all.
+function billProcOptions(lang) {
+  const procs = dbAll('SELECT code, name_en, name_ar, category, default_price FROM procedures WHERE active = 1 ORDER BY category, name_en');
+  const byCat = {};
+  procs.forEach(p => { (byCat[p.category] = byCat[p.category] || []).push(p); });
+  const catLabel = { diagnostic: ['Diagnostic', 'تشخيص'], preventive: ['Preventive', 'وقاية'], restorative: ['Restorative (fillings)', 'حشوات'], endodontic: ['Endodontics', 'علاج عصب'], periodontic: ['Periodontics', 'لثة'], oral_surgery: ['Oral Surgery', 'جراحة الفم'], prosthodontic: ['Prosthodontics', 'تركيبات'], orthodontic: ['Orthodontics', 'تقويم'], cosmetic: ['Cosmetic', 'تجميل'] };
+  let html = `<option value="">${lang === 'ar' ? '— اختر إجراء —' : '— Pick a procedure —'}</option>`;
+  Object.keys(byCat).forEach(cat => {
+    const g = (catLabel[cat] ? (lang === 'ar' ? catLabel[cat][1] : catLabel[cat][0]) : cat);
+    html += `<optgroup label="${escapeHtml(g)}">` +
+      byCat[cat].map(p => `<option value="${escapeHtml(p.code)}" data-en="${jsAttr(p.name_en)}" data-ar="${jsAttr(p.name_ar)}" data-price="${p.default_price}">${escapeHtml(lang === 'ar' ? p.name_ar : p.name_en)}</option>`).join('') +
+      `</optgroup>`;
+  });
+  html += `<option value="__other__">${lang === 'ar' ? '✏️ أخرى / مخصص' : '✏️ Other / custom'}</option>`;
+  return html;
+}
+function billItemPicked(sel) {
+  const row = sel.closest('.bill-item-row'); if (!row) return;
+  const o = sel.selectedOptions[0];
+  if (o && o.value && o.value !== '__other__') {
+    row.querySelector('.item-en').value = o.dataset.en || '';
+    row.querySelector('.item-ar').value = o.dataset.ar || '';
+    row.querySelector('.item-price').value = o.dataset.price || '';
+  } else if (o && o.value === '__other__') {
+    row.querySelector('.item-en').value = ''; row.querySelector('.item-ar').value = ''; row.querySelector('.item-price').value = '';
+    row.querySelector('.item-ar').focus();
+  }
+  updateBillTotal();
 }
 
 function addBillItem() {
@@ -3083,10 +3123,11 @@ function addBillItem() {
   const row = document.createElement('div');
   row.className = 'form-row bill-item-row';
   row.innerHTML = `
-    <div class="form-group" style="flex:3"><input type="text" class="item-ar" placeholder="${lang==='ar'?'الخدمة (عربي)':'Service (Arabic)'}" required></div>
-    <div class="form-group" style="flex:3"><input type="text" class="item-en" placeholder="${lang==='ar'?'الخدمة (إنجليزي)':'Service (English)'}" required></div>
-    <div class="form-group" style="flex:1"><input type="number" class="item-qty" value="1" min="1"></div>
-    <div class="form-group" style="flex:2"><input type="number" class="item-price" step="0.01" min="0" oninput="updateBillTotal()"></div>
+    <div class="form-group" style="flex:3"><select class="item-proc" onchange="billItemPicked(this)">${billProcOptions(lang)}</select></div>
+    <div class="form-group" style="flex:2"><input type="text" class="item-ar" placeholder="${lang==='ar'?'الوصف (عربي)':'Desc (Arabic)'}" required></div>
+    <div class="form-group" style="flex:2"><input type="text" class="item-en" placeholder="${lang==='ar'?'الوصف (إنجليزي)':'Desc (English)'}"></div>
+    <div class="form-group" style="flex:1"><input type="number" class="item-qty" value="1" min="1" oninput="updateBillTotal()"></div>
+    <div class="form-group" style="flex:1"><input type="number" class="item-price" step="0.01" min="0" oninput="updateBillTotal()"></div>
     <button type="button" class="btn btn-sm btn-danger" onclick="this.closest('.bill-item-row').remove(); updateBillTotal()">✕</button>
   `;
   container.appendChild(row);
@@ -3133,9 +3174,12 @@ async function handleCreateInvoice(e) {
 
   if (items.length === 0) { showError(lang==='ar'?'أضف بنداً واحداً على الأقل':'Add at least one item'); return; }
 
-  dbRun(`INSERT INTO invoices (patient_name_ar, patient_name_en, national_id, dept_id, visit_date, subtotal, total, payment_type, insurance_company, status, created_by, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,'unpaid',?,?)`,
-    [nameAr, nameEn, nid, deptId, date, total, total, payment, insco, session.user_id, nowISO()]);
+  // Link to an existing patient by national id (so the proof image + invoice attach to the record).
+  const pat = nid ? dbGet('SELECT patient_id, branch FROM patients WHERE national_id = ?', [nid]) : null;
+  const patientId = pat ? pat.patient_id : null;
+  dbRun(`INSERT INTO invoices (patient_id, patient_name_ar, patient_name_en, national_id, dept_id, visit_date, subtotal, total, payment_type, insurance_company, status, created_by, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,'unpaid',?,?)`,
+    [patientId, nameAr, nameEn, nid, deptId, date, total, total, payment, insco, session.user_id, nowISO()]);
   const invoiceId = dbLastId();
 
   for (const item of items) {
@@ -3143,9 +3187,29 @@ async function handleCreateInvoice(e) {
       [invoiceId, item.en, item.ar, item.qty, item.price, item.lineTotal]);
   }
 
+  // Payment proof (mobile wallet / InstaPay screenshot) — saved to the patient
+  // file and linked to the invoice. Needs a resolved patient (FK target).
+  const proofInput = document.getElementById('bill-proof');
+  const proofFile = proofInput && proofInput.files && proofInput.files[0];
+  if (proofFile && (payment === 'mobile_wallet' || payment === 'instapay')) {
+    if (patientId && proofFile.size <= ATTACH_MAX_BYTES) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          dbRun('INSERT INTO patient_attachments (patient_id, filename, mime, kind, size_bytes, data, note, uploaded_by, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?)',
+            [patientId, proofFile.name, proofFile.type, 'payment_proof', proofFile.size, String(reader.result || ''), `${payment} — invoice #${invoiceId}`, user.user_id, nowISO()]);
+          dbRun('UPDATE invoices SET proof_attach_id = ? WHERE invoice_id = ?', [dbLastId(), invoiceId]);
+          dlog('billing.proofSaved', { invoiceId, patientId, payment }); saveDBToIndexedDB();
+        } catch (er) { derr('billing.proof', er); }
+      };
+      reader.readAsDataURL(proofFile);
+    } else { showToast(lang==='ar'?'تعذّر حفظ إثبات الدفع (ربط المريض بالهوية مطلوب)':'Proof not saved (link a registered patient via National ID)', 'warn'); }
+  }
+
   await logAction('INVOICE_CREATED',
-    `${user.full_name_en} created invoice #${invoiceId} for ${nameEn} — Total: ${total.toFixed(2)} SAR`,
-    null, null, nameEn, nid || '');
+    `${user.full_name_en} created invoice #${invoiceId} for ${nameEn} — ${total.toFixed(2)} SAR (${payment})`,
+    null, patientId, nameEn, nid || '');
+  dlog('billing.invoiceCreated', { invoiceId, patientId, total, payment, items: items.length });
   await saveDBToIndexedDB();
   showSuccess(lang==='ar'?'تم إنشاء الفاتورة':'Invoice created');
   navigateTo('rcp-billing');
