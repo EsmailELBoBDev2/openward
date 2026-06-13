@@ -1,11 +1,14 @@
 ## Project context (read first, every task)
-OpenWard is my own MIT-licensed open-source hospital information system
-(© EsmailELBoBDev2, repo EsmailELBoBDev2/openward). I am the author and
-maintainer. All work here is authorized engineering on my own codebase to
-get it production-ready.
+OpenSmile is my own MIT-licensed open-source **dental-clinic** management system
+(© EsmailELBoBDev2, the git repo is still named `openward` — it began as a
+hospital information system and was repurposed into a dental clinic). I am the
+author and maintainer. All work here is authorized engineering on my own
+codebase to get it production-ready.
 
-- This is a healthcare records web app. Patient/PHI/clinical terms and the
-  audit-log code are normal domain content, not sensitive data being mishandled.
+- This is a dental-clinic records web app: patient charts (odontogram, perio),
+  treatment plans, procedures, appointments/operatories, billing, recalls, a
+  prescribing safety guard, and a patient portal. Patient/PHI/clinical terms and
+  the audit-log code are normal domain content, not sensitive data being mishandled.
 - Security tasks here are DEFENSIVE hardening of my own software: input
   validation, access-control checks, output encoding, dependency/config review,
   and regression tests that confirm a fix holds. Treat findings as bugs to fix.

@@ -54,7 +54,7 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
 
   const count = (q) => d.exec(q)[0].values[0][0];
   // Reference data present — the app must be usable (admit somewhere, prescribe something)
-  assert(count('SELECT COUNT(*) FROM departments') >= 10, 'production seed includes departments');
+  assert(count('SELECT COUNT(*) FROM departments') >= 5, 'production seed includes specialties');
   assert(count('SELECT COUNT(*) FROM drugs') >= 10, 'production seed includes the formulary');
   // ZERO default credentials — the operator-created admin is the ONLY account
   assert(count('SELECT COUNT(*) FROM users') === 1, 'production install has exactly ONE account (the created admin)');
@@ -86,37 +86,35 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   // production browser installs keep the (true) local-only storage warning.
   const showcase = idx.slice(idx.indexOf('function setupShowcaseLogin'), idx.indexOf('function switchToProduction'));
   assert(/dr\.omar/.test(showcase) && /if \(!demo\) return;/.test(showcase), 'persona picker is gated on the demo install check (production gets NO quick-logins)');
-  assert(/SERVER_MODE/.test(showcase) && /central hospital server/.test(showcase), 'server mode replaces the (false-there) local-only notice with the central-server notice');
+  assert(/SERVER_MODE/.test(showcase) && /central clinic server/.test(showcase), 'server mode replaces the (false-there) local-only notice with the central-server notice');
   assert(/ow_first_run/.test(idx.slice(idx.indexOf('function switchToProduction'))) && /localStorage\.getItem\('ow_first_run'\) === 'production'/.test(idx), 'one-click production switch wipes demo data and lands directly on the admin-creation form');
 
   // Guided demo tour: gated on demo installs, follows a REAL patient through
   // real handlers, and is wired into boot + the demo picker.
   const tour = fs.readFileSync(require('path').resolve(__dirname, '../js/demo-tour.js'), 'utf8');
   assert(/tourIsDemoInstall/.test(tour) && /dr\.omar/.test(tour) && /SERVER_MODE/.test(tour), 'tour refuses to run outside demo installs (dr.omar + SERVER_MODE gates)');
-  assert(/handleVerifyRx/.test(tour) && /showMARLogForm|mar-save-btn/.test(tour) && /requestSubmit/.test(tour), 'tour drives the REAL handlers (register form, verify, MAR), not mocks');
-  assert(/amoxicillin/i.test(tour) && /paracetamol/i.test(tour), 'tour includes the blocked-unsafe-order beat and the safe alternative');
+  assert(/saveToothStatus/.test(tour) && /doDentalPrescribe/.test(tour) && /requestSubmit/.test(tour), 'tour drives the REAL dental handlers (register form, odontogram, prescribe), not mocks');
+  assert(/amoxicillin/i.test(tour) && /clindamycin/i.test(tour), 'tour includes the blocked-unsafe-Rx beat (amoxicillin) and the safe alternative (clindamycin)');
   assert(/demo-tour\.js/.test(idx) && /demoTourMaybeResume/.test(idx) && /demoTourOffer\(true\)/.test(idx), 'index.html loads the tour, resumes it at boot, and the picker button opens the autoplay/manual choice');
-  // The full clinical story: workup ordered, critical potassium, X-ray report, ack
-  assert(/addSuggestedLab\('LYTE'\)/.test(tour) && /addSuggestedLab\('CXR'\)/.test(tour), 'tour orders the stat electrolytes panel AND the chest X-ray through the real lab form');
-  assert(/handleLabReceive/.test(tour) && /critical_high/.test(tour) && /comp-val/.test(tour), 'tour walks the lab pipeline (receive -> component result entry -> critical potassium)');
-  assert(/showRadResultForm/.test(tour) && /rad-submit/.test(tour), 'tour includes the radiologist report beat');
-  assert(/critical-banner-/.test(tour) && /showCriticalAckModal/.test(tour) && /ack-confirm-btn/.test(tour) && /lab_critical_acks/.test(tour), 'tour shows the doctor the critical-lab banner and drives the on-the-record acknowledgement');
+  // The full dental story: chart the tooth, build the costed plan, complete the filling, invoice + recall
+  assert(/saveToothStatus\(36\)/.test(tour) && /tooth_fdi=36/.test(tour), 'tour charts caries on tooth 36 through the real odontogram editor');
+  assert(/saveAddPlanItem/.test(tour) && /completePlanItem/.test(tour) && /D2391/.test(tour), 'tour builds a costed treatment plan and completes the filling for real');
+  assert(/INTO invoices/.test(tour) && /INTO recalls/.test(tour), 'tour invoices the visit and books a recall');
+  assert(/saveAllergy/.test(tour) && /Penicillin/.test(tour), 'tour records the penicillin allergy that drives the block');
   // Autoplay engine: opt-in, paced by text length, pausable, yields to real clicks
   assert(/demoTourStart\('step'\)/.test(tour) && /demoTourStart\('auto'\)/.test(tour) && /demoTourStart\('manual'\)/.test(tour), 'offer gives all three paces — Continue-paced (primary), full-auto, hands-on');
   assert(/demoTourContinue/.test(tour) && /tour-continue-btn/.test(tour) && /s\.armed/.test(tour), "default pace: the tour acts, the visitor just reads + presses Continue (armed/fire loop)");
   assert(/_tourReadMs/.test(tour) && /tour-cursor/.test(tour), 'autoplay paces by text length and drives a simulated cursor');
   assert(/demoTourToggleAuto/.test(tour) && /pointerdown/.test(tour) && /isTrusted/.test(tour) && /visibilitychange/.test(tour), 'autoplay is pausable, yields to real user clicks, and pauses in hidden tabs');
-  // ALL-ROLES story: every persona appears, from the login page to the patient portal
-  for (const u of ['nurse.noura', 'dr.omar', 'dr.ahmed', 'dr.sarah', 'nurse.fatima', 'lab.nasser', 'rad.mohammed', 'pharm.ali', 'nurse.mona', 'diet.amira', 'sw.hessa', 'reception.sara', 'manager', "'admin'"]) {
+  // ALL-ROLES story: every dental persona appears, from the login page to the patient portal
+  for (const u of ['reception', 'hyg.mona', 'dr.omar', 'manager']) {
     assert(tour.includes(u), `tour includes persona ${u}`);
   }
-  assert(/incoming_arrivals/.test(tour) && /handleAssignCase/.test(tour) && /nurse_assignments/.test(tour), 'tour drives triage pre-arrival, consultant assignment, and nurse assignment for real');
-  assert(/diet_orders/.test(tour) && /meal_log/.test(tour) && /social_work_cases/.test(tour) && /appointments WHERE national_id/.test(tour), 'tour drives diet order, meal log, SW case, and the ID-linked follow-up booking');
   assert(/loginPatient\(s\.mrn/.test(tour) && /role === 'patient'/.test(tour), 'tour closes with the patient logging into his own portal');
   assert(/role: null, view: null, mode: 'info'/.test(tour) && /_tourPositionPanel/.test(tour), 'tour starts ON the login page and the guide window anchors itself near its targets');
   assert(/demoTourOffer/.test(tour) && /ow_tour_offered/.test(tour) && (idx.match(/demoTourOffer/g) || []).length >= 2, 'tour auto-OFFERS itself once: right after Demo first-run AND at the login screen of an un-toured demo install');
   assert(/setupShowcaseLogin\(\);\s*\/\/ picker \+ demo notice appear without a reload/.test(idx), 'persona picker appears immediately after choosing Demo (no reload needed)');
-  assert(/targets:/.test(tour) && /_tourSpotIdx/.test(tour) && /code-blue-fab/.test(tour) && /ph-inventory/.test(tour) && /hm-analytics/.test(tour), 'tour includes rotating-spotlight "look around" beats for ER/pharmacy/nurse/manager features');
+  assert(/targets:/.test(tour) && /_tourSpotIdx/.test(tour), 'tour includes rotating-spotlight "look around" beats');
   assert(/I logged you in with/.test(tour), 'tour panel discloses the demo credentials it used for each role switch');
 
   console.log(`\n${pass} passed, ${fail} failed`);

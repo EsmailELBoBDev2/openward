@@ -46,7 +46,7 @@ assert(jsAttr(undefined) === '', 'undefined -> empty string');
 const fs = require('fs');
 const path = require('path');
 const HANDLER_ANTIPATTERN = /on(?:click|change|submit|input|blur)="[^"\n]*'\$\{[^}\n]*escapeHtml\(/;
-for (const f of ['router.js', 'clinical-decision.js', 'utils.js', 'easy-features.js', 'smart-phrases.js', 'calculators.js']) {
+for (const f of ['router.js', 'dental-views.js', 'utils.js', 'easy-features.js']) {
   const src = fs.readFileSync(path.resolve(__dirname, '..', 'js', f), 'utf8');
   const m = src.match(HANDLER_ANTIPATTERN);
   assert(!m, `js/${f}: no escapeHtml() inside a quoted inline-handler arg (use jsAttr)` + (m ? ` — found: ${m[0].slice(0, 80)}` : ''));

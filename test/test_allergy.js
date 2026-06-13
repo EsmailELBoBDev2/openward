@@ -77,8 +77,7 @@ assert(checkDrugAllergy('Amoxicillin', [{ allergen: '' }]) === null, 'blank alle
   const routerSrc = fs.readFileSync(require('path').resolve(__dirname, '../js/router.js'), 'utf8');
   const inPrescribe = routerSrc.slice(routerSrc.indexOf('function checkInteractionsAndPrescribe'), routerSrc.indexOf('function doInsertPrescription'));
   assert(/checkDrugConditionInteractions\(/.test(inPrescribe), 'checkInteractionsAndPrescribe consults drug-vs-condition contraindications');
-  const inOrderSet = routerSrc.slice(routerSrc.indexOf('function handleApplyOrderSet'));
-  assert(/checkDrugConditionInteractions\(/.test(inOrderSet.slice(0, 6000)) && /condition_flagged/.test(inOrderSet.slice(0, 6000)), 'order-set batch path parks condition-contraindicated meds as exceptions');
+  // (order-set batch prescribing was removed in the dental pivot)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
