@@ -50,6 +50,7 @@ const initSqlJs = require(path.join(ROOT, 'vendor', 'sql-wasm.js'));
 const dbjs = require(path.join(ROOT, 'js', 'db.js'));     // reuse schema builder (createAllTables + migrations)
 const u = require(path.join(ROOT, 'js', 'utils.js'));     // reuse hashPassword/verifyPassword (PBKDF2)
 const allergyCheck = require(path.join(ROOT, 'js', 'allergy-check.js')); // SAME class-aware allergy matcher as the browser
+const fhir = require(path.join(ROOT, 'js', 'fhir-map.js')); // pure row -> FHIR R4 resource mappers
 
 let db = null;            // the one central sql.js Database
 let auditKey = null;      // HMAC key, loaded from disk (outside the DB)
@@ -254,6 +255,124 @@ function canAccessAdmission(actor, role, admissionId) {
   const a = get('SELECT dept_id FROM admissions WHERE admission_id = ?', [admissionId]);
   return !!(a && actor && a.dept_id === actor.department_id);
 }
+// Patient-level access gate (same minimum-necessary rule as /api/patients/:id):
+// oversight sees everyone; everyone else only patients with an ACTIVE admission in
+// their department. Used by the FHIR facade so it can never leak a chart the
+// dedicated endpoints would have refused.
+function canAccessPatient(actor, role, patientId) {
+  if (ALL_PATIENTS_ROLES.includes(role)) return true;
+  if (!actor) return false;
+  return !!get("SELECT 1 AS ok FROM admissions WHERE patient_id = ? AND status = 'active' AND dept_id = ? LIMIT 1", [patientId, actor.department_id]);
+}
+
+// ---- FHIR R4 read facade ----------------------------------------------------
+// parse the query string into {key:value} (FHIR search params live in the query)
+function fhirParams(req) {
+  const out = {};
+  for (const kv of (String(req.url || '').split('?')[1] || '').split('&')) {
+    if (!kv) continue;
+    const i = kv.indexOf('=');
+    const k = decodeURIComponent(i < 0 ? kv : kv.slice(0, i));
+    const v = i < 0 ? '' : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, ' '));
+    out[k] = v;
+  }
+  return out;
+}
+// every FHIR read of PHI is audited with patient context (these are coarse,
+// per-request external pulls — unlike the high-volume bridge reads — so we record
+// each one rather than only the first per session).
+function auditFhir(actor, req, resourceType, patientId, mode) {
+  const patient = patientId ? get('SELECT * FROM patients WHERE patient_id = ?', [patientId]) : null;
+  audit(actor, 'FHIR_READ', `FHIR ${resourceType} ${mode}${patientId ? ' for patient ' + patientId : ''}`, req, patient);
+  persist();
+}
+function handleFhirRead(req, res, actor, role, resourceType, idPart) {
+  if (!fhir.SUPPORTED.includes(resourceType)) return sendFhir(res, 404, fhir.operationOutcome('error', 'not-supported', `resource type "${resourceType}" is not supported`));
+  // demographics need view_patients; clinical resources additionally need view_chart
+  const needsChart = resourceType !== 'Patient';
+  if (!can(role, 'view_patients') || (needsChart && !can(role, 'view_chart'))) {
+    return sendFhir(res, 403, fhir.operationOutcome('error', 'forbidden', `insufficient permission to read ${resourceType}`));
+  }
+  const q = fhirParams(req);
+
+  // ---- resolve the target patient ----
+  let patientId = null;
+  if (resourceType === 'Patient') {
+    if (idPart) patientId = parseInt(idPart, 10) || null;
+    else if (q.identifier) {                    // ?identifier=[system|]MRN
+      const mrn = q.identifier.includes('|') ? q.identifier.split('|').pop() : q.identifier;
+      const p = get('SELECT patient_id FROM patients WHERE mrn = ?', [mrn]);
+      if (!p) return sendFhir(res, 200, fhir.searchBundle([]));   // search semantics: no match = empty searchset
+      patientId = p.patient_id;
+    }
+    // else: scoped Patient list (handled below)
+  } else {
+    const pref = q.patient || '';
+    patientId = parseInt(pref.includes('/') ? pref.split('/').pop() : pref, 10) || null;
+    if (!patientId) return sendFhir(res, 400, fhir.operationOutcome('error', 'required', `${resourceType} search requires a "patient" parameter (e.g. ?patient=123)`));
+  }
+
+  // ---- Patient search with no id/identifier: department-scoped list ----
+  if (resourceType === 'Patient' && patientId == null) {
+    const rows = ALL_PATIENTS_ROLES.includes(role)
+      ? all('SELECT * FROM patients ORDER BY patient_id DESC LIMIT 500')
+      : all(`SELECT DISTINCT p.* FROM patients p JOIN admissions a ON a.patient_id = p.patient_id
+             WHERE a.status='active' AND a.dept_id = ? ORDER BY p.patient_id DESC LIMIT 500`, [actor.department_id]);
+    rows.forEach(r => { delete r.portal_password_hash; delete r.portal_salt; });
+    auditFhir(actor, req, 'Patient', null, `search (scope ${ALL_PATIENTS_ROLES.includes(role) ? 'all' : 'dept ' + actor.department_id})`);
+    return sendFhir(res, 200, fhir.searchBundle(rows.map(fhir.patientResource)));
+  }
+
+  // ---- single-patient target: must exist + be accessible ----
+  if (!get('SELECT patient_id FROM patients WHERE patient_id = ?', [patientId])) {
+    if (resourceType === 'Patient' && idPart) return sendFhir(res, 404, fhir.operationOutcome('error', 'not-found', `no Patient with id ${patientId}`));
+    return sendFhir(res, 200, fhir.searchBundle([]));   // a search that matches nothing
+  }
+  if (!canAccessPatient(actor, role, patientId)) {
+    auditNow(actor, 'FHIR_DENIED', `Blocked FHIR ${resourceType} read for out-of-department patient ${patientId}`, req);
+    return sendFhir(res, 403, fhir.operationOutcome('error', 'forbidden', 'patient is not in your department'));
+  }
+
+  let payload;
+  switch (resourceType) {
+    case 'Patient': {
+      const p = get('SELECT * FROM patients WHERE patient_id = ?', [patientId]);
+      delete p.portal_password_hash; delete p.portal_salt;
+      payload = idPart ? fhir.patientResource(p) : fhir.searchBundle([fhir.patientResource(p)]);
+      break;
+    }
+    case 'Condition':
+      payload = fhir.searchBundle(all('SELECT * FROM patient_conditions WHERE patient_id = ? ORDER BY id', [patientId]).map(fhir.conditionResource));
+      break;
+    case 'AllergyIntolerance':
+      payload = fhir.searchBundle(all('SELECT * FROM patient_allergies WHERE patient_id = ? ORDER BY id', [patientId]).map(fhir.allergyResource));
+      break;
+    case 'MedicationRequest':
+      payload = fhir.searchBundle(all(`SELECT rx.* FROM prescriptions rx JOIN admissions a ON a.admission_id = rx.admission_id
+                                       WHERE a.patient_id = ? ORDER BY rx.rx_id DESC`, [patientId]).map(r => fhir.medicationRequestResource(r, patientId)));
+      break;
+    case 'Observation': {
+      const vitals = all(`SELECT v.* FROM vitals_log v JOIN admissions a ON a.admission_id = v.admission_id
+                          WHERE a.patient_id = ? ORDER BY v.vitals_id DESC LIMIT 200`, [patientId]);
+      const labs = all(`SELECT d.*, lo.admission_id AS admission_id, COALESCE(lo.resulted_at, lo.ordered_at) AS effective
+                        FROM lab_result_details d JOIN lab_orders lo ON lo.order_id = d.order_id
+                        JOIN admissions a ON a.admission_id = lo.admission_id
+                        WHERE a.patient_id = ? ORDER BY d.detail_id DESC LIMIT 500`, [patientId]);
+      const obs = [];
+      vitals.forEach(v => { for (const o of fhir.vitalsToObservations(v, patientId)) obs.push(o); });
+      labs.forEach(d => obs.push(fhir.labObservation(d, patientId)));
+      payload = fhir.searchBundle(obs);
+      break;
+    }
+    case 'Encounter':
+      payload = fhir.searchBundle(all('SELECT * FROM admissions WHERE patient_id = ? ORDER BY admission_id DESC', [patientId]).map(fhir.encounterResource));
+      break;
+    default:
+      return sendFhir(res, 404, fhir.operationOutcome('error', 'not-supported', 'unsupported resource'));
+  }
+  auditFhir(actor, req, resourceType, patientId, idPart ? 'read' : 'search');
+  return sendFhir(res, 200, payload);
+}
 
 // ---- sessions ---------------------------------------------------------------
 function sessionFromReq(req) {
@@ -284,6 +403,9 @@ function send(res, code, obj, headers) {
   res.writeHead(code, Object.assign({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'X-Content-Type-Options': 'nosniff' }, hstsHeaders(), headers || {}));
   res.end(body);
 }
+// FHIR responses carry the fhir+json content type; everything else (no-store,
+// nosniff, HSTS) is inherited from send().
+function sendFhir(res, code, obj) { send(res, code, obj, { 'Content-Type': 'application/fhir+json; charset=utf-8' }); }
 function readBody(req) {
   return new Promise((resolve) => {
     let data = '', tooLarge = false;
@@ -924,6 +1046,23 @@ async function handleApi(req, res, pathname) {
     req.on('close', () => _sseClients.delete(res));
     return;   // intentionally never res.end() — this response IS the stream
   }
+  // ---- FHIR R4 read-only interoperability facade ----
+  // GET /api/fhir/metadata               -> CapabilityStatement
+  // GET /api/fhir/Patient/{id}           -> Patient (read)
+  // GET /api/fhir/Patient?identifier=MRN -> Patient (search)
+  // GET /api/fhir/{Resource}?patient={id}-> clinical resources (search, by patient)
+  // Read-only: auth + RBAC + department scoping + audit, reusing the same gates as
+  // the dedicated endpoints. No writes in this slice.
+  if (pathname === '/api/fhir/metadata' && req.method === 'GET') {
+    if (!can(role, 'view_patients')) return sendFhir(res, 403, fhir.operationOutcome('error', 'forbidden', 'a staff role is required'));
+    return sendFhir(res, 200, fhir.capabilityStatement(new Date().toISOString()));
+  }
+  const fhirMatch = pathname.match(/^\/api\/fhir\/([A-Za-z]+)(?:\/([\w.-]+))?$/);
+  if (fhirMatch) {
+    if (req.method !== 'GET') return sendFhir(res, 405, fhir.operationOutcome('error', 'not-supported', 'the FHIR facade is read-only'));
+    return handleFhirRead(req, res, actor, role, fhirMatch[1], fhirMatch[2] || null);
+  }
+
   if (pathname === '/api/db/query' && req.method === 'POST') {
     if (!actor) return send(res, 403, { error: 'forbidden', message: 'staff session required' });
     const sql = body.sql, params = Array.isArray(body.params) ? body.params : [];
