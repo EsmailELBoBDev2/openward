@@ -229,11 +229,11 @@ function showWelcomeTour(stepIdx) {
 
   const steps = [
     {
-      icon: '👋',
-      title_en: `Welcome to HIS, ${userFirstName}!`,
-      title_ar: `أهلاً بك في النظام، ${userFirstName}!`,
-      body_en: 'This system is built to be SIMPLE. We treat you like a new staff member — everything is auto-filled, color-coded, and explains itself.',
-      body_ar: 'هذا النظام مصمم ليكون سهلاً. نتعامل معك كموظف جديد — كل شيء يملأ تلقائياً وملوّن ويشرح نفسه.'
+      icon: '🦷',
+      title_en: `Welcome to OpenSmile, ${userFirstName}!`,
+      title_ar: `أهلاً بك في OpenSmile، ${userFirstName}!`,
+      body_en: 'This dental clinic system is built to be SIMPLE. We treat you like a new staff member — everything is auto-filled, color-coded, and explains itself.',
+      body_ar: 'نظام عيادة الأسنان هذا مصمم ليكون سهلاً. نتعامل معك كموظف جديد — كل شيء يملأ تلقائياً وملوّن ويشرح نفسه.'
     },
     {
       icon: '🧭',
@@ -243,32 +243,18 @@ function showWelcomeTour(stepIdx) {
       body_ar: 'القائمة على اليسار تُظهر فقط ما يخص دورك. لن ترى أشياء لا تنطبق عليك. اضغط أي عنصر للبدء.'
     },
     {
-      icon: '🧮',
-      title_en: 'Floating Calculator (bottom-left)',
-      title_ar: 'حاسبة عائمة (أسفل اليسار)',
-      body_en: 'Need to calculate BMI, CHA₂DS₂-VASc, GCS, MELD? Click the blue 🧮 button bottom-left. 18 calculators, no math memorization needed.',
-      body_ar: 'تحتاج حساب BMI أو GCS أو MELD؟ اضغط الزر الأزرق 🧮 أسفل اليسار. 18 حاسبة جاهزة.'
+      icon: '⚠️',
+      title_en: 'Allergies are always in view',
+      title_ar: 'الحساسية ظاهرة دائماً',
+      body_en: 'Open any patient and a red safety strip shows their allergies and key flags at the top. If you try to prescribe something they\'re allergic to, the app stops you.',
+      body_ar: 'افتح أي مريض ويظهر شريط أحمر بحساسياته وتنبيهاته أعلى الشاشة. وإذا حاولت وصف دواء لديه حساسية منه، يوقفك النظام.'
     },
     {
-      icon: '⚡',
-      title_en: 'Smart Phrases — type "/"',
-      title_ar: 'القوالب الذكية — اكتب "/"',
-      body_en: 'In any text field type "/" then a name (like /pain or /chf). Pick from the popup and Enter to insert a full template. 52 templates ready.',
-      body_ar: 'في أي حقل نص اكتب "/" متبوعاً باسم (مثل /pain). اختر من القائمة واضغط Enter لإدراج قالب كامل. 52 قالب جاهز.'
-    },
-    {
-      icon: '🚨',
-      title_en: 'Code Blue — bottom-right',
-      title_ar: 'Code Blue — أسفل اليمين',
-      body_en: 'For cardiac arrest emergencies — the red button activates a hospital-wide alert. Practice with caution.',
-      body_ar: 'لحالات السكتة القلبية الطارئة — الزر الأحمر يطلق إنذار في كامل المستشفى. تدرب بحذر.'
-    },
-    {
-      icon: '⌨️',
-      title_en: 'Keyboard shortcuts: ?',
-      title_ar: 'اختصارات لوحة المفاتيح: ?',
-      body_en: 'Press the ? key (anywhere outside text fields) to see all shortcuts. Press Esc to close any dialog.',
-      body_ar: 'اضغط ? (خارج حقول النص) لرؤية كل الاختصارات. Esc لإغلاق أي نافذة.'
+      icon: '🦷',
+      title_en: 'The odontogram — click a tooth',
+      title_ar: 'مخطط الأسنان — انقر على سنّ',
+      body_en: 'On the Odontogram screen, click any tooth to chart it (caries, filling, crown, missing…). Then build a costed treatment plan from the procedure catalog.',
+      body_ar: 'في شاشة مخطط الأسنان، انقر أي سنّ لتسجيل حالته (تسوّس، حشوة، تاج، مفقود…)، ثم ابنِ خطة علاجية بأسعارها من كتالوج الإجراءات.'
     },
     {
       icon: '🎯',

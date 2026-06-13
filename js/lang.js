@@ -6,7 +6,7 @@ const LANG = {
   // ---- Patient Portal ----
   pp_overview:           { ar: 'الرئيسية',              en: 'Home' },
   pp_visits:             { ar: 'زياراتي',                en: 'My Visits' },
-  pp_labs:               { ar: 'نتائج المختبر',          en: 'Lab Results' },
+  pp_labs:               { ar: 'خطتي العلاجية',          en: 'Treatment Plan' },
   pp_prescriptions:      { ar: 'أدويتي',                en: 'My Medications' },
   pp_appointments:       { ar: 'مواعيدي',               en: 'My Appointments' },
   pp_messages:           { ar: 'رسائلي',                en: 'Messages' },

@@ -811,8 +811,8 @@
             <button type="button" class="btn btn-secondary" id="fr-demo" style="padding:14px;text-align:start;white-space:normal">
               <strong>${ar ? 'وضع التجربة' : 'Demo'}</strong><br>
               <span style="font-size:0.8rem;opacity:.85">${ar
-                ? 'مستشفى تجريبي كامل: حسابات وموظفون ومرضى وهميون. لا تُدخل بيانات مرضى حقيقية هنا أبداً.'
-                : 'Full sample hospital: demo logins, staff and fake patients. Never enter real patient data here.'}</span>
+                ? 'عيادة أسنان تجريبية كاملة: حسابات وموظفون ومرضى وهميون. لا تُدخل بيانات مرضى حقيقية هنا أبداً.'
+                : 'Full sample dental clinic: demo logins, staff and fake patients. Never enter real patient data here.'}</span>
             </button>
             <button type="button" class="btn btn-primary" id="fr-prod" style="padding:14px;text-align:start;white-space:normal">
               <strong>${ar ? 'وضع التشغيل الفعلي' : 'Production'}</strong><br>
@@ -895,13 +895,12 @@
           <h3 style="margin:16px 0 8px;font-size:0.9rem">${lang==='ar'?'حسابات تجريبية':'Demo Accounts'}</h3>
           <table class="shortcuts-table" style="font-size:0.8rem">
             <tr><td><strong>admin</strong></td><td>HIS@2024</td><td>${lang==='ar'?'مدير النظام':'IT Admin'}</td></tr>
-            <tr><td><strong>manager</strong></td><td>manager123</td><td>${lang==='ar'?'مدير المستشفى':'Hospital Manager'}</td></tr>
-            <tr><td><strong>dr.ahmed</strong></td><td>doctor123</td><td>${lang==='ar'?'استشاري باطنية':'Consultant'}</td></tr>
-            <tr><td><strong>nurse.fatima</strong></td><td>nurse123</td><td>${lang==='ar'?'ممرضة':'Nurse'}</td></tr>
-            <tr><td><strong>pharm.ali</strong></td><td>pharm123</td><td>${lang==='ar'?'صيدلاني':'Pharmacist'}</td></tr>
-            <tr><td><strong>lab.nasser</strong></td><td>lab123</td><td>${lang==='ar'?'تقني مختبر':'Lab Tech'}</td></tr>
-            <tr><td><strong>diet.amira</strong></td><td>diet123</td><td>${lang==='ar'?'أخصائية تغذية':'Dietitian'}</td></tr>
-            <tr><td><strong>sw.hessa</strong></td><td>social123</td><td>${lang==='ar'?'أخصائية اجتماعية':'Social Worker'}</td></tr>
+            <tr><td><strong>manager</strong></td><td>manager123</td><td>${lang==='ar'?'مدير العيادة':'Clinic Manager'}</td></tr>
+            <tr><td><strong>dr.omar</strong></td><td>doctor123</td><td>${lang==='ar'?'طبيب أسنان':'Dentist'}</td></tr>
+            <tr><td><strong>dr.sara</strong></td><td>doctor123</td><td>${lang==='ar'?'أخصائية تقويم':'Specialist (Ortho)'}</td></tr>
+            <tr><td><strong>dr.khalid</strong></td><td>doctor123</td><td>${lang==='ar'?'أخصائي جراحة فم':'Specialist (Oral Surgery)'}</td></tr>
+            <tr><td><strong>hyg.mona</strong></td><td>nurse123</td><td>${lang==='ar'?'أخصائية صحة أسنان':'Hygienist'}</td></tr>
+            <tr><td><strong>reception</strong></td><td>recept123</td><td>${lang==='ar'?'موظف استقبال':'Receptionist'}</td></tr>
           </table>` : `
           <p class="text-muted" style="margin:16px 0 0;font-size:0.8rem">${lang==='ar'
             ? 'تُدار الحسابات من قبل مدير النظام لديك.'
@@ -923,7 +922,7 @@
           ${accountsSection}
 
           <p class="text-muted" style="margin-top:16px;font-size:0.75rem;text-align:center">
-            ${lang==='ar'?'تلميح: انقر على شعار HIS خمس مرات لمفاجأة!':'Tip: Click the HIS logo 5 times for a surprise!'}
+            ${lang==='ar'?'تلميح: انقر على شعار OpenSmile خمس مرات لمفاجأة!':'Tip: Click the OpenSmile logo 5 times for a surprise!'}
           </p>
 
           <div class="alert-buttons">
@@ -947,8 +946,8 @@
       document.addEventListener('click', function(e) {
         const isLogo = e.target.closest('.login-logo h1') ||
                        e.target.closest('.app-header h2') ||
-                       (e.target.tagName === 'H1' && e.target.textContent.trim() === 'HIS') ||
-                       (e.target.tagName === 'H2' && e.target.textContent.trim() === 'HIS');
+                       (e.target.tagName === 'H1' && e.target.textContent.includes('OpenSmile')) ||
+                       (e.target.tagName === 'H2' && e.target.textContent.includes('OpenSmile'));
         if (!isLogo) return;
 
         clickCount++;
@@ -1005,14 +1004,14 @@
             <strong>9 triggers + 8 indexes + audit-logged overrides (15/15 runtime tests pass)</strong>
           </div>
           <div class="easter-egg-stat">
-            <span>&#127973; ${lang==='ar'?'تكلفة HIS التجارية':'Real HIS cost'}</span>
+            <span>&#127973; ${lang==='ar'?'تكلفة نظام تجاري':'Real clinic-software cost'}</span>
             <strong>$500k – $3M</strong>
           </div>
 
           <p style="margin-top:16px;font-size:0.8rem;opacity:0.7">
             ${lang==='ar'
-              ? 'بُني هذا النظام بـ Claude AI — نظام معلومات مستشفى كامل بأقل من ثمن غداء فاخر!'
-              : 'Built with Claude AI — a full hospital information system for less than a fancy dinner!'}
+              ? 'بُني هذا النظام بـ Claude AI — نظام إدارة عيادة أسنان كامل بأقل من ثمن غداء فاخر!'
+              : 'Built with Claude AI — a full dental clinic system for less than a fancy dinner!'}
           </p>
           <p style="font-size:0.75rem;opacity:0.6;margin-top:4px">
             ${lang==='ar'?'كود Konami للحصول على مكافأة أخرى ↑↑↓↓←→←→BA':'Try the Konami code for another surprise ↑↑↓↓←→←→BA'}
