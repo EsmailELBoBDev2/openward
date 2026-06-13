@@ -484,5 +484,49 @@ const CLINICAL_CALCULATORS = [
       else              { interp = 'Severe risk — air mattress, q1h turning'; color = '#7f1d1d'; }
       return { value: s, unit: '/23', interpretation: interp, color };
     }
+  },
+
+  // ---- Pediatric / Obstetric (exact, formula-based — no growth-curve LMS data,
+  //      which would need a clinician-validated dataset import, not code) ----
+  {
+    id: 'peds_fluids',
+    category: 'Pediatric',
+    name_en: 'Pediatric Maintenance Fluids (Holliday–Segar)',
+    name_ar: 'سوائل الصيانة للأطفال (هوليداي-سيغار)',
+    icon: '🍼',
+    inputs: [
+      { id: 'weight', label_en: 'Weight (kg)', label_ar: 'الوزن (كجم)', type: 'number', step: 0.1, min: 0.5, max: 80 }
+    ],
+    // Holliday & Segar, Pediatrics 1957. Daily: 100/50/20 mL/kg for the first
+    // 10/next 10/remaining kg. Hourly "4-2-1" rule: 4/2/1 mL/kg/hr.
+    calc: (i) => {
+      const w = i.weight;
+      const day = w <= 10 ? w * 100 : (w <= 20 ? 1000 + (w - 10) * 50 : 1500 + (w - 20) * 20);
+      const hr  = w <= 10 ? w * 4   : (w <= 20 ? 40 + (w - 10) * 2   : 60 + (w - 20) * 1);
+      return { value: Math.round(hr), unit: 'mL/hr', interpretation: `${Math.round(day)} mL/day (4-2-1 rule, Holliday–Segar 1957)`, color: '#0ea5e9' };
+    }
+  },
+  {
+    id: 'ob_edd',
+    category: 'Obstetric',
+    name_en: 'EDD & Gestational Age (Naegele, from LMP)',
+    name_ar: 'موعد الولادة وعمر الحمل (نيغيله من آخر دورة)',
+    icon: '🤰',
+    inputs: [
+      { id: 'lmp', label_en: 'Last menstrual period (LMP)', label_ar: 'تاريخ آخر دورة شهرية', type: 'date' }
+    ],
+    // Naegele's rule: EDD = LMP + 280 days. GA = days since LMP (weeks+days).
+    calc: (i) => {
+      const lmp = new Date(i.lmp + 'T00:00:00Z');
+      if (isNaN(lmp.getTime())) return { value: '—', interpretation: 'Enter a valid LMP date', color: '#9ca3af' };
+      const edd = new Date(lmp.getTime() + 280 * 86400000);
+      const eddISO = edd.toISOString().slice(0, 10);
+      const gaDays = Math.floor((Date.now() - lmp.getTime()) / 86400000);
+      if (gaDays < 0) return { value: '—', unit: '', interpretation: `LMP is in the future — EDD ${eddISO}`, color: '#9ca3af' };
+      const wk = Math.floor(gaDays / 7), dy = gaDays % 7;
+      const tri = wk < 14 ? '1st' : (wk < 28 ? '2nd' : '3rd');
+      const color = gaDays > 294 ? '#dc2626' : '#10b981';   // >42wk = post-term
+      return { value: `${wk}+${dy}`, unit: 'weeks', interpretation: `EDD ${eddISO} · ${tri} trimester (Naegele's rule)`, color };
+    }
   }
 ];

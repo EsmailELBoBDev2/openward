@@ -463,6 +463,7 @@ function renderSidebar(role) {
   }
   if (CLINICAL_NAV.includes(role)) {
     items.push({ id: 'care-gaps', icon: '&#9889;', label: t('care_gaps_nav') });
+    items.push({ id: 'patient-summary', icon: '&#128203;', label: t('summary_nav') });
   }
   if (['doctor', 'consultant', 'emergency_doctor'].includes(role)) {
     items.push({ id: 'referrals', icon: '&#128228;', label: t('referrals_nav') });
@@ -530,6 +531,7 @@ const VIEW_PREFIX_ROLES = {
   // Cross-role clinical tools (full view ids used as their own prefix keys).
   'documents': ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'radiologist'],
   'care-gaps': ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'],
+  'patient-summary': ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'],
   'referrals': ['consultant', 'doctor', 'emergency_doctor'],
 };
 
@@ -702,6 +704,7 @@ function renderView(viewId) {
     case 'documents': renderDocuments(main, lang); break;
     case 'care-gaps': renderCareGaps(main, lang); break;
     case 'referrals': renderReferrals(main, lang); break;
+    case 'patient-summary': renderPatientSummary(main, lang); break;
 
     default:
       main.innerHTML = `<div class="empty-state"><div class="empty-icon">&#128679;</div><p>${t('loading')}</p></div>`;
@@ -3283,6 +3286,116 @@ async function closeIncident(id) {
   showSuccess(t('inc_closed_ok'));
   saveDBToIndexedDB();
   navigateIncidentQueue(_incidentFilter);
+}
+
+// ============================================================
+// PATIENT SUMMARY EXPORT (offline CCD-like portable document; no internet/HIE)
+// ============================================================
+function _summaryAge(dob, lang) {
+  if (!dob) return '';
+  const y = Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 3600 * 1000));
+  return y >= 0 ? (y + (lang === 'ar' ? ' سنة' : 'y')) : '';
+}
+
+// The inner sections — shared by the on-screen view and the downloaded file.
+function buildSummaryInner(pid, lang) {
+  const p = dbGet('SELECT * FROM patients WHERE patient_id = ?', [pid]);
+  if (!p) return emptyState();
+  const adm = dbGet("SELECT * FROM admissions WHERE patient_id = ? AND status='active' ORDER BY admission_id DESC LIMIT 1", [pid])
+    || dbGet('SELECT * FROM admissions WHERE patient_id = ? ORDER BY admission_id DESC LIMIT 1', [pid]);
+  const allergies = dbAll('SELECT * FROM patient_allergies WHERE patient_id = ?', [pid]);
+  const problems = dbAll("SELECT * FROM patient_conditions WHERE patient_id = ? AND COALESCE(status,'active') <> 'resolved' ORDER BY id DESC", [pid]);
+  const meds = dbAll("SELECT rx.* FROM prescriptions rx JOIN admissions a ON a.admission_id = rx.admission_id WHERE a.patient_id = ? AND rx.status='active' ORDER BY rx.rx_id DESC", [pid]);
+  const vitals = adm ? dbGet('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 1', [adm.admission_id]) : null;
+  const labs = dbAll(`SELECT d.component_en, d.component_ar, d.value, d.unit, d.flag, lo.resulted_at
+    FROM lab_result_details d JOIN lab_orders lo ON lo.order_id = d.order_id JOIN admissions a ON a.admission_id = lo.admission_id
+    WHERE a.patient_id = ? ORDER BY d.detail_id DESC LIMIT 12`, [pid]);
+  const encounters = dbAll('SELECT * FROM admissions WHERE patient_id = ? ORDER BY admission_id DESC LIMIT 10', [pid]);
+  const name = lang === 'ar' ? p.full_name_ar : (p.full_name_en || p.full_name_ar);
+  const li = arr => arr.length ? '<ul>' + arr.join('') + '</ul>' : `<p class="muted">—</p>`;
+
+  const allergyList = li(allergies.map(a => `<li>${escapeHtml(a.allergen)}${a.reaction ? ' — ' + escapeHtml(a.reaction) : ''}${a.severity ? ' (' + escapeHtml(a.severity) + ')' : ''}</li>`));
+  const problemList = li(problems.map(c => { const coded = /^[A-Za-z]\d/.test(c.condition_code || ''); return `<li>${coded ? '[' + escapeHtml(c.condition_code) + '] ' : ''}${escapeHtml(_conditionLabel(c, lang))}</li>`; }));
+  const medList = li(meds.map(m => `<li>${escapeHtml(m.drug_name)} ${escapeHtml(m.dose || '')} ${escapeHtml(m.route || '')} ${escapeHtml(m.frequency || '')}</li>`));
+  const vitalsHtml = vitals
+    ? `<p>${vitals.bp_systolic ? `BP ${escapeHtml(String(vitals.bp_systolic))}/${escapeHtml(String(vitals.bp_diastolic || ''))} · ` : ''}${vitals.heart_rate ? `HR ${escapeHtml(String(vitals.heart_rate))} · ` : ''}${vitals.temperature ? `T ${escapeHtml(String(vitals.temperature))}°C · ` : ''}${vitals.o2_sat ? `SpO₂ ${escapeHtml(String(vitals.o2_sat))}%` : ''}<br><span class="muted">${escapeHtml(String(vitals.recorded_at || '').slice(0, 16).replace('T', ' '))}</span></p>`
+    : `<p class="muted">—</p>`;
+  const labsHtml = li(labs.map(l => `<li>${escapeHtml(lang === 'ar' ? (l.component_ar || l.component_en) : l.component_en)}: ${escapeHtml(String(l.value ?? ''))} ${escapeHtml(l.unit || '')}${l.flag && l.flag !== 'normal' ? ' (' + escapeHtml(l.flag) + ')' : ''}</li>`));
+  const encList = li(encounters.map(e => `<li>${escapeHtml(String(e.admitted_at || '').slice(0, 10))}${e.discharged_at ? ' → ' + escapeHtml(String(e.discharged_at).slice(0, 10)) : ' (' + t('inc_status_open') + ')'} — ${escapeHtml(e.chief_complaint || e.initial_diagnosis || '')}</li>`));
+
+  return `
+    <div class="summary-head">
+      <h2>${escapeHtml(name)}</h2>
+      <p>${t('mrn') || 'MRN'}: ${escapeHtml(p.mrn)} · ${escapeHtml(p.date_of_birth || '')} ${_summaryAge(p.date_of_birth, lang) ? '(' + _summaryAge(p.date_of_birth, lang) + ')' : ''} · ${escapeHtml(p.gender || '')}${p.blood_type && p.blood_type !== 'unknown' ? ' · ' + escapeHtml(p.blood_type) : ''}</p>
+    </div>
+    <h3>${t('sum_allergies')}</h3>${allergyList}
+    <h3>${t('sum_problems')}</h3>${problemList}
+    <h3>${t('sum_meds')}</h3>${medList}
+    <h3>${t('sum_vitals')}</h3>${vitalsHtml}
+    <h3>${t('sum_labs')}</h3>${labsHtml}
+    <h3>${t('sum_encounters')}</h3>${encList}`;
+}
+
+// Wrap the inner sections in a fully self-contained HTML file for offline carry
+// (USB, attach to an email by hand) — the no-internet stand-in for a CCDA/HIE feed.
+function buildSummaryDoc(pid, lang) {
+  const p = dbGet('SELECT mrn FROM patients WHERE patient_id = ?', [pid]);
+  const dir = lang === 'ar' ? 'rtl' : 'ltr';
+  const css = `body{font-family:system-ui,Arial,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color:#1e293b}h1{font-size:1.3em}h2{margin:.2em 0}h3{margin-top:1.2em;border-bottom:1px solid #cbd5e1;padding-bottom:2px;color:#0f172a}.muted{color:#64748b}ul{margin:.3em 0}.summary-head{border-bottom:2px solid #1e3a8a;padding-bottom:8px}.disclaimer{margin-top:24px;font-size:.85em;color:#64748b;border-top:1px solid #e2e8f0;padding-top:8px}`;
+  return `<!doctype html><html lang="${lang}" dir="${dir}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${t('summary_title')} — ${escapeHtml(p ? p.mrn : '')}</title><style>${css}</style></head><body>
+    <h1>OpenWard — ${t('summary_title')}</h1>
+    ${buildSummaryInner(pid, lang)}
+    <p class="disclaimer">${t('sum_generated')} ${escapeHtml(new Date().toISOString().slice(0, 16).replace('T', ' '))} · ${t('sum_disclaimer')}</p>
+  </body></html>`;
+}
+
+function renderPatientSummary(main, lang) {
+  const session = getCurrentSession();
+  const patients = _problemListPatients(session);
+  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('summary_title')}</h1></div>${emptyState()}`; return; }
+  const pid = patients[0].patient_id;
+  const patOptions = patients.map(p => `<option value="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
+  main.innerHTML = `
+    <div class="page-header"><h1>${t('summary_title')}</h1></div>
+    <div class="card no-print">
+      <div class="form-row" style="align-items:flex-end;">
+        <div class="form-group" style="flex:2;"><label>${t('patient_col')}</label><select id="summary-patient" onchange="navigateSummary(this.value)">${patOptions}</select></div>
+        <div class="form-group"><button class="btn btn-secondary" onclick="printSummary()">${t('sum_print')}</button></div>
+        <div class="form-group"><button class="btn btn-primary" onclick="downloadSummary()">${t('sum_download')}</button></div>
+      </div>
+      <p class="muted">${t('sum_intro')}</p>
+    </div>
+    <div class="card" id="summary-body">${buildSummaryInner(pid, lang)}</div>`;
+}
+
+function navigateSummary(pid) {
+  const body = document.getElementById('summary-body');
+  if (body) body.innerHTML = buildSummaryInner(parseInt(pid, 10), currentLanguage());
+}
+
+function _summarySelectedPid() {
+  const sel = document.getElementById('summary-patient');
+  return sel ? parseInt(sel.value, 10) : null;
+}
+
+function printSummary() { if (typeof window !== 'undefined' && window.print) window.print(); }
+
+async function downloadSummary() {
+  const lang = currentLanguage();
+  const pid = _summarySelectedPid();
+  if (!pid) return;
+  const p = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
+  const doc = buildSummaryDoc(pid, lang);
+  try {
+    const blob = new Blob([doc], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'summary-' + (p ? p.mrn : pid) + '.html';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) { showError(lang === 'ar' ? 'تعذّر التنزيل' : 'Could not generate the file'); return; }
+  await logAction('SUMMARY_EXPORTED', `Exported clinical summary document`, `تصدير ملخص سريري`, pid, p ? (p.full_name_en || p.full_name_ar) : null, p ? p.mrn : null);
+  showSuccess(t('sum_exported'));
 }
 
 function renderDocLabs(main, lang) {

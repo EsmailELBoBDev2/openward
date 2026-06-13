@@ -294,6 +294,22 @@ const LANG = {
   cg_vitals:        { ar: 'لا توجد علامات حيوية خلال ١٢ ساعة', en: 'No vitals in the last 12h' },
   cg_allergy:       { ar: 'حالة الحساسية غير موثّقة', en: 'Allergy status not documented' },
   cg_vaccine:       { ar: 'تطعيم مستحق/متأخر', en: 'Vaccination due/overdue' },
+
+  // ---- Patient summary export (offline portable document) ----
+  summary_nav:    { ar: 'الملخص', en: 'Summary' },
+  summary_title:  { ar: 'الملخص السريري', en: 'Clinical Summary' },
+  sum_intro:      { ar: 'يُولّد ملف HTML قائم بذاته يمكن حمله على USB — البديل دون إنترنت لتبادل السجلات (CCDA/HIE).', en: 'Generates a self-contained HTML file you can carry on a USB — the offline stand-in for record exchange (CCDA/HIE).' },
+  sum_print:      { ar: 'طباعة', en: 'Print' },
+  sum_download:   { ar: 'تنزيل (HTML)', en: 'Download (HTML)' },
+  sum_exported:   { ar: 'تم تصدير الملخص', en: 'Summary exported' },
+  sum_allergies:  { ar: 'الحساسية', en: 'Allergies' },
+  sum_problems:   { ar: 'قائمة المشاكل', en: 'Problem list' },
+  sum_meds:       { ar: 'الأدوية النشطة', en: 'Active medications' },
+  sum_vitals:     { ar: 'أحدث العلامات الحيوية', en: 'Latest vitals' },
+  sum_labs:       { ar: 'أحدث المختبرات', en: 'Recent labs' },
+  sum_encounters: { ar: 'الزيارات', en: 'Encounters' },
+  sum_generated:  { ar: 'تم الإنشاء:', en: 'Generated:' },
+  sum_disclaimer: { ar: 'مُولّد دون اتصال؛ ليس سجلاً طبياً قانونياً.', en: 'Generated offline; not a legal medical record.' },
   sev_life_threatening: { ar: 'مهددة للحياة', en: 'Life-threatening' },
 
   // ---- Allergy Reactions ----

@@ -121,5 +121,24 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   assert(Math.abs(parseFloat(bsa.value) - 1.82) < 0.02, `Mosteller BSA 70kg/170cm ~1.82m², got ${bsa.value}`);
 }
 
+// ---- Pediatric maintenance fluids (Holliday-Segar 1957) ----
+{
+  const f = by('peds_fluids').calc;
+  assert(f({ weight: 8 }).value === 32 && /800 mL\/day/.test(f({ weight: 8 }).interpretation), 'Holliday-Segar 8kg = 32 mL/hr, 800 mL/day');
+  assert(f({ weight: 15 }).value === 50 && /1250 mL\/day/.test(f({ weight: 15 }).interpretation), 'Holliday-Segar 15kg = 50 mL/hr, 1250 mL/day');
+  assert(f({ weight: 26 }).value === 66 && /1620 mL\/day/.test(f({ weight: 26 }).interpretation), 'Holliday-Segar 26kg = 66 mL/hr, 1620 mL/day');
+}
+
+// ---- Obstetric EDD & GA (Naegele: EDD = LMP + 280 days) ----
+{
+  const o = by('ob_edd').calc;
+  const lmp = '2026-01-01';
+  const expectedEdd = new Date(new Date(lmp + 'T00:00:00Z').getTime() + 280 * 86400000).toISOString().slice(0, 10);
+  const r = o({ lmp });
+  assert(r.interpretation.includes('EDD ' + expectedEdd), `Naegele EDD = LMP+280d (${expectedEdd}), got "${r.interpretation}"`);
+  assert(/^\d+\+\d$/.test(String(r.value)), `GA reported as weeks+days, got "${r.value}"`);
+  assert(/future/.test(o({ lmp: '2999-01-01' }).interpretation), 'future LMP is rejected gracefully');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
