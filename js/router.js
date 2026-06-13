@@ -1750,11 +1750,24 @@ function renderDocumentsBody(pid, lang) {
     </div>`;
   }).join('') : `<p class="muted">${ar ? 'لا توجد ملفات بعد' : 'No files yet'}</p>`;
   const kindOpts = ATTACH_KINDS.map(k => `<option value="${k.key}">${escapeHtml(ar ? k.ar : k.en)}</option>`).join('');
+  const isVisiting = patient.branch && patient.branch !== getSetting('default_branch', 'tagamo3');
+  const staleBanner = isVisiting ? `<div style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.85rem">
+      &#9888; ${ar ? `الفرع الأساسي لهذا المريض هو «${escapeHtml(branchLabel(patient.branch, lang))}». إن تم تحديث ملفه هناك، استورد أحدث نسخة لضمان أنه محدّث.` : `This patient's home branch is "${escapeHtml(branchLabel(patient.branch, lang))}". If their record was updated there, import the latest file to be sure it's up to date.`}
+    </div>` : '';
   return `
+    ${staleBanner}
+    <input type="file" id="import-pf-file" accept="application/json,.json" style="display:none" onchange="handleImportPatientFile(this.files[0])">
     <div class="card">
-      <h3>&#129463; ${ar ? 'ملف المريض' : 'Patient File'} — ${escapeHtml(ar ? patient.full_name_ar : (patient.full_name_en || patient.full_name_ar))}
-        <span class="muted" style="font-weight:400;font-size:.75em;">${escapeHtml(patient.mrn)} · ${age} ${ar ? 'سنة' : 'yrs'}${patient.branch ? ' · ' + escapeHtml(branchLabel(patient.branch, lang)) : ''}</span></h3>
-      <div class="form-group"><label>&#128221; ${ar ? 'ملاحظات خاصة / مشاكل حالية / حساسية لأدوية' : 'Special notes / current issues / drug sensitivities'}</label>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+        <h3 style="margin:0">&#129463; ${ar ? 'ملف المريض' : 'Patient File'} — ${escapeHtml(ar ? patient.full_name_ar : (patient.full_name_en || patient.full_name_ar))}
+          <span class="muted" style="font-weight:400;font-size:.75em;">${escapeHtml(patient.mrn)} · ${age} ${ar ? 'سنة' : 'yrs'}${patient.branch ? ' · ' + escapeHtml(branchLabel(patient.branch, lang)) : ''}</span></h3>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-sm btn-secondary" onclick="exportPatientFile(${pid})">&#128229; ${ar ? 'تصدير' : 'Export'}</button>
+          <button class="btn btn-sm btn-success" onclick="sharePatientFileWhatsApp(${pid})">&#128228; ${ar ? 'مشاركة واتساب' : 'Share via WhatsApp'}</button>
+          <button class="btn btn-sm btn-secondary" onclick="triggerImportPatientFile()">&#128228; ${ar ? 'استيراد ملف' : 'Import file'}</button>
+        </div>
+      </div>
+      <div class="form-group" style="margin-top:10px"><label>&#128221; ${ar ? 'ملاحظات خاصة / مشاكل حالية / حساسية لأدوية' : 'Special notes / current issues / drug sensitivities'}</label>
         <textarea id="pf-notes" rows="2" placeholder="${ar ? 'أي ملاحظات مهمة…' : 'Any important notes…'}">${escapeHtml(patient.notes || '')}</textarea>
         <button class="btn btn-sm btn-secondary" style="margin-top:6px" onclick="savePatientNotes(${pid})">${ar ? 'حفظ الملاحظات' : 'Save notes'}</button>
       </div>
@@ -1875,6 +1888,139 @@ function sendImageToLab(attachId, pid) {
   dlog('whatsapp.sendToLab', { lab: egDisplay(lab), pid, attachId, kind: a.kind });
   try { window.open(`https://wa.me/${lab}?text=${encodeURIComponent(lines.join('\n'))}`, '_blank'); } catch (e) { derr('lab.waOpen', e); }
   showSuccess(ar ? 'تم تنزيل الصورة وفتح واتساب — أرفق الصورة وأرسلها' : 'Image downloaded + WhatsApp opened — attach the image and send');
+}
+
+// ============================================================
+// MULTI-BRANCH TRANSFER — export/import a patient file as JSON, share via
+// WhatsApp, with an "is this up to date?" check. Browser-only and zero-infra:
+// no ports, no VPN — you move the .json yourself (WhatsApp/USB) and the
+// receiving branch imports it. A live auto-sync (Tailscale/Cloudflare Tunnel)
+// is a later, optional add-on.
+// ============================================================
+function exportPatientFile(pid) {
+  try {
+    const p = dbGet('SELECT * FROM patients WHERE patient_id = ?', [pid]);
+    if (!p) { showError('Patient not found'); return null; }
+    const file = {
+      app: 'OpenSmile', schema: 1, exported_at: nowISO(),
+      source_branch: getSetting('default_branch', 'tagamo3'),
+      source_clinic: getSetting('clinic_name', 'OpenSmile Dental'),
+      patient: p,
+      conditions: dbAll('SELECT * FROM patient_conditions WHERE patient_id=?', [pid]),
+      allergies: dbAll('SELECT * FROM patient_allergies WHERE patient_id=?', [pid]),
+      flags: dbAll('SELECT * FROM patient_flags WHERE patient_id=?', [pid]),
+      odontogram: dbAll('SELECT * FROM odontogram WHERE patient_id=?', [pid]),
+      perio: dbAll('SELECT * FROM perio_chart WHERE patient_id=?', [pid]),
+      plans: dbAll('SELECT * FROM treatment_plans WHERE patient_id=?', [pid]),
+      plan_items: dbAll('SELECT * FROM treatment_plan_items WHERE patient_id=?', [pid]),
+      prescriptions: dbAll('SELECT * FROM prescriptions WHERE patient_id=?', [pid]),
+      recalls: dbAll('SELECT * FROM recalls WHERE patient_id=?', [pid]),
+      attachments: dbAll('SELECT * FROM patient_attachments WHERE patient_id=?', [pid]),
+    };
+    const blob = new Blob([JSON.stringify(file)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `OpenSmile-${(p.mrn || pid)}.json`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    logAction('PATIENT_EXPORTED', `Exported patient file ${p.mrn}`, null, pid, p.full_name_en, p.mrn);
+    dlog('transfer.export', { pid, mrn: p.mrn, attachments: file.attachments.length });
+    return file;
+  } catch (e) { derr('transfer.export', e); showError(e.message); return null; }
+}
+
+function sharePatientFileWhatsApp(pid) {
+  const ar = currentLanguage() === 'ar';
+  const p = dbGet('SELECT * FROM patients WHERE patient_id=?', [pid]); if (!p) return;
+  exportPatientFile(pid);   // downloads the .json for manual attach (wa.me can't attach files)
+  const num = getSetting('owner_whatsapp', '');
+  const lines = [
+    '🦷 ' + (ar ? 'ملف مريض من ' : 'Patient file from ') + getSetting('clinic_name', 'OpenSmile') + ' (' + branchLabel(getSetting('default_branch', 'tagamo3'), currentLanguage()) + ')',
+    (ar ? 'المريض: ' : 'Patient: ') + (ar ? p.full_name_ar : (p.full_name_en || p.full_name_ar)) + ' — ' + p.mrn,
+    '',
+    ar ? '⬇️ الملف (.json) قيد التنزيل — أرفقه هنا ليستورده الفرع الآخر.' : '⬇️ The file (.json) is downloading — attach it here so the other branch can import it.',
+  ];
+  const url = (num ? `https://wa.me/${num}` : 'https://wa.me/') + '?text=' + encodeURIComponent(lines.join('\n'));
+  dlog('transfer.share', { pid, to: num ? egDisplay(num) : '(pick contact)' });
+  try { window.open(url, '_blank'); } catch (e) { derr('transfer.share', e); }
+  showSuccess(ar ? 'تم تنزيل الملف وفتح واتساب — أرفق الملف وأرسل' : 'File downloaded + WhatsApp opened — attach the file and send');
+}
+
+function triggerImportPatientFile() { const i = document.getElementById('import-pf-file'); if (i) i.click(); }
+function handleImportPatientFile(file) {
+  if (!file) return; const ar = currentLanguage() === 'ar';
+  const reader = new FileReader();
+  reader.onload = () => { try { importPatientFile(JSON.parse(String(reader.result || '{}'))); } catch (e) { derr('transfer.import.parse', e); showError(ar ? 'ملف غير صالح' : 'Invalid file'); } };
+  reader.onerror = () => showError(ar ? 'تعذّرت قراءة الملف' : 'Could not read the file');
+  reader.readAsText(file);
+}
+
+// Best-effort "last touched" timestamp for the local copy (for the update-check).
+function _patientLastStamp(pid) {
+  let best = '';
+  ['SELECT MAX(charted_at) m FROM odontogram WHERE patient_id=?', 'SELECT MAX(created_at) m FROM treatment_plan_items WHERE patient_id=?',
+   'SELECT MAX(prescribed_at) m FROM prescriptions WHERE patient_id=?', 'SELECT MAX(added_at) m FROM patient_allergies WHERE patient_id=?',
+   'SELECT MAX(uploaded_at) m FROM patient_attachments WHERE patient_id=?', 'SELECT registered_at m FROM patients WHERE patient_id=?']
+    .forEach(q => { try { const r = dbGet(q, [pid]); if (r && r.m && r.m > best) best = r.m; } catch (e) {} });
+  return best;
+}
+
+function importPatientFile(data) {
+  const ar = currentLanguage() === 'ar';
+  if (!data || data.app !== 'OpenSmile' || !data.patient) { showError(ar ? 'هذا ليس ملف OpenSmile' : 'Not an OpenSmile patient file'); return; }
+  const src = data.patient;
+  const existing = src.national_id ? dbGet('SELECT * FROM patients WHERE national_id=?', [src.national_id])
+    : (src.mrn ? dbGet('SELECT * FROM patients WHERE mrn=?', [src.mrn]) : null);
+  const go = () => doImportPatientFile(data, existing);
+  if (existing) {
+    const localStamp = _patientLastStamp(existing.patient_id);
+    if (localStamp && data.exported_at && localStamp > data.exported_at) {
+      showConfirm(ar
+        ? `⚠️ يوجد سجل محلي لهذا المريض وقد يكون أحدث من الملف (محلي ${localStamp.slice(0, 10)} مقابل الملف ${String(data.exported_at).slice(0, 10)}). الكتابة فوقه على أي حال؟`
+        : `⚠️ A local record exists and looks NEWER than this file (local ${localStamp.slice(0, 10)} vs file ${String(data.exported_at).slice(0, 10)}). Overwrite anyway?`, go);
+      return;
+    }
+    showConfirm(ar ? 'سيتم تحديث سجل هذا المريض من الملف. متابعة؟' : 'This overwrites the patient record from the file. Continue?', go);
+    return;
+  }
+  go();
+}
+
+function doImportPatientFile(data, existing) {
+  const ar = currentLanguage() === 'ar'; const u = getCurrentUser();
+  try {
+    const src = data.patient; let pid;
+    if (existing) {
+      pid = existing.patient_id;
+      dbRun('UPDATE patients SET full_name_ar=?, full_name_en=?, date_of_birth=?, gender=?, phone=?, branch=?, notes=? WHERE patient_id=?',
+        [src.full_name_ar, src.full_name_en, src.date_of_birth, src.gender, src.phone, src.branch || getSetting('default_branch', 'tagamo3'), src.notes || null, pid]);
+      ['patient_conditions', 'patient_allergies', 'patient_flags', 'odontogram', 'perio_chart', 'treatment_plan_items', 'treatment_plans', 'prescriptions', 'recalls', 'patient_attachments']
+        .forEach(tbl => { try { dbRun('DELETE FROM ' + tbl + ' WHERE patient_id=?', [pid]); } catch (e) {} });
+    } else {
+      let mrn = src.mrn;
+      if (!mrn || dbGet('SELECT 1 x FROM patients WHERE mrn=?', [mrn])) mrn = `OS-${nowISO().slice(0, 10).replace(/-/g, '')}-${String((dbGet('SELECT COUNT(*) c FROM patients').c || 0) + 1).padStart(5, '0')}`;
+      dbRun('INSERT INTO patients (mrn, national_id, full_name_ar, full_name_en, date_of_birth, gender, phone, branch, notes, registered_by, registered_at, portal_enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,1)',
+        [mrn, src.national_id || null, src.full_name_ar, src.full_name_en, src.date_of_birth, src.gender, src.phone, src.branch || getSetting('default_branch', 'tagamo3'), src.notes || null, u ? u.user_id : null, nowISO()]);
+      pid = dbLastId();
+    }
+    // Authors come from another branch → blank them (or use a local dentist for Rx) to satisfy the role triggers.
+    const dentist = (u && ['dentist', 'specialist'].includes(u.role)) ? u.user_id : ((dbGet("SELECT user_id FROM users WHERE role IN ('dentist','specialist') LIMIT 1") || {}).user_id || null);
+    (data.conditions || []).forEach(c => dbRun('INSERT INTO patient_conditions (patient_id,condition_code,category,severity,notes,display,onset_date,resolved_date,status,added_at) VALUES (?,?,?,?,?,?,?,?,?,?)', [pid, c.condition_code, c.category, c.severity, c.notes, c.display, c.onset_date, c.resolved_date, c.status || 'active', c.added_at || nowISO()]));
+    (data.allergies || []).forEach(a => dbRun('INSERT INTO patient_allergies (patient_id,allergen,reaction,severity,added_at) VALUES (?,?,?,?,?)', [pid, a.allergen, a.reaction, a.severity, a.added_at || nowISO()]));
+    (data.flags || []).forEach(f => dbRun('INSERT INTO patient_flags (patient_id,label_en,label_ar,color,created_at,active) VALUES (?,?,?,?,?,?)', [pid, f.label_en, f.label_ar, f.color, f.created_at || nowISO(), f.active == null ? 1 : f.active]));
+    (data.odontogram || []).forEach(o => dbRun('INSERT INTO odontogram (patient_id,tooth_fdi,surfaces,status,note,charted_by,charted_at) VALUES (?,?,?,?,?,NULL,?)', [pid, o.tooth_fdi, o.surfaces, o.status, o.note, o.charted_at || nowISO()]));
+    (data.perio || []).forEach(o => dbRun('INSERT INTO perio_chart (patient_id,tooth_fdi,pockets,bleeding,recession,mobility,charted_by,charted_at) VALUES (?,?,?,?,?,?,NULL,?)', [pid, o.tooth_fdi, o.pockets, o.bleeding, o.recession, o.mobility, o.charted_at || nowISO()]));
+    const planMap = {};
+    (data.plans || []).forEach(pl => { dbRun('INSERT INTO treatment_plans (patient_id,title_en,title_ar,status,dentist_id,created_at,notes) VALUES (?,?,?,?,NULL,?,?)', [pid, pl.title_en, pl.title_ar, pl.status, pl.created_at || nowISO(), pl.notes]); planMap[pl.plan_id] = dbLastId(); });
+    (data.plan_items || []).forEach(it => { const np = planMap[it.plan_id]; if (!np) return; dbRun('INSERT INTO treatment_plan_items (plan_id,patient_id,procedure_code,procedure_name_en,procedure_name_ar,tooth_fdi,surfaces,price,status,dentist_id,completed_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?)', [np, pid, it.procedure_code, it.procedure_name_en, it.procedure_name_ar, it.tooth_fdi, it.surfaces, it.price, it.status, it.completed_at, it.created_at || nowISO()]); });
+    (data.prescriptions || []).forEach(r => { if (!dentist) return; dbRun('INSERT INTO prescriptions (patient_id,admission_id,doctor_id,drug_id,drug_name,dose,route,frequency,duration,start_date,status,prescribed_at) VALUES (?,NULL,?,?,?,?,?,?,?,?,?,?)', [pid, dentist, r.drug_id, r.drug_name, r.dose, r.route, r.frequency, r.duration, r.start_date, r.status || 'active', r.prescribed_at || nowISO()]); });
+    (data.recalls || []).forEach(r => dbRun('INSERT INTO recalls (patient_id,type,due_date,status,created_at,notes) VALUES (?,?,?,?,?,?)', [pid, r.type, r.due_date, r.status || 'due', r.created_at || nowISO(), r.notes]));
+    (data.attachments || []).forEach(a => dbRun('INSERT INTO patient_attachments (patient_id,filename,mime,kind,size_bytes,data,note,uploaded_by,uploaded_at) VALUES (?,?,?,?,?,?,?,NULL,?)', [pid, a.filename, a.mime, a.kind, a.size_bytes, a.data, a.note, a.uploaded_at || nowISO()]));
+    logAction('PATIENT_IMPORTED', `Imported patient file ${src.mrn} from ${data.source_clinic || data.source_branch || '?'}`, null, pid, src.full_name_en, src.mrn);
+    dlog('transfer.import', { pid, from: data.source_branch, exported_at: data.exported_at });
+    saveDBToIndexedDB();
+    if (typeof setActivePatient === 'function') setActivePatient(pid);
+    showSuccess(ar ? 'تم استيراد ملف المريض' : 'Patient file imported');
+    navigateTo('documents');
+  } catch (e) { derr('transfer.import', e); showError(e.message); }
 }
 
 async function deleteAttachment(id, pid) {
