@@ -344,6 +344,12 @@ function applySchemaMigrations() {
     try { db.run("UPDATE portal_messages SET patient_id = 0 WHERE from_type='system' AND subject LIKE '%[→ user:%'"); } catch(e) {}
     // ---- Communicable diseases & enhanced emergency contact ----
     try { db.run('ALTER TABLE patient_conditions ADD COLUMN category TEXT DEFAULT \'chronic\''); } catch(e) {}
+    // ---- Coded, dated problem list (retrofit DBs created before these columns) ----
+    try { db.run("ALTER TABLE patient_conditions ADD COLUMN code_system TEXT DEFAULT 'icd10'"); } catch(e) {}
+    try { db.run('ALTER TABLE patient_conditions ADD COLUMN display TEXT'); } catch(e) {}
+    try { db.run('ALTER TABLE patient_conditions ADD COLUMN onset_date TEXT'); } catch(e) {}
+    try { db.run('ALTER TABLE patient_conditions ADD COLUMN resolved_date TEXT'); } catch(e) {}
+    try { db.run("ALTER TABLE patient_conditions ADD COLUMN status TEXT DEFAULT 'active'"); } catch(e) {}
     try { db.run('ALTER TABLE patients ADD COLUMN emergency_contact_name TEXT'); } catch(e) {}
     try { db.run('ALTER TABLE patients ADD COLUMN emergency_contact_phone TEXT'); } catch(e) {}
     try { db.run('ALTER TABLE patients ADD COLUMN emergency_contact_relation TEXT'); } catch(e) {}
@@ -359,6 +365,8 @@ function applySchemaMigrations() {
     try { db.run('CREATE INDEX IF NOT EXISTS idx_patients_mrn_upper ON patients(UPPER(mrn))'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_pa_patient ON patient_allergies(patient_id)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_pc_patient_cat ON patient_conditions(patient_id, category)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_pc_patient_status ON patient_conditions(patient_id, status)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_pflags_patient ON patient_flags(patient_id, active)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_lab_admission_status ON lab_orders(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_rx_admission_status ON prescriptions(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_audit_action_ts ON audit_log(action_type, timestamp DESC)'); } catch(e) {}
@@ -686,7 +694,31 @@ function createAllTables() {
       severity       TEXT,
       notes          TEXT,
       added_by       INTEGER,
-      added_at       TEXT
+      added_at       TEXT,
+      -- Coded, dated problem-list fields. condition_code carries the ICD-10 code
+      -- for new entries (display is the human label); legacy rows keep their free
+      -- token in condition_code with code_system left at the default and are still
+      -- rendered. status drives the active/resolved lifecycle.
+      code_system    TEXT DEFAULT 'icd10',
+      display        TEXT,
+      onset_date     TEXT,
+      resolved_date  TEXT,
+      status         TEXT DEFAULT 'active'
+    );
+  `);
+
+  // Patient flags — short, high-visibility chips a clinician pins to a patient
+  // (e.g. "Fall risk", "Interpreter needed"). Surfaced on the safety banner.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS patient_flags (
+      flag_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id  INTEGER NOT NULL REFERENCES patients(patient_id),
+      label_en    TEXT NOT NULL,
+      label_ar    TEXT,
+      color       TEXT DEFAULT 'info',
+      created_by  INTEGER,
+      created_at  TEXT,
+      active      INTEGER DEFAULT 1
     );
   `);
 

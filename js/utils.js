@@ -868,6 +868,17 @@ function renderSafetyBanner(patientId, admissionId, lang) {
     ${isolations.map(i => `<span class="spb-badge" style="background:${i.color};color:#fff;font-weight:700;" title="${lang === 'ar' ? 'احتياطات عزل مطلوبة' : 'Isolation precautions required'}">&#9888; ${lang === 'ar' ? i.lbl_ar : i.lbl_en}</span>`).join('')}
     ${haiCount > 0 ? `<span class="spb-badge" style="background:#fd7e14;color:#fff;" title="${lang === 'ar' ? 'عدوى مكتسبة من المستشفى' : 'Hospital-acquired infection'}">&#127861; HAI×${haiCount}</span>` : ''}
     ${critUnack > 0 ? `<span class="spb-badge" style="background:#dc2626;color:#fff;font-weight:700;animation:pulse 1.5s infinite;" title="${lang === 'ar' ? 'نتائج حرجة لم يتم الإشعار بها' : 'Unacknowledged critical labs'}">&#128680; ${critUnack} ${lang === 'ar' ? 'حرج' : 'CRIT'}</span>` : ''}
+    ${(() => {
+      // Patient flags — clinician-pinned high-visibility chips (e.g. fall risk),
+      // managed on the doctor/consultant problem-list screen.
+      const flags = dbAll('SELECT label_en, label_ar, color FROM patient_flags WHERE patient_id = ? AND active = 1 ORDER BY flag_id DESC', [patientId]);
+      const FLAG_COLORS = { info: '#0ea5e9', warn: '#d97706', danger: '#dc2626' };
+      return flags.map(f => {
+        const c = FLAG_COLORS[f.color] || FLAG_COLORS.info;
+        const label = (lang === 'ar' && f.label_ar) ? f.label_ar : f.label_en;
+        return `<span class="spb-badge" style="background:${c};color:#fff;" title="${lang === 'ar' ? 'علامة المريض' : 'Patient flag'}">&#9873; ${escapeHtml(label)}</span>`;
+      }).join('');
+    })()}
     <span class="spb-actions no-print">
       <button class="btn btn-sm btn-secondary" onclick="history.length > 1 ? history.back() : navigateTo('home')">${t('back_btn')}</button>
     </span>

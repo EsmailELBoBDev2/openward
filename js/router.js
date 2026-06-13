@@ -315,6 +315,7 @@ function renderSidebar(role) {
       items = [
         { id: 'con-patients', icon: '&#128101;', label: t('my_dept_patients') },
         { id: 'con-rounds',   icon: '&#127973;', label: lang === 'ar' ? 'وضع الجولة' : 'Rounding Mode' },  // NEW
+        { id: 'con-problems', icon: '&#128203;', label: t('problem_list') },
         { id: 'con-assign',   icon: '&#128203;', label: t('case_assignment') },
         { id: 'con-staff',    icon: '&#128100;', label: t('staff_overview') },
       ];
@@ -331,6 +332,7 @@ function renderSidebar(role) {
       items = [
         { id: 'doc-patients',      icon: '&#128101;', label: t('my_patients') },
         { id: 'doc-appointments',  icon: '&#128197;', label: t('doc_appointments') },
+        { id: 'doc-problems',      icon: '&#128203;', label: t('problem_list') },
         { id: 'doc-consult',       icon: '&#128203;', label: t('my_consultations') },
         { id: 'doc-discharge',     icon: '&#128196;', label: lang === 'ar' ? 'ملخص التخريج' : 'Discharge Summary' },
       ];
@@ -590,6 +592,8 @@ function renderView(viewId) {
     case 'doc-labs':         renderDocLabs(main, lang); break;
     case 'doc-consult':      renderDocConsult(main, lang); break;
     case 'doc-discharge': renderDocDischarge(main, lang); break;
+    case 'doc-problems':
+    case 'con-problems': renderProblemList(main, lang); break;
 
     // ---- Emergency Doctor ----
     case 'er-register':  renderERRegister(main, lang); break;
@@ -2633,6 +2637,198 @@ async function doInsertPrescription(admissionId, drugId, drugName, dose, route, 
 // ============================================================
 // DOCTOR — Order Labs
 // ============================================================
+
+// ============================================================
+// DOCTOR / CONSULTANT — Problem List (ICD-10 coded) + Patient Flags
+// ============================================================
+
+// Patients this clinician can chart against: case-assigned active patients first
+// (same source as the Rx/labs screens); if none are assigned, fall back to all
+// active admissions so a consultant covering the department still has a worklist.
+function _problemListPatients(session) {
+  const uid = session ? session.user_id : 0;
+  let rows = dbAll(`SELECT DISTINCT p.patient_id, p.mrn, p.full_name_ar, p.full_name_en
+    FROM case_assignments ca JOIN admissions a ON ca.admission_id = a.admission_id
+    JOIN patients p ON a.patient_id = p.patient_id
+    WHERE ca.doctor_id = ? AND a.status = 'active' ORDER BY p.patient_id DESC`, [uid]);
+  if (!rows.length) rows = dbAll(`SELECT DISTINCT p.patient_id, p.mrn, p.full_name_ar, p.full_name_en
+    FROM patients p JOIN admissions a ON a.patient_id = p.patient_id
+    WHERE a.status = 'active' ORDER BY p.patient_id DESC LIMIT 200`);
+  return rows;
+}
+
+// Human label for a condition row: explicit display, else the ICD-10 dataset's
+// localized name, else the humanized legacy token.
+function _conditionLabel(c, lang) {
+  if (c.display) return c.display;
+  if (typeof ICD10 !== 'undefined') {
+    const hit = ICD10.find(e => e.code === c.condition_code);
+    if (hit) return lang === 'ar' ? hit.ar : hit.en;
+  }
+  return String(c.condition_code || '').replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
+}
+
+const FLAG_COLOR_HEX = { info: '#0ea5e9', warn: '#d97706', danger: '#dc2626' };
+
+function renderProblemListBody(pid, lang) {
+  const patient = dbGet('SELECT patient_id, mrn, full_name_ar, full_name_en FROM patients WHERE patient_id = ?', [pid]);
+  if (!patient) return emptyState();
+  const active = dbAll("SELECT * FROM patient_conditions WHERE patient_id = ? AND COALESCE(status,'active') <> 'resolved' ORDER BY id DESC", [pid]);
+  const resolved = dbAll("SELECT * FROM patient_conditions WHERE patient_id = ? AND status = 'resolved' ORDER BY resolved_date DESC, id DESC", [pid]);
+  const flags = dbAll('SELECT * FROM patient_flags WHERE patient_id = ? AND active = 1 ORDER BY flag_id DESC', [pid]);
+  const icdOptions = (typeof ICD10 !== 'undefined' ? ICD10 : []).map(e =>
+    `<option value="${escapeHtml(e.code)}">${escapeHtml(e.code)} — ${lang === 'ar' ? escapeHtml(e.ar) : escapeHtml(e.en)}</option>`).join('');
+  const sevOptions = ['mild', 'moderate', 'severe'].map(s => `<option value="${s}">${t('sev_' + s)}</option>`).join('');
+
+  const activeRows = active.length ? active.map(c => {
+    const coded = /^[A-Za-z]\d/.test(c.condition_code || '');
+    return `<tr>
+      <td>${coded ? `<code>${escapeHtml(c.condition_code)}</code> ` : ''}${escapeHtml(_conditionLabel(c, lang))}</td>
+      <td>${c.severity ? escapeHtml(t('sev_' + c.severity)) : '—'}</td>
+      <td>${c.onset_date ? escapeHtml(String(c.onset_date).slice(0, 10)) : '—'}</td>
+      <td><button class="btn btn-sm btn-secondary" onclick="resolveProblem(${c.id}, ${pid})">${t('pl_resolve')}</button></td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="4" class="muted">${t('pl_no_problems')}</td></tr>`;
+
+  const resolvedRows = resolved.map(c => {
+    const coded = /^[A-Za-z]\d/.test(c.condition_code || '');
+    return `<tr class="muted">
+      <td>${coded ? `<code>${escapeHtml(c.condition_code)}</code> ` : ''}${escapeHtml(_conditionLabel(c, lang))}</td>
+      <td>${c.resolved_date ? escapeHtml(String(c.resolved_date).slice(0, 10)) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const flagChips = flags.length ? flags.map(f =>
+    `<span class="spb-badge" style="background:${FLAG_COLOR_HEX[f.color] || FLAG_COLOR_HEX.info};color:#fff;">&#9873; ${escapeHtml(lang === 'ar' && f.label_ar ? f.label_ar : f.label_en)}<button onclick="removeFlag(${f.flag_id}, ${pid})" title="${t('pl_flag_remove')}" style="background:none;border:none;color:#fff;cursor:pointer;font-size:1.1em;margin-${lang === 'ar' ? 'right' : 'left'}:4px;">&times;</button></span>`).join(' ')
+    : `<span class="muted">${t('pl_no_flags')}</span>`;
+
+  return `
+    <div class="card">
+      <h3>${t('pl_active_problems')}</h3>
+      <table class="table">
+        <thead><tr><th>${t('pl_problem')}</th><th>${t('pl_severity')}</th><th>${t('pl_onset')}</th><th></th></tr></thead>
+        <tbody>${activeRows}</tbody>
+      </table>
+      <form onsubmit="addProblem(event, ${pid})" class="form-row" style="margin-top:12px;align-items:flex-end;">
+        <div class="form-group" style="flex:2;">
+          <label>${t('pl_add_problem')}</label>
+          <input type="text" id="pl-code" list="pl-icd-list" autocomplete="off" placeholder="${t('pl_search_icd')}">
+          <datalist id="pl-icd-list">${icdOptions}</datalist>
+        </div>
+        <div class="form-group"><label>${t('pl_severity')}</label><select id="pl-severity"><option value="">—</option>${sevOptions}</select></div>
+        <div class="form-group"><label>${t('pl_onset')}</label><input type="date" id="pl-onset"></div>
+        <div class="form-group"><button type="submit" class="btn btn-primary">${t('pl_add_btn')}</button></div>
+      </form>
+    </div>
+    ${resolved.length ? `<div class="card"><h3>${t('pl_resolved')}</h3>
+      <table class="table"><thead><tr><th>${t('pl_problem')}</th><th>${t('pl_resolved_on')}</th></tr></thead><tbody>${resolvedRows}</tbody></table></div>` : ''}
+    <div class="card">
+      <h3>${t('pl_flags')}</h3>
+      <div style="margin-bottom:10px;">${flagChips}</div>
+      <form onsubmit="addFlag(event, ${pid})" class="form-row" style="align-items:flex-end;">
+        <div class="form-group" style="flex:2;"><label>${t('pl_flag_label')}</label><input type="text" id="pl-flag-label" maxlength="40" placeholder="${lang === 'ar' ? 'مثال: خطر السقوط' : 'e.g. Fall risk'}"></div>
+        <div class="form-group"><label>${t('pl_flag_label_ar')}</label><input type="text" id="pl-flag-label-ar" maxlength="40"></div>
+        <div class="form-group"><label>${t('pl_flag_color')}</label><select id="pl-flag-color">
+          <option value="info">${t('pl_color_info')}</option>
+          <option value="warn">${t('pl_color_warn')}</option>
+          <option value="danger">${t('pl_color_danger')}</option>
+        </select></div>
+        <div class="form-group"><button type="submit" class="btn btn-primary">${t('pl_add_flag')}</button></div>
+      </form>
+    </div>`;
+}
+
+function renderProblemList(main, lang) {
+  const session = getCurrentSession();
+  const patients = _problemListPatients(session);
+  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('problem_list')}</h1></div>${emptyState()}`; return; }
+  const pid = patients[0].patient_id;
+  const patOptions = patients.map(p =>
+    `<option value="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
+  main.innerHTML = `
+    <div class="page-header"><h1>${t('problem_list')}</h1></div>
+    <div class="card">
+      <div class="form-group"><label>${t('patient_col')}</label>
+        <select id="pl-patient" onchange="navigateProblemList(this.value)">${patOptions}</select></div>
+    </div>
+    <div id="pl-body">${renderProblemListBody(pid, lang)}</div>`;
+}
+
+function navigateProblemList(pid) {
+  const body = document.getElementById('pl-body');
+  if (body) body.innerHTML = renderProblemListBody(parseInt(pid, 10), currentLanguage());
+}
+
+async function addProblem(e, pid) {
+  e.preventDefault();
+  const lang = currentLanguage();
+  if (!requireRole(DOCTOR_ROLES, 'editing the problem list')) return;
+  const user = getCurrentUser();
+  const raw = (document.getElementById('pl-code').value || '').trim();
+  const severity = document.getElementById('pl-severity').value || null;
+  const onset = document.getElementById('pl-onset').value || null;
+  if (!raw) { showError(lang === 'ar' ? 'أدخل رمز ICD-10 أو تشخيصًا' : 'Enter an ICD-10 code or diagnosis'); return; }
+  // Match against the curated ICD-10 set (by code or localized name); otherwise
+  // record it as a free-text problem so nothing is lost.
+  let code = raw, display = raw, codeSystem = 'text';
+  if (typeof ICD10 !== 'undefined') {
+    const hit = ICD10.find(en => en.code.toLowerCase() === raw.toLowerCase()
+      || en.en.toLowerCase() === raw.toLowerCase() || en.ar === raw);
+    if (hit) { code = hit.code; display = lang === 'ar' ? hit.ar : hit.en; codeSystem = 'icd10'; }
+  }
+  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
+  dbRun(`INSERT INTO patient_conditions (patient_id, condition_code, code_system, display, severity, onset_date, status, added_by, added_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+    [pid, code, codeSystem, display, severity, onset, user ? user.user_id : null, nowISO()]);
+  await logAction('PROBLEM_ADDED', `Added problem ${display} (${code}) to the problem list`,
+    `أضيف تشخيص ${display} (${code}) لقائمة المشاكل`, pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
+  showSuccess(t('problem_added'));
+  saveDBToIndexedDB();
+  navigateProblemList(pid);
+}
+
+async function resolveProblem(id, pid) {
+  if (!requireRole(DOCTOR_ROLES, 'resolving a problem')) return;
+  const cond = dbGet('SELECT * FROM patient_conditions WHERE id = ?', [id]);
+  if (!cond) return;
+  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
+  dbRun("UPDATE patient_conditions SET status = 'resolved', resolved_date = ? WHERE id = ?", [nowISO().slice(0, 10), id]);
+  await logAction('PROBLEM_RESOLVED', `Resolved problem ${cond.display || cond.condition_code}`,
+    `تم حل تشخيص ${cond.display || cond.condition_code}`, pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
+  showSuccess(t('problem_resolved'));
+  saveDBToIndexedDB();
+  navigateProblemList(pid);
+}
+
+async function addFlag(e, pid) {
+  e.preventDefault();
+  const lang = currentLanguage();
+  if (!requireRole(DOCTOR_ROLES, 'adding a patient flag')) return;
+  const user = getCurrentUser();
+  const labelEn = (document.getElementById('pl-flag-label').value || '').trim();
+  const labelAr = (document.getElementById('pl-flag-label-ar').value || '').trim();
+  const color = document.getElementById('pl-flag-color').value || 'info';
+  if (!labelEn && !labelAr) { showError(lang === 'ar' ? 'أدخل نص العلامة' : 'Enter a flag label'); return; }
+  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
+  dbRun('INSERT INTO patient_flags (patient_id, label_en, label_ar, color, created_by, created_at, active) VALUES (?, ?, ?, ?, ?, ?, 1)',
+    [pid, labelEn || labelAr, labelAr || null, color, user ? user.user_id : null, nowISO()]);
+  await logAction('FLAG_ADDED', `Added patient flag "${labelEn || labelAr}"`, `أضيفت علامة المريض "${labelAr || labelEn}"`,
+    pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
+  showSuccess(t('flag_added'));
+  saveDBToIndexedDB();
+  navigateProblemList(pid);
+}
+
+async function removeFlag(flagId, pid) {
+  if (!requireRole(DOCTOR_ROLES, 'removing a patient flag')) return;
+  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
+  dbRun('UPDATE patient_flags SET active = 0 WHERE flag_id = ?', [flagId]);
+  await logAction('FLAG_REMOVED', `Removed patient flag #${flagId}`, `أزيلت علامة المريض #${flagId}`,
+    pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
+  showSuccess(t('flag_removed'));
+  saveDBToIndexedDB();
+  navigateProblemList(pid);
+}
 
 function renderDocLabs(main, lang) {
   const session = getCurrentSession();
