@@ -167,28 +167,11 @@ function applySchemaMigrations() {
     // Schema migrations for existing databases
     try { db.run('ALTER TABLE prescriptions ADD COLUMN verified_by INTEGER'); } catch(e) {}
     try { db.run('ALTER TABLE prescriptions ADD COLUMN verified_at TEXT'); } catch(e) {}
+    // Dental: prescriptions are patient-linked (no inpatient admission).
+    try { db.run('ALTER TABLE prescriptions ADD COLUMN patient_id INTEGER'); } catch(e) {}
+    // OpenSmile dental tables (odontogram, perio, procedures, plans, chairs, recalls).
+    createDentalTables();
     // MAR + critical ack migrations
-    try { db.run(`CREATE TABLE IF NOT EXISTS med_admin_records (
-      mar_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      prescription_id INTEGER NOT NULL,
-      admission_id   INTEGER NOT NULL,
-      drug_name      TEXT NOT NULL,
-      dose           TEXT NOT NULL,
-      route          TEXT NOT NULL,
-      scheduled_time TEXT,
-      administered_at TEXT,
-      administered_by INTEGER,
-      status         TEXT DEFAULT 'pending',
-      hold_reason    TEXT,
-      notes          TEXT
-    )`); } catch(e) {}
-    try { db.run(`CREATE TABLE IF NOT EXISTS lab_critical_acks (
-      ack_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_id    INTEGER NOT NULL UNIQUE,
-      doctor_id   INTEGER NOT NULL,
-      acked_at    TEXT NOT NULL,
-      comments    TEXT
-    )`); } catch(e) {}
     // Fix seed data: set is_critical=1 for any resulted lab with a critical flag
     try { db.run(`UPDATE lab_orders SET is_critical = 1 WHERE (result_flag LIKE '%critical%') AND status = 'resulted' AND is_critical = 0`); } catch(e) {}
     // Vitals extended fields for NEWS2
@@ -198,87 +181,14 @@ function applySchemaMigrations() {
     try { db.run('ALTER TABLE vitals_log ADD COLUMN news2_score INTEGER'); } catch(e) {}
     try { db.run('ALTER TABLE vitals_log ADD COLUMN qsofa_score INTEGER'); } catch(e) {}
     // Clinical assessment scales
-    try { db.run(`CREATE TABLE IF NOT EXISTS clinical_assessments (
-      assess_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      assess_type   TEXT NOT NULL,
-      score         INTEGER,
-      risk_level    TEXT,
-      details_json  TEXT,
-      assessed_by   INTEGER NOT NULL,
-      assessed_at   TEXT NOT NULL
-    )`); } catch(e) {}
     // Fluid balance I&O
-    try { db.run(`CREATE TABLE IF NOT EXISTS fluid_balance (
-      fb_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      type          TEXT NOT NULL,
-      category      TEXT NOT NULL,
-      amount_ml     REAL NOT NULL,
-      recorded_by   INTEGER NOT NULL,
-      recorded_at   TEXT NOT NULL,
-      shift         TEXT,
-      notes         TEXT
-    )`); } catch(e) {}
     // Order set instances
-    try { db.run(`CREATE TABLE IF NOT EXISTS order_set_log (
-      log_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      set_name      TEXT NOT NULL,
-      applied_by    INTEGER NOT NULL,
-      applied_at    TEXT NOT NULL
-    )`); } catch(e) {}
     // Order-set meds with no formulary match: a clinician must prescribe them
     // manually. Tracked here (not as a fake nurse task) so they stay visible and
     // actionable instead of vanishing.
-    try { db.run(`CREATE TABLE IF NOT EXISTS order_set_exceptions (
-      exc_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      set_name      TEXT,
-      item_type     TEXT DEFAULT 'med',
-      drug_name     TEXT NOT NULL,
-      dose          TEXT,
-      route         TEXT,
-      frequency     TEXT,
-      reason        TEXT,
-      created_by    INTEGER NOT NULL,
-      created_at    TEXT NOT NULL,
-      status        TEXT DEFAULT 'pending'
-    )`); } catch(e) {}
     try { db.run("ALTER TABLE order_set_exceptions ADD COLUMN item_type TEXT DEFAULT 'med'"); } catch(e) {}
     // Code Blue events
-    try { db.run(`CREATE TABLE IF NOT EXISTS code_blue_events (
-      event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-      patient_id    INTEGER,
-      admission_id  INTEGER,
-      location      TEXT,
-      event_type    TEXT DEFAULT 'code_blue',
-      initiated_by  INTEGER NOT NULL,
-      initiated_at  TEXT NOT NULL,
-      outcome       TEXT,
-      duration_min  INTEGER,
-      notes         TEXT,
-      resolved_at   TEXT
-    )`); } catch(e) {}
     // Home medications (medication reconciliation)
-    try { db.run(`CREATE TABLE IF NOT EXISTS home_medications (
-      hm_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      patient_id    INTEGER NOT NULL,
-      admission_id  INTEGER,
-      drug_name     TEXT NOT NULL,
-      dose          TEXT,
-      route         TEXT,
-      frequency     TEXT,
-      reason        TEXT,
-      prescriber    TEXT,
-      status        TEXT DEFAULT 'active',
-      reconciled    INTEGER DEFAULT 0,
-      reconcile_action TEXT,
-      reconciled_by INTEGER,
-      reconciled_at TEXT,
-      recorded_by   INTEGER NOT NULL,
-      recorded_at   TEXT NOT NULL
-    )`); } catch(e) {}
     // ---- Patient Portal additions ----
     try { db.run('ALTER TABLE patients ADD COLUMN portal_password_hash TEXT'); } catch(e) {}
     try { db.run('ALTER TABLE patients ADD COLUMN portal_salt TEXT'); } catch(e) {}
@@ -296,35 +206,7 @@ function applySchemaMigrations() {
       read_at       TEXT
     )`); } catch(e) {}
     // ---- Sepsis alerts log ----
-    try { db.run(`CREATE TABLE IF NOT EXISTS sepsis_alerts (
-      alert_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      vitals_id     INTEGER,
-      qsofa_score   INTEGER,
-      news2_score   INTEGER,
-      temp          REAL,
-      severity      TEXT,
-      triggered_at  TEXT NOT NULL,
-      acknowledged_by INTEGER,
-      acknowledged_at TEXT,
-      action_taken    TEXT
-    )`); } catch(e) {}
     // ---- Nursing care plans (NANDA/NIC/NOC) ----
-    try { db.run(`CREATE TABLE IF NOT EXISTS nursing_care_plans (
-      plan_id       INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      nanda_code    TEXT NOT NULL,
-      nanda_label   TEXT,
-      nic_code      TEXT,
-      nic_label     TEXT,
-      noc_code      TEXT,
-      noc_label     TEXT,
-      goal_text     TEXT,
-      status        TEXT DEFAULT 'active',
-      created_by    INTEGER NOT NULL,
-      created_at    TEXT NOT NULL,
-      resolved_at   TEXT
-    )`); } catch(e) {}
     // ---- Readmission risk scoring ----
     try { db.run('ALTER TABLE admissions ADD COLUMN readmission_risk_score INTEGER'); } catch(e) {}
     try { db.run('ALTER TABLE admissions ADD COLUMN readmission_risk_level TEXT'); } catch(e) {}
@@ -359,8 +241,6 @@ function applySchemaMigrations() {
     // ---- Defense-in-depth schema constraints (round 2) ----
     // Partial unique indexes (catch direct-SQL bypasses of UI checks)
     try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_patients_natid_unique ON patients(national_id) WHERE national_id IS NOT NULL AND national_id != ''"); } catch(e) {}
-    try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_admissions_active_per_patient ON admissions(patient_id) WHERE status = 'active'"); } catch(e) {}
-    try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_admissions_bed_dept_active ON admissions(bed_number, dept_id) WHERE status = 'active' AND bed_number IS NOT NULL"); } catch(e) {}
     // Lookup speed
     try { db.run('CREATE INDEX IF NOT EXISTS idx_patients_mrn_upper ON patients(UPPER(mrn))'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_pa_patient ON patient_allergies(patient_id)'); } catch(e) {}
@@ -371,7 +251,6 @@ function applySchemaMigrations() {
     try { db.run('CREATE INDEX IF NOT EXISTS idx_attach_patient ON patient_attachments(patient_id, uploaded_at)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_referrals_status ON referrals(status, to_dept)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_caregap_admission ON care_gap_overrides(admission_id, gap_key)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_lab_admission_status ON lab_orders(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_rx_admission_status ON prescriptions(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_audit_action_ts ON audit_log(action_type, timestamp DESC)'); } catch(e) {}
     // Hot-path indices for per-render worklist/chart queries (profiled against the
@@ -381,11 +260,7 @@ function applySchemaMigrations() {
     //  - patient-portal unread badge + inbox: WHERE patient_id AND from_type
     //  - admissions worklists by department: WHERE status AND dept_id
     //  - MAR due/given lookups: WHERE admission_id (+ status)
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_vitals_adm_time ON vitals_log(admission_id, recorded_at DESC)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_nursing_adm_status ON nursing_tasks(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_portal_msg_patient ON portal_messages(patient_id, from_type)'); } catch(e) {}
-    try { db.run("CREATE INDEX IF NOT EXISTS idx_admissions_dept_status ON admissions(dept_id, status)"); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_mar_admission ON med_admin_records(admission_id, status)'); } catch(e) {}
     // Hot-path indices, round 2 (verified against the WHERE/JOIN/ORDER-BY
     // shapes actually used in router.js):
     //  - consultations: last/first note per admission (rounds, chart, discharge)
@@ -394,62 +269,20 @@ function applySchemaMigrations() {
     //  - med_admin_records: "last administration" per prescription (MAR view + correlated subqueries)
     //  - appointments: date-range lists, per-doctor schedule, per-patient lookups
     //  - sw_contacts / fluid_balance / lab_critical_acks: per-row joins batched in render views
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_consult_adm_time ON consultations(admission_id, created_at DESC)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_case_assign_doctor ON case_assignments(doctor_id, admission_id)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_case_assign_adm ON case_assignments(admission_id)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_nurse_assign_nurse_date ON nurse_assignments(nurse_id, shift_date)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_nurse_assign_adm ON nurse_assignments(admission_id, shift_date)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_mar_rx_time ON med_admin_records(prescription_id, administered_at DESC)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_appt_date ON appointments(appt_date)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_appt_doctor_date ON appointments(doctor_id, appt_date)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_appt_natid ON appointments(national_id)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_sw_contacts_case ON sw_contacts(case_id, contact_date DESC)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_fluid_adm ON fluid_balance(admission_id)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_lca_order ON lab_critical_acks(order_id)'); } catch(e) {}
     // Round 3 (EXPLAIN QUERY PLAN sweep over all 286 SQL literals): the only
     // full scans left on GROWTH tables that a one-line index fixes. Verified
     // each flips SCAN -> SEARCH against the seeded schema.
     try { db.run('CREATE INDEX IF NOT EXISTS idx_patients_natid ON patients(national_id)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_rx_status ON prescriptions(status)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_adm_admitted ON admissions(admitted_at)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_adm_discharged ON admissions(discharged_at)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_mar_status_time ON med_admin_records(status, administered_at)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_patients_dupcheck ON patients(full_name_ar, phone)'); } catch(e) {}
-    try { db.run('CREATE INDEX IF NOT EXISTS idx_lab_critical_time ON lab_orders(is_critical, resulted_at)'); } catch(e) {}
 
     // Triggers (CHECK constraints can't be added via ALTER in SQLite; use triggers)
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_vitals_plausible BEFORE INSERT ON vitals_log FOR EACH ROW
-      WHEN (NEW.bp_systolic IS NOT NULL AND (NEW.bp_systolic < 30 OR NEW.bp_systolic > 300))
-        OR (NEW.bp_diastolic IS NOT NULL AND (NEW.bp_diastolic < 15 OR NEW.bp_diastolic > 250))
-        OR (NEW.heart_rate IS NOT NULL AND (NEW.heart_rate < 20 OR NEW.heart_rate > 300))
-        OR (NEW.temperature IS NOT NULL AND (NEW.temperature < 25 OR NEW.temperature > 45))
-        OR (NEW.o2_sat IS NOT NULL AND (NEW.o2_sat < 0 OR NEW.o2_sat > 100))
-      BEGIN
-        SELECT RAISE(ABORT, 'Vital sign out of plausible range');
-      END`); } catch(e) {}
     // NOTE: use datetime() to normalize both sides (ISO 8601 with T → SQLite space format)
     // Without this, string comparison of '2026-05-23T08:00:00Z' vs '2026-05-23 09:00:00' fails because 'T'(84) > ' '(32)
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_vitals_future BEFORE INSERT ON vitals_log FOR EACH ROW
-      WHEN datetime(NEW.recorded_at) > datetime('now', '+1 hour')
-      BEGIN
-        SELECT RAISE(ABORT, 'Vital sign recorded_at cannot be in the future');
-      END`); } catch(e) {}
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_fluid_positive BEFORE INSERT ON fluid_balance FOR EACH ROW
-      WHEN NEW.amount_ml <= 0
-      BEGIN
-        SELECT RAISE(ABORT, 'fluid_balance.amount_ml must be > 0 (use type=intake/output for direction)');
-      END`); } catch(e) {}
     // Same datetime() normalization as vitals
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_lab_time_order BEFORE INSERT ON lab_orders FOR EACH ROW
-      WHEN NEW.resulted_at IS NOT NULL AND datetime(NEW.resulted_at) < datetime(NEW.ordered_at)
-      BEGIN
-        SELECT RAISE(ABORT, 'lab_orders.resulted_at cannot precede ordered_at');
-      END`); } catch(e) {}
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_lab_time_order_upd BEFORE UPDATE ON lab_orders FOR EACH ROW
-      WHEN NEW.resulted_at IS NOT NULL AND datetime(NEW.resulted_at) < datetime(NEW.ordered_at)
-      BEGIN
-        SELECT RAISE(ABORT, 'lab_orders.resulted_at cannot precede ordered_at');
-      END`); } catch(e) {}
     // D2 fix: block new orders on discharged admissions (schema defense).
     // COALESCE closes the NULL-skip: a NONEXISTENT admission_id made the status
     // subquery NULL, and NULL = 'discharged' is NULL (not true), so a dangling
@@ -457,17 +290,7 @@ function applySchemaMigrations() {
     // admission now reads as '' which is <> 'active' → ABORT. DROP first so
     // existing databases get the replacement (CREATE IF NOT EXISTS never would).
     try { db.run('DROP TRIGGER IF EXISTS trg_rx_block_discharged'); } catch(e) {}
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_rx_block_discharged BEFORE INSERT ON prescriptions FOR EACH ROW
-      WHEN COALESCE((SELECT status FROM admissions WHERE admission_id = NEW.admission_id), '') <> 'active'
-      BEGIN
-        SELECT RAISE(ABORT, 'Cannot create prescription on a discharged or nonexistent admission');
-      END`); } catch(e) {}
     try { db.run('DROP TRIGGER IF EXISTS trg_lab_block_discharged'); } catch(e) {}
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_lab_block_discharged BEFORE INSERT ON lab_orders FOR EACH ROW
-      WHEN COALESCE((SELECT status FROM admissions WHERE admission_id = NEW.admission_id), '') <> 'active'
-      BEGIN
-        SELECT RAISE(ABORT, 'Cannot order lab on a discharged or nonexistent admission');
-      END`); } catch(e) {}
     // G5 fix: enforce doctor role on prescriptions at DB level
     // COALESCE closes the NULL hole: a NONEXISTENT doctor_id made the subquery
     // return NULL, and NULL NOT IN (...) is NULL (not true), so the trigger
@@ -476,9 +299,9 @@ function applySchemaMigrations() {
     // existing databases (idempotent — runs every boot).
     try { db.run('DROP TRIGGER IF EXISTS trg_rx_doctor_role'); } catch(e) {}
     try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_rx_doctor_role BEFORE INSERT ON prescriptions FOR EACH ROW
-      WHEN COALESCE((SELECT role FROM users WHERE user_id = NEW.doctor_id), '') NOT IN ('doctor','consultant','emergency_doctor','resident')
+      WHEN COALESCE((SELECT role FROM users WHERE user_id = NEW.doctor_id), '') NOT IN ('dentist','specialist')
       BEGIN
-        SELECT RAISE(ABORT, 'doctor_id must reference a user with a doctor role');
+        SELECT RAISE(ABORT, 'doctor_id must reference a user with a dentist role');
       END`); } catch(e) {}
     // RBAC at the data layer (role-alignment pass): the browser gates views by
     // role and the server gates /api by its CAN matrix, but the shared SQL
@@ -487,37 +310,7 @@ function applySchemaMigrations() {
     // (server/server.js reuses this exact schema builder). Same COALESCE
     // pattern as trg_rx_doctor_role: a NONEXISTENT user id reads as role ''
     // and aborts instead of NULL-skipping.
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_lab_doctor_role BEFORE INSERT ON lab_orders FOR EACH ROW
-      WHEN COALESCE((SELECT role FROM users WHERE user_id = NEW.doctor_id), '') NOT IN ('doctor','consultant','emergency_doctor','resident')
-      BEGIN
-        SELECT RAISE(ABORT, 'lab_orders.doctor_id must reference a user with a doctor role');
-      END`); } catch(e) {}
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_rx_verify_pharmacist BEFORE UPDATE OF verified_by ON prescriptions FOR EACH ROW
-      WHEN NEW.verified_by IS NOT NULL AND COALESCE((SELECT role FROM users WHERE user_id = NEW.verified_by), '') <> 'pharmacist'
-      BEGIN
-        SELECT RAISE(ABORT, 'prescriptions.verified_by must reference a pharmacist');
-      END`); } catch(e) {}
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_rx_verify_pharmacist_ins BEFORE INSERT ON prescriptions FOR EACH ROW
-      WHEN NEW.verified_by IS NOT NULL AND COALESCE((SELECT role FROM users WHERE user_id = NEW.verified_by), '') <> 'pharmacist'
-      BEGIN
-        SELECT RAISE(ABORT, 'prescriptions.verified_by must reference a pharmacist');
-      END`); } catch(e) {}
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_dispense_pharmacist BEFORE INSERT ON dispensing_log FOR EACH ROW
-      WHEN COALESCE((SELECT role FROM users WHERE user_id = NEW.dispensed_by), '') <> 'pharmacist'
-      BEGIN
-        SELECT RAISE(ABORT, 'dispensing_log.dispensed_by must reference a pharmacist');
-      END`); } catch(e) {}
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_mar_clinical_role BEFORE INSERT ON med_admin_records FOR EACH ROW
-      WHEN NEW.administered_by IS NOT NULL AND COALESCE((SELECT role FROM users WHERE user_id = NEW.administered_by), '') NOT IN ('nurse','senior_nurse','triage_nurse','doctor','consultant','emergency_doctor')
-      BEGIN
-        SELECT RAISE(ABORT, 'med_admin_records.administered_by must reference clinical staff');
-      END`); } catch(e) {}
     // D4 fix: limit lab result_value text length (prevent garbage / overflow)
-    try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_lab_result_len BEFORE UPDATE ON lab_orders FOR EACH ROW
-      WHEN NEW.result_value IS NOT NULL AND length(NEW.result_value) > 5000
-      BEGIN
-        SELECT RAISE(ABORT, 'lab_orders.result_value exceeds 5000 chars — likely data error');
-      END`); } catch(e) {}
 
     // High-alert med flag + second signature (K1 fix)
     try { db.run('ALTER TABLE drugs ADD COLUMN is_high_alert INTEGER DEFAULT 0'); } catch(e) {}
@@ -544,47 +337,7 @@ function applySchemaMigrations() {
     try { db.run('ALTER TABLE lab_orders ADD COLUMN rejected_by INTEGER'); } catch(e) {}
     try { db.run('ALTER TABLE lab_orders ADD COLUMN rejection_reason TEXT'); } catch(e) {}
     // ---- Pre-arrival board (triage nurse) ----
-    try { db.run(`CREATE TABLE IF NOT EXISTS incoming_arrivals (
-      arrival_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-      mode          TEXT NOT NULL,
-      patient_label TEXT,
-      age_guess     INTEGER,
-      gender_guess  TEXT,
-      chief_complaint TEXT,
-      severity      TEXT,
-      eta_minutes   INTEGER,
-      paramedic_notes TEXT,
-      created_by    INTEGER NOT NULL,
-      created_at    TEXT NOT NULL,
-      converted_patient_id INTEGER,
-      status        TEXT DEFAULT 'pending'
-    )`); } catch(e) {}
     // ---- Nosocomial (hospital-acquired) infections ----
-    try { db.run(`CREATE TABLE IF NOT EXISTS nosocomial_infections (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      patient_id    INTEGER NOT NULL,
-      infection_type TEXT NOT NULL,
-      pathogen      TEXT,
-      identified_at TEXT NOT NULL,
-      identified_by INTEGER,
-      is_isolated   INTEGER DEFAULT 0,
-      treatment     TEXT,
-      notes         TEXT
-    )`); } catch(e) {}
-    try { db.run(`CREATE TABLE IF NOT EXISTS vaccinations (
-      vac_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-      patient_id    INTEGER NOT NULL,
-      vaccine_name  TEXT NOT NULL,
-      dose_number   INTEGER,
-      administered_at TEXT NOT NULL,
-      site          TEXT,
-      lot_number    TEXT,
-      expiry_date   TEXT,
-      administered_by INTEGER,
-      next_due_date TEXT,
-      notes         TEXT
-    )`); } catch(e) {}
 
     // Brute-force protection (see auth.js): stored in the DB instead of
     // localStorage, so a localStorage.clear() no longer resets the counter
@@ -604,6 +357,123 @@ function applySchemaMigrations() {
     // Must come AFTER the ALTER above — an index on a not-yet-added column
     // fails silently in the try/catch and never gets created on fresh DBs.
     try { db.run('CREATE INDEX IF NOT EXISTS idx_appt_req_patient ON appointments(requested_by_patient_id, created_at)'); } catch(e) {}
+}
+
+// ============================================================
+// OpenSmile dental tables (called from applySchemaMigrations, which runs for
+// BOTH fresh and restored DBs — so every install gets the dental domain).
+// Tooth numbering is FDI / ISO-3950 two-digit (11–48 permanent, 51–85 primary).
+// ============================================================
+function createDentalTables() {
+  // Operatories (treatment chairs / rooms)
+  try { db.run(`CREATE TABLE IF NOT EXISTS operatories (
+    operatory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name_en TEXT NOT NULL,
+    name_ar TEXT NOT NULL,
+    active  INTEGER DEFAULT 1
+  )`); } catch(e) {}
+
+  // Procedure catalog (replaces the hospital lab/radiology catalog).
+  // category: diagnostic | preventive | restorative | endodontic | periodontic
+  //         | oral_surgery | prosthodontic | orthodontic | cosmetic
+  try { db.run(`CREATE TABLE IF NOT EXISTS procedures (
+    procedure_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+    code          TEXT UNIQUE NOT NULL,
+    name_en       TEXT NOT NULL,
+    name_ar       TEXT NOT NULL,
+    category      TEXT NOT NULL,
+    default_price REAL DEFAULT 0,
+    duration_min  INTEGER DEFAULT 30,
+    tooth_specific INTEGER DEFAULT 1,
+    active        INTEGER DEFAULT 1
+  )`); } catch(e) {}
+
+  // Odontogram: one row per charting event for a (patient, tooth).
+  // status: sound | caries | filled | crown | bridge | implant | missing
+  //       | rct | to_extract | sealant | veneer | fracture | impacted
+  try { db.run(`CREATE TABLE IF NOT EXISTS odontogram (
+    chart_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id  INTEGER NOT NULL REFERENCES patients(patient_id),
+    tooth_fdi   INTEGER NOT NULL,
+    surfaces    TEXT,
+    status      TEXT NOT NULL,
+    note        TEXT,
+    charted_by  INTEGER,
+    charted_at  TEXT NOT NULL
+  )`); } catch(e) {}
+
+  // Periodontal chart: 6-site probing depths per tooth.
+  try { db.run(`CREATE TABLE IF NOT EXISTS perio_chart (
+    perio_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id  INTEGER NOT NULL REFERENCES patients(patient_id),
+    tooth_fdi   INTEGER NOT NULL,
+    pockets     TEXT,
+    bleeding    TEXT,
+    recession   INTEGER,
+    mobility    INTEGER,
+    charted_by  INTEGER,
+    charted_at  TEXT NOT NULL
+  )`); } catch(e) {}
+
+  // Treatment plans + their line items (one item = one procedure on one tooth).
+  try { db.run(`CREATE TABLE IF NOT EXISTS treatment_plans (
+    plan_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id  INTEGER NOT NULL REFERENCES patients(patient_id),
+    title_en    TEXT,
+    title_ar    TEXT,
+    status      TEXT DEFAULT 'proposed',
+    dentist_id  INTEGER,
+    created_at  TEXT NOT NULL,
+    notes       TEXT
+  )`); } catch(e) {}
+
+  try { db.run(`CREATE TABLE IF NOT EXISTS treatment_plan_items (
+    item_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id          INTEGER NOT NULL REFERENCES treatment_plans(plan_id),
+    patient_id       INTEGER NOT NULL REFERENCES patients(patient_id),
+    procedure_code   TEXT,
+    procedure_name_en TEXT,
+    procedure_name_ar TEXT,
+    tooth_fdi        INTEGER,
+    surfaces         TEXT,
+    price            REAL DEFAULT 0,
+    status           TEXT DEFAULT 'planned',
+    phase            INTEGER DEFAULT 1,
+    dentist_id       INTEGER,
+    appointment_id   INTEGER,
+    completed_at     TEXT,
+    created_at       TEXT NOT NULL
+  )`); } catch(e) {}
+
+  // Recalls (recare): preventive checkup / perio maintenance reminders.
+  try { db.run(`CREATE TABLE IF NOT EXISTS recalls (
+    recall_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id  INTEGER NOT NULL REFERENCES patients(patient_id),
+    type        TEXT DEFAULT 'checkup',
+    due_date    TEXT NOT NULL,
+    status      TEXT DEFAULT 'due',
+    created_at  TEXT NOT NULL,
+    notes       TEXT
+  )`); } catch(e) {}
+
+  // Indexes
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_odontogram_patient ON odontogram(patient_id, tooth_fdi)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_perio_patient ON perio_chart(patient_id, tooth_fdi)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_tplans_patient ON treatment_plans(patient_id, status)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_tpitems_plan ON treatment_plan_items(plan_id)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_tpitems_patient ON treatment_plan_items(patient_id, status)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_recalls_due ON recalls(status, due_date)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_procedures_cat ON procedures(category)'); } catch(e) {}
+
+  // Defense-in-depth: only clinical staff may author chart/perio entries.
+  try { db.run('DROP TRIGGER IF EXISTS trg_chart_author'); } catch(e) {}
+  try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_chart_author BEFORE INSERT ON odontogram FOR EACH ROW
+    WHEN NEW.charted_by IS NOT NULL AND COALESCE((SELECT role FROM users WHERE user_id = NEW.charted_by), '') NOT IN ('dentist','specialist','hygienist')
+    BEGIN SELECT RAISE(ABORT, 'odontogram.charted_by must be clinical staff'); END`); } catch(e) {}
+  try { db.run('DROP TRIGGER IF EXISTS trg_plan_author'); } catch(e) {}
+  try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_plan_author BEFORE INSERT ON treatment_plans FOR EACH ROW
+    WHEN NEW.dentist_id IS NOT NULL AND COALESCE((SELECT role FROM users WHERE user_id = NEW.dentist_id), '') NOT IN ('dentist','specialist')
+    BEGIN SELECT RAISE(ABORT, 'treatment_plans.dentist_id must be a dentist'); END`); } catch(e) {}
 }
 
 // ============================================================
@@ -807,38 +677,7 @@ function createAllTables() {
     );
   `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS incoming_arrivals (
-      arrival_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-      mode          TEXT NOT NULL,
-      patient_label TEXT,
-      age_guess     INTEGER,
-      gender_guess  TEXT,
-      chief_complaint TEXT,
-      severity      TEXT,
-      eta_minutes   INTEGER,
-      paramedic_notes TEXT,
-      created_by    INTEGER NOT NULL,
-      created_at    TEXT NOT NULL,
-      converted_patient_id INTEGER,
-      status        TEXT DEFAULT 'pending'
-    );
-  `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS nosocomial_infections (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      patient_id    INTEGER NOT NULL,
-      infection_type TEXT NOT NULL,
-      pathogen      TEXT,
-      identified_at TEXT NOT NULL,
-      identified_by INTEGER,
-      is_isolated   INTEGER DEFAULT 0,
-      treatment     TEXT,
-      notes         TEXT
-    );
-  `);
 
   db.run(`
     CREATE TABLE IF NOT EXISTS patient_allergies (
@@ -852,37 +691,6 @@ function createAllTables() {
     );
   `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS admissions (
-      admission_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-      patient_id      INTEGER NOT NULL REFERENCES patients(patient_id),
-      dept_id         INTEGER NOT NULL REFERENCES departments(dept_id),
-      bed_number      TEXT,
-      admitted_by     INTEGER,
-      admitted_at     TEXT NOT NULL,
-      discharged_at   TEXT,
-      status          TEXT DEFAULT 'active',
-      complexity_score INTEGER DEFAULT 1,
-      diet_code       TEXT DEFAULT 'REG',
-      diet_notes      TEXT,
-      chief_complaint TEXT,
-      initial_diagnosis TEXT,
-      disposition_plan TEXT,
-      on_ventilator   INTEGER DEFAULT 0,
-      post_surgery    INTEGER DEFAULT 0,
-      triage_level    INTEGER,
-      mode_of_arrival TEXT,
-      pain_scale      INTEGER,
-      gcs_score       INTEGER DEFAULT 15,
-      news2_scale     INTEGER DEFAULT 1,
-      readmission_risk_score INTEGER,
-      readmission_risk_level TEXT,
-      readmission_risk_factors TEXT,
-      code_status         TEXT DEFAULT 'unknown',
-      code_status_set_by  INTEGER,
-      code_status_set_at  TEXT
-    );
-  `);
 
   // ---- Blackbox ----
   db.run(`
@@ -938,130 +746,25 @@ function createAllTables() {
     );
   `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS dispensing_log (
-      dispense_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-      prescription_id INTEGER REFERENCES prescriptions(rx_id),
-      drug_id       INTEGER NOT NULL REFERENCES drugs(drug_id),
-      patient_id    INTEGER NOT NULL REFERENCES patients(patient_id),
-      qty_dispensed REAL NOT NULL,
-      dispensed_by  INTEGER NOT NULL,
-      dispensed_at  TEXT NOT NULL,
-      collected_by  INTEGER,
-      collected_at  TEXT,
-      notes         TEXT
-    );
-  `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS stock_transactions (
-      txn_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-      drug_id     INTEGER NOT NULL,
-      txn_type    TEXT NOT NULL,
-      qty_change  REAL NOT NULL,
-      qty_after   REAL NOT NULL,
-      batch_no    TEXT,
-      expiry_date TEXT,
-      performed_by INTEGER NOT NULL,
-      performed_at TEXT NOT NULL,
-      notes       TEXT
-    );
-  `);
 
   // ---- Supply ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS supply_items (
-      item_id       INTEGER PRIMARY KEY AUTOINCREMENT,
-      name_en       TEXT NOT NULL,
-      name_ar       TEXT NOT NULL,
-      category      TEXT NOT NULL,
-      unit          TEXT NOT NULL,
-      qr_code_data  TEXT
-    );
-  `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS dept_supply_stock (
-      stock_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-      item_id       INTEGER NOT NULL,
-      dept_id       INTEGER NOT NULL,
-      qty           REAL DEFAULT 0,
-      min_threshold REAL DEFAULT 5,
-      last_updated  TEXT,
-      UNIQUE(item_id, dept_id)
-    );
-  `);
 
   // (supply_transactions was created here for years but no code path ever
   // read or wrote it — removed; existing DBs keep the empty table harmlessly.)
 
   // ---- Nursing ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS nurse_assignments (
-      assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      nurse_id      INTEGER NOT NULL,
-      shift         TEXT NOT NULL,
-      shift_date    TEXT NOT NULL,
-      assigned_by   INTEGER NOT NULL,
-      assigned_at   TEXT NOT NULL,
-      is_primary    INTEGER DEFAULT 1
-    );
-  `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS nursing_tasks (
-      task_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id INTEGER NOT NULL,
-      nurse_id    INTEGER NOT NULL,
-      task_type   TEXT NOT NULL,
-      task_detail TEXT,
-      status      TEXT DEFAULT 'pending',
-      due_time    TEXT,
-      done_at     TEXT,
-      notes       TEXT
-    );
-  `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS vitals_log (
-      vitals_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id INTEGER NOT NULL REFERENCES admissions(admission_id),
-      recorded_by INTEGER NOT NULL,
-      recorded_at TEXT NOT NULL,
-      bp_systolic INTEGER,
-      bp_diastolic INTEGER,
-      heart_rate  INTEGER,
-      temperature REAL,
-      o2_sat      INTEGER,
-      weight_kg   REAL,
-      height_cm   REAL,
-      rbs         REAL,
-      notes       TEXT
-    );
-  `);
 
   // ---- Clinical ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS consultations (
-      consult_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      doctor_id     INTEGER NOT NULL,
-      consult_type  TEXT NOT NULL,
-      subjective    TEXT,
-      objective     TEXT,
-      assessment    TEXT,
-      plan          TEXT,
-      icd10_codes   TEXT,
-      created_at    TEXT NOT NULL,
-      updated_at    TEXT
-    );
-  `);
 
   db.run(`
     CREATE TABLE IF NOT EXISTS prescriptions (
       rx_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL REFERENCES admissions(admission_id),
+      patient_id    INTEGER REFERENCES patients(patient_id),
+      admission_id  INTEGER,
       doctor_id     INTEGER NOT NULL,
       drug_id       INTEGER NOT NULL REFERENCES drugs(drug_id),
       drug_name     TEXT NOT NULL,
@@ -1080,74 +783,11 @@ function createAllTables() {
     );
   `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS lab_orders (
-      order_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id INTEGER NOT NULL REFERENCES admissions(admission_id),
-      doctor_id   INTEGER NOT NULL,
-      test_name   TEXT NOT NULL,
-      test_code   TEXT,
-      category    TEXT,
-      subcategory TEXT,
-      specimen_type TEXT,
-      priority    TEXT DEFAULT 'routine',
-      status      TEXT DEFAULT 'ordered',
-      ordered_at  TEXT NOT NULL,
-      prep_notes  TEXT,
-      collected_by INTEGER,
-      collected_at TEXT,
-      received_by INTEGER,
-      received_at TEXT,
-      resulted_at TEXT,
-      resulted_by INTEGER,
-      result_value TEXT,
-      result_unit  TEXT,
-      result_flag  TEXT,
-      result_notes TEXT,
-      is_critical  INTEGER DEFAULT 0,
-      notes       TEXT
-    );
-  `);
 
   // ---- Lab Result Details (for tests with multiple components like CBC) ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS lab_result_details (
-      detail_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_id      INTEGER NOT NULL,
-      component_en  TEXT NOT NULL,
-      component_ar  TEXT,
-      value         TEXT,
-      unit          TEXT,
-      ref_range     TEXT,
-      flag          TEXT DEFAULT 'normal'
-    );
-  `);
 
   // ---- Nursing Procedures Log ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS nursing_procedure_log (
-      log_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-      procedure_code TEXT NOT NULL,
-      admission_id  INTEGER NOT NULL,
-      nurse_id      INTEGER NOT NULL,
-      started_at    TEXT NOT NULL,
-      completed_at  TEXT,
-      steps_completed TEXT,
-      notes         TEXT,
-      status        TEXT DEFAULT 'in_progress'
-    );
-  `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS case_assignments (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      doctor_id     INTEGER NOT NULL,
-      assigned_by   INTEGER NOT NULL,
-      assigned_at   TEXT NOT NULL,
-      notes         TEXT
-    );
-  `);
 
   // ---- Outpatient Visits (Reception registration) ----
   db.run(`
@@ -1229,204 +869,23 @@ function createAllTables() {
   `);
 
   // ---- Surgical / OR Management ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS surgical_cases (
-      case_id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      patient_id           INTEGER NOT NULL,
-      admission_id         INTEGER NOT NULL,
-      surgeon_id           INTEGER NOT NULL,
-      procedure_name       TEXT NOT NULL,
-      anesthesia_type      TEXT NOT NULL,
-      or_room              TEXT NOT NULL,
-      scheduled_date       TEXT NOT NULL,
-      scheduled_time       TEXT NOT NULL,
-      estimated_duration_min INTEGER DEFAULT 60,
-      pre_op_diagnosis     TEXT,
-      consent_signed       INTEGER DEFAULT 0,
-      site_marked          INTEGER DEFAULT 0,
-      npo_verified         INTEGER DEFAULT 0,
-      blood_type_confirmed INTEGER DEFAULT 0,
-      allergies_reviewed   INTEGER DEFAULT 0,
-      surgical_team_notes  TEXT,
-      equipment_notes      TEXT,
-      status               TEXT DEFAULT 'scheduled',
-      post_op_notes        TEXT,
-      complications        TEXT,
-      created_by           INTEGER NOT NULL,
-      created_at           TEXT NOT NULL
-    );
-  `);
 
   // ---- Dietary / Nutrition ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS diet_orders (
-      order_id             INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id         INTEGER NOT NULL,
-      diet_type            TEXT NOT NULL,
-      food_allergies       TEXT,
-      calorie_target       INTEGER,
-      restrictions         TEXT,
-      special_instructions TEXT,
-      ordered_by           INTEGER NOT NULL,
-      ordered_at           TEXT NOT NULL,
-      status               TEXT DEFAULT 'active'
-    );
-  `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS meal_log (
-      log_id               INTEGER PRIMARY KEY AUTOINCREMENT,
-      diet_order_id        INTEGER NOT NULL,
-      admission_id         INTEGER NOT NULL,
-      meal_type            TEXT NOT NULL,
-      items_served         TEXT,
-      intake_pct           INTEGER DEFAULT 0,
-      notes                TEXT,
-      recorded_by          INTEGER NOT NULL,
-      recorded_at          TEXT NOT NULL
-    );
-  `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS nutrition_assessments (
-      assessment_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id         INTEGER NOT NULL,
-      weight_kg            REAL,
-      height_cm            REAL,
-      bmi                  REAL,
-      nutritional_risk     TEXT DEFAULT 'low',
-      assessment_notes     TEXT,
-      assessed_by          INTEGER NOT NULL,
-      assessed_at          TEXT NOT NULL
-    );
-  `);
 
   // ---- Social Work / Case Management ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS social_work_cases (
-      case_id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id         INTEGER NOT NULL,
-      patient_id           INTEGER NOT NULL,
-      social_worker_id     INTEGER NOT NULL,
-      psychosocial_assessment TEXT,
-      risk_level           TEXT DEFAULT 'low',
-      living_situation     TEXT,
-      support_system       TEXT,
-      insurance_status     TEXT DEFAULT 'insured',
-      discharge_needs      TEXT,
-      referrals            TEXT,
-      follow_up_needed     INTEGER DEFAULT 0,
-      status               TEXT DEFAULT 'open',
-      created_at           TEXT NOT NULL,
-      updated_at           TEXT
-    );
-  `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS sw_contacts (
-      contact_id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      case_id              INTEGER NOT NULL,
-      contact_type         TEXT NOT NULL,
-      contact_date         TEXT NOT NULL,
-      notes                TEXT,
-      recorded_by          INTEGER NOT NULL,
-      recorded_at          TEXT NOT NULL
-    );
-  `);
 
   // ---- Extended vitals columns for NEWS2 ----
-  db.run(`CREATE TABLE IF NOT EXISTS clinical_assessments (
-    assess_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-    admission_id  INTEGER NOT NULL,
-    assess_type   TEXT NOT NULL,
-    score         INTEGER,
-    risk_level    TEXT,
-    details_json  TEXT,
-    assessed_by   INTEGER NOT NULL,
-    assessed_at   TEXT NOT NULL
-  );`);
 
-  db.run(`CREATE TABLE IF NOT EXISTS fluid_balance (
-    fb_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    admission_id  INTEGER NOT NULL,
-    type          TEXT NOT NULL,
-    category      TEXT NOT NULL,
-    amount_ml     REAL NOT NULL,
-    recorded_by   INTEGER NOT NULL,
-    recorded_at   TEXT NOT NULL,
-    shift         TEXT,
-    notes         TEXT
-  );`);
 
-  db.run(`CREATE TABLE IF NOT EXISTS order_set_log (
-    log_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    admission_id  INTEGER NOT NULL,
-    set_name      TEXT NOT NULL,
-    applied_by    INTEGER NOT NULL,
-    applied_at    TEXT NOT NULL
-  );`);
 
-  db.run(`CREATE TABLE IF NOT EXISTS code_blue_events (
-    event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    patient_id    INTEGER,
-    admission_id  INTEGER,
-    location      TEXT,
-    event_type    TEXT DEFAULT 'code_blue',
-    initiated_by  INTEGER NOT NULL,
-    initiated_at  TEXT NOT NULL,
-    outcome       TEXT,
-    duration_min  INTEGER,
-    notes         TEXT,
-    resolved_at   TEXT
-  );`);
 
-  db.run(`CREATE TABLE IF NOT EXISTS home_medications (
-    hm_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    patient_id    INTEGER NOT NULL,
-    admission_id  INTEGER,
-    drug_name     TEXT NOT NULL,
-    dose          TEXT,
-    route         TEXT,
-    frequency     TEXT,
-    reason        TEXT,
-    prescriber    TEXT,
-    status        TEXT DEFAULT 'active',
-    reconciled    INTEGER DEFAULT 0,
-    reconcile_action TEXT,
-    reconciled_by INTEGER,
-    reconciled_at TEXT,
-    recorded_by   INTEGER NOT NULL,
-    recorded_at   TEXT NOT NULL
-  );`);
 
   // ---- Medication Administration Record (MAR) ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS med_admin_records (
-      mar_id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      prescription_id INTEGER NOT NULL REFERENCES prescriptions(rx_id),
-      admission_id    INTEGER NOT NULL REFERENCES admissions(admission_id),
-      drug_name       TEXT NOT NULL,
-      dose            TEXT NOT NULL,
-      route           TEXT NOT NULL,
-      scheduled_time  TEXT,
-      administered_at TEXT,
-      administered_by INTEGER,
-      status          TEXT DEFAULT 'pending',
-      hold_reason     TEXT,
-      notes           TEXT
-    );
-  `);
 
   // ---- Critical Lab Acknowledgments ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS lab_critical_acks (
-      ack_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_id    INTEGER NOT NULL UNIQUE,
-      doctor_id   INTEGER NOT NULL,
-      acked_at    TEXT NOT NULL,
-      comments    TEXT
-    );
-  `);
 
   // ---- Portal Messages (Patient ↔ Staff) ----
   db.run(`
@@ -1443,57 +902,10 @@ function createAllTables() {
   `);
 
   // ---- Sepsis Alerts ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS sepsis_alerts (
-      alert_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      vitals_id     INTEGER,
-      qsofa_score   INTEGER,
-      news2_score   INTEGER,
-      temp          REAL,
-      severity      TEXT,
-      triggered_at  TEXT NOT NULL,
-      acknowledged_by INTEGER,
-      acknowledged_at TEXT,
-      action_taken    TEXT
-    );
-  `);
 
   // ---- Vaccinations ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS vaccinations (
-      vac_id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      patient_id      INTEGER NOT NULL,
-      vaccine_name    TEXT NOT NULL,
-      dose_number     INTEGER,
-      administered_at TEXT NOT NULL,
-      site            TEXT,
-      lot_number      TEXT,
-      expiry_date     TEXT,
-      administered_by INTEGER,
-      next_due_date   TEXT,
-      notes           TEXT
-    );
-  `);
 
   // ---- Nursing Care Plans (NANDA/NIC/NOC) ----
-  db.run(`
-    CREATE TABLE IF NOT EXISTS nursing_care_plans (
-      plan_id       INTEGER PRIMARY KEY AUTOINCREMENT,
-      admission_id  INTEGER NOT NULL,
-      nanda_code    TEXT NOT NULL,
-      nanda_label   TEXT,
-      nic_code      TEXT,
-      nic_label     TEXT,
-      noc_code      TEXT,
-      noc_label     TEXT,
-      goal_text     TEXT,
-      status        TEXT DEFAULT 'active',
-      created_by    INTEGER NOT NULL,
-      created_at    TEXT NOT NULL,
-      resolved_at   TEXT
-    );
-  `);
 
   console.log('[DB] All tables created');
 }
@@ -1533,58 +945,6 @@ async function seedData(opts) {
       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
       ['admin', hash, salt, 'مدير النظام', 'System Administrator', 'it_admin', 11, nowISO()]
     );
-  }
-
-  // ---- Supply Items ----
-  const supplies = [
-    // Syringes
-    ['1mL Syringe (Insulin)', 'سرنجة 1 مل (إنسولين)', 'syringe', 'pieces'],
-    ['3mL Syringe', 'سرنجة 3 مل', 'syringe', 'pieces'],
-    ['5mL Syringe', 'سرنجة 5 مل', 'syringe', 'pieces'],
-    ['10mL Syringe', 'سرنجة 10 مل', 'syringe', 'pieces'],
-    ['20mL Syringe', 'سرنجة 20 مل', 'syringe', 'pieces'],
-    // IV Access
-    ['IV Cannula 18G', 'كانيولا وريدية 18G', 'iv_access', 'pieces'],
-    ['IV Cannula 20G', 'كانيولا وريدية 20G', 'iv_access', 'pieces'],
-    ['IV Cannula 22G', 'كانيولا وريدية 22G', 'iv_access', 'pieces'],
-    ['IV Giving Set', 'طقم تنقيط وريدي', 'iv_access', 'pieces'],
-    ['IV Extension Set', 'وصلة تمديد وريدية', 'iv_access', 'pieces'],
-    // IV Fluids
-    ['Normal Saline 0.9% 500mL', 'محلول ملحي 0.9% 500 مل', 'iv_fluid', 'bags'],
-    ['Dextrose 5% 500mL', 'ديكستروز 5% 500 مل', 'iv_fluid', 'bags'],
-    ["Ringer's Lactate 500mL", 'رينجر لاكتيت 500 مل', 'iv_fluid', 'bags'],
-    ['Normal Saline 0.9% 100mL', 'محلول ملحي 0.9% 100 مل', 'iv_fluid', 'bags'],
-    // Wound Care
-    ['Sterile Gauze 10x10cm', 'شاش معقم 10×10 سم', 'wound_care', 'pieces'],
-    ['Sterile Gauze 5x5cm', 'شاش معقم 5×5 سم', 'wound_care', 'pieces'],
-    ['Adhesive Dressing', 'ضمادة لاصقة', 'wound_care', 'pieces'],
-    ['Elastic Bandage', 'ضمادة مطاطية', 'wound_care', 'rolls'],
-    // PPE
-    ['Gloves S', 'قفازات S', 'ppe', 'boxes'],
-    ['Gloves M', 'قفازات M', 'ppe', 'boxes'],
-    ['Gloves L', 'قفازات L', 'ppe', 'boxes'],
-    ['Surgical Mask', 'كمامة جراحية', 'ppe', 'pieces'],
-    ['N95 Mask', 'كمامة N95', 'ppe', 'pieces'],
-    ['Gown', 'ثوب طبي', 'ppe', 'pieces'],
-    // Respiratory
-    ['Oxygen Mask (Simple)', 'قناع أكسجين (بسيط)', 'respiratory', 'pieces'],
-    ['Oxygen Mask (Non-Rebreather)', 'قناع أكسجين (بدون إعادة تنفس)', 'respiratory', 'pieces'],
-    ['Nasal Cannula', 'قنية أنفية', 'respiratory', 'pieces'],
-    // Catheters
-    ['Urinary Catheter 14Fr', 'قسطرة بولية 14Fr', 'other', 'pieces'],
-    ['Urinary Catheter 16Fr', 'قسطرة بولية 16Fr', 'other', 'pieces'],
-    ['Urinary Catheter 18Fr', 'قسطرة بولية 18Fr', 'other', 'pieces'],
-    ['Urine Bag', 'كيس بول', 'other', 'pieces'],
-    ['Nasogastric Tube 14Fr', 'أنبوب أنفي معدي 14Fr', 'other', 'pieces'],
-    ['Nasogastric Tube 16Fr', 'أنبوب أنفي معدي 16Fr', 'other', 'pieces'],
-    ['Suction Catheter', 'قسطرة شفط', 'other', 'pieces'],
-    // Antiseptics
-    ['Alcohol Swabs', 'مسحات كحولية', 'other', 'boxes'],
-    ['Betadine', 'بيتادين', 'other', 'bottles'],
-    ['Sterile Water for Injection', 'ماء معقم للحقن', 'other', 'pieces'],
-  ];
-  for (const s of supplies) {
-    db.run('INSERT OR IGNORE INTO supply_items (name_en, name_ar, category, unit) VALUES (?, ?, ?, ?)', s);
   }
 
   // ---- Common Drugs ----
