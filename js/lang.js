@@ -93,6 +93,12 @@ const LANG = {
   // ---- IT Admin ----
   user_management:   { ar: 'إدارة المستخدمين', en: 'User Management' },
   dept_setup:        { ar: 'إعداد الأقسام', en: 'Department Setup' },
+  // ---- OpenSmile dental nav ----
+  specialty_setup:     { ar: 'إعداد التخصصات والكراسي', en: 'Specialties & Chairs' },
+  odontogram_nav:      { ar: 'مخطط الأسنان', en: 'Odontogram' },
+  treatment_plans_nav: { ar: 'الخطط العلاجية', en: 'Treatment Plans' },
+  intake_nav:          { ar: 'التاريخ الطبي', en: 'Medical History' },
+  perio_nav:           { ar: 'مخطط اللثة', en: 'Perio Chart' },
   system_settings:   { ar: 'إعدادات النظام', en: 'System Settings' },
   add_user:          { ar: 'إضافة مستخدم جديد', en: 'Add New User' },
   edit_user:         { ar: 'تعديل المستخدم', en: 'Edit User' },
@@ -1049,22 +1055,15 @@ const DIET_CODES = {
 };
 
 // Role map for easy lookup
+// OpenSmile — dental clinic roles (collapsed from the 15 hospital roles).
 const ROLES = {
-  it_admin:         { ar: 'مدير النظام',              en: 'IT Admin' },
-  hospital_manager: { ar: 'مدير المستشفى',            en: 'Hospital Manager' },
-  consultant:       { ar: 'استشاري / رئيس قسم',       en: 'Consultant / Head of Department' },
-  doctor:           { ar: 'دكتور',                    en: 'Doctor' },
-  emergency_doctor: { ar: 'دكتور طوارئ',              en: 'Emergency Doctor' },
-  triage_nurse:     { ar: 'ممرضة فرز',                en: 'Triage Nurse' },
-  senior_nurse:     { ar: 'تمريض رئيسي',              en: 'Senior Nurse' },
-  nurse:            { ar: 'ممرضة',                    en: 'Nurse' },
-  pharmacist:       { ar: 'صيدلاني',                  en: 'Pharmacist' },
-  lab_technician:   { ar: 'فني مختبر',                en: 'Lab Technician' },
-  radiologist:      { ar: 'أخصائي أشعة',              en: 'Radiologist' },
-  receptionist:     { ar: 'موظف استقبال',              en: 'Receptionist' },
-  dietitian:        { ar: 'أخصائي تغذية',             en: 'Dietitian' },
-  social_worker:    { ar: 'أخصائي اجتماعي',            en: 'Social Worker' },
-  patient:          { ar: 'بوابة المرضى',              en: 'Patient Portal' },
+  it_admin:         { ar: 'مدير النظام',                  en: 'IT Admin' },
+  clinic_manager:   { ar: 'مدير العيادة',                 en: 'Clinic Manager' },
+  dentist:          { ar: 'طبيب أسنان',                   en: 'Dentist' },
+  specialist:       { ar: 'أخصائي أسنان',                 en: 'Dental Specialist' },
+  hygienist:        { ar: 'مساعد / أخصائي صحة الأسنان',    en: 'Dental Assistant / Hygienist' },
+  receptionist:     { ar: 'موظف استقبال',                 en: 'Receptionist' },
+  patient:          { ar: 'بوابة المرضى',                 en: 'Patient Portal' },
 };
 
 // Common condition labels

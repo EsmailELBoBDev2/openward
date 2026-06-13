@@ -797,7 +797,7 @@ function getPatientWarnings(patientId) {
  */
 // Role-based privacy: sensitive communicable conditions hidden from non-clinical roles
 const COMMUNICABLE_PRIVATE = new Set(['hiv', 'hepatitis_b', 'hepatitis_c']);
-const CLINICAL_ROLES_SEE_PRIVATE = new Set(['doctor','consultant','emergency_doctor','nurse','senior_nurse','pharmacist','triage_nurse','lab_technician']);
+const CLINICAL_ROLES_SEE_PRIVATE = new Set(['dentist','specialist','hygienist']);
 
 function renderSafetyBanner(patientId, admissionId, lang) {
   const patient = dbGet('SELECT * FROM patients WHERE patient_id = ?', [patientId]);

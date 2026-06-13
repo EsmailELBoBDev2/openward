@@ -257,7 +257,7 @@ async function verifyAgainstReceipt(receipt) {
 // The audit trail is oversight-only. In a browser-only app this gate is advisory
 // (a determined user can bypass client JS — the real fix is a native authority,
 // see README), but it removes the trivially-open read and records denied attempts.
-const AUDIT_READ_ROLES = ['it_admin', 'hospital_manager'];   // full audit log is oversight-only
+const AUDIT_READ_ROLES = ['it_admin', 'clinic_manager'];   // full audit log is oversight-only
 function canReadAudit() {
   const u = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
   if (u && AUDIT_READ_ROLES.includes(u.role)) return true;

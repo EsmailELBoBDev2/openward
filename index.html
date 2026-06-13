@@ -17,7 +17,7 @@
   -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HIS — Hospital Information System</title>
+  <title>OpenSmile — Dental Clinic System</title>
   <link rel="stylesheet" href="css/main.css">
   <link rel="stylesheet" href="css/rtl.css">
   <style>
@@ -40,8 +40,8 @@
     <div class="login-box">
       <!-- Logo -->
       <div class="login-logo">
-        <h1>HIS</h1>
-        <p id="login-subtitle">Hospital Information System — نظام المعلومات الصحية</p>
+        <h1>🦷 OpenSmile</h1>
+        <p id="login-subtitle">Dental Clinic System — نظام إدارة عيادة الأسنان</p>
       </div>
 
       <!-- Error Message -->
@@ -101,7 +101,7 @@
             <label id="lbl-mrn" for="patient-mrn">MRN — رقم الملف الطبي</label>
             <input type="text" id="patient-mrn" autocomplete="off" placeholder="HIS-XXXXXXXX-XXXXX" aria-label="Medical Record Number">
             <small class="form-hint" id="lbl-mrn-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
-              You can find this on your hospital wristband or visit summary.
+              You can find this on your appointment card or visit summary.
             </small>
           </div>
           <div class="form-group">
@@ -133,7 +133,7 @@
     <header class="app-header">
       <div class="header-left">
         <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Toggle navigation menu">&#9776;</button>
-        <h2>HIS</h2>
+        <h2>🦷 OpenSmile</h2>
       </div>
       <div class="header-right">
         <div id="staff-inbox-wrap" style="position:relative;display:none;">
@@ -361,8 +361,8 @@
       if (lblMrn)     lblMrn.textContent = lang === 'ar' ? 'رقم الملف الطبي' : 'Medical Record Number';
       if (lblDob)     lblDob.textContent = lang === 'ar' ? 'تاريخ الميلاد' : 'Date of Birth';
       if (lblMrnHint) lblMrnHint.textContent = lang === 'ar'
-        ? 'تجده على سوار المستشفى أو ملخص الزيارة'
-        : 'You can find this on your hospital wristband or visit summary.';
+        ? 'تجده على بطاقة الموعد أو ملخص الزيارة'
+        : 'You can find this on your appointment card or visit summary.';
       if (lblDobHint) lblDobHint.textContent = lang === 'ar' ? 'الصيغة: السنة-الشهر-اليوم' : 'Format: YYYY-MM-DD';
     }
 
@@ -705,19 +705,11 @@
     // ships these on purpose; production installs never render this list).
     const DEMO_PERSONAS = [
       ['🛠️', 'IT Admin', 'مدير النظام', 'admin', 'HIS@2024'],
-      ['🏥', 'Hospital Manager', 'مدير المستشفى', 'manager', 'manager123'],
-      ['🩺', 'Consultant', 'استشاري', 'dr.ahmed', 'doctor123'],
-      ['🩺', 'Doctor (ward)', 'طبيب', 'dr.sarah', 'doctor123'],
-      ['🚑', 'ER Doctor', 'طبيب طوارئ', 'dr.omar', 'doctor123'],
-      ['🚨', 'Triage Nurse', 'ممرضة فرز', 'nurse.noura', 'nurse123'],
-      ['👩‍⚕️', 'Senior Nurse', 'ممرضة أولى', 'nurse.fatima', 'nurse123'],
-      ['👩‍⚕️', 'Ward Nurse', 'ممرضة', 'nurse.mona', 'nurse123'],
-      ['💊', 'Pharmacist', 'صيدلاني', 'pharm.ali', 'pharm123'],
-      ['🔬', 'Lab Tech', 'تقني مختبر', 'lab.nasser', 'lab123'],
-      ['🩻', 'Radiologist', 'أخصائي أشعة', 'rad.mohammed', 'rad123'],
-      ['🛎️', 'Receptionist', 'موظفة استقبال', 'reception.sara', 'recept123'],
-      ['🥗', 'Dietitian', 'أخصائية تغذية', 'diet.amira', 'diet123'],
-      ['🤝', 'Social Worker', 'أخصائية اجتماعية', 'sw.hessa', 'social123'],
+      ['📊', 'Clinic Manager', 'مدير العيادة', 'manager', 'manager123'],
+      ['🦷', 'Dentist', 'طبيب أسنان', 'dr.omar', 'doctor123'],
+      ['🦷', 'Specialist (Ortho)', 'أخصائي تقويم', 'dr.sara', 'doctor123'],
+      ['🪥', 'Hygienist', 'أخصائي صحة الأسنان', 'hyg.mona', 'nurse123'],
+      ['🛎️', 'Receptionist', 'موظف استقبال', 'reception', 'recept123'],
     ];
 
     function setupShowcaseLogin() {
@@ -727,8 +719,8 @@
         // The local-only warning is FALSE in server mode — data is central.
         if (notice) notice.outerHTML = `
           <div style="background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
-            🟢 <strong>Connected to the central hospital server</strong> — data is shared across all workstations in real time and stored on the server, not in this browser.<br>
-            <span dir="rtl">متصل بخادم المستشفى المركزي — البيانات مشتركة بين جميع الأجهزة فورياً ومخزّنة على الخادم.</span>
+            🟢 <strong>Connected to the central clinic server</strong> — data is shared across all workstations in real time and stored on the server, not in this browser.<br>
+            <span dir="rtl">متصل بخادم العيادة المركزي — البيانات مشتركة بين جميع الأجهزة فورياً ومخزّنة على الخادم.</span>
           </div>`;
         return;
       }
@@ -738,8 +730,8 @@
 
       if (notice) notice.outerHTML = `
         <div style="background:#eff6ff;border:1px solid #93c5fd;color:#1e40af;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
-          🧪 <strong>Demo showcase</strong> — a full fictional hospital, stored locally in this browser. Pick a role below and look around; nothing here is real.<br>
-          <span dir="rtl">عرض تجريبي — مستشفى وهمي كامل مخزّن محلياً في هذا المتصفح. اختر دوراً وجرّب؛ لا شيء هنا حقيقي.</span>
+          🧪 <strong>Demo showcase</strong> — a full fictional dental clinic, stored locally in this browser. Pick a role below and look around; nothing here is real.<br>
+          <span dir="rtl">عرض تجريبي — عيادة أسنان وهمية كاملة مخزّنة محلياً في هذا المتصفح. اختر دوراً وجرّب؛ لا شيء هنا حقيقي.</span>
         </div>`;
 
       // Patient-portal demo identity comes from the DB (MRNs embed the seed date,
@@ -762,7 +754,7 @@
           </select>
         </div>
         <div style="text-align:center;margin-bottom:6px">
-          <button type="button" class="btn btn-primary" id="tour-start-btn" style="width:100%" onclick="demoTourOffer(true)">🎬 ${currentLanguage() === 'ar' ? 'جولة إرشادية: تابع مريضاً عبر المستشفى' : 'Guided tour: follow a patient through the hospital'}</button>
+          <button type="button" class="btn btn-primary" id="tour-start-btn" style="width:100%" onclick="demoTourOffer(true)">🎬 ${currentLanguage() === 'ar' ? 'جولة إرشادية: تابع مريضاً عبر العيادة' : 'Guided tour: follow a patient through the clinic'}</button>
         </div>
         <div style="text-align:center;margin-bottom:14px">
           <button type="button" class="btn btn-sm btn-secondary" id="prod-setup-btn" style="font-size:0.72rem" onclick="switchToProduction()">🚀 Set up for production — wipes ALL demo data</button>
@@ -923,7 +915,7 @@
       overlay.innerHTML = `
         <div class="alert-modal" style="max-width:520px">
           <h2 style="margin-bottom:4px">&#9875; ${lang==='ar'?'دليل المستخدم السريع':'Quick Reference'}</h2>
-          <p class="text-muted" style="margin-bottom:16px;font-size:0.85rem">HIS — Hospital Information System v2.0</p>
+          <p class="text-muted" style="margin-bottom:16px;font-size:0.85rem">OpenSmile — Dental Clinic System v2.0</p>
 
           <h3 style="margin-bottom:8px;font-size:0.9rem">${lang==='ar'?'اختصارات لوحة المفاتيح':'Keyboard Shortcuts'}</h3>
           <table class="shortcuts-table">

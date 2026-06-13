@@ -1506,35 +1506,18 @@ async function seedData(opts) {
   // demo=false (production install): reference data ONLY — departments, supplies,
   // formulary, interaction table. No default admin, no demo staff, no patients.
   const demo = !(opts && opts.demo === false);
-  // ---- Departments ----
+  // ---- Dental specialties (the `departments` table is repurposed as the
+  // clinic's specialty list; ids are stable so seeded users/appointments line up) ----
   const depts = [
-    [1, 'الطوارئ',           'Emergency',                'clinical'],
-    [2, 'الباطنة',           'Internal Medicine',        'clinical'],
-    [3, 'الجراحة',           'Surgery',                  'clinical'],
-    [4, 'العناية المركزة',     'ICU',                      'clinical'],
-    [5, 'الأطفال',           'Pediatrics',               'clinical'],
-    [6, 'النساء والتوليد',     'Obstetrics & Gynecology',  'clinical'],
-    [7, 'العظام',            'Orthopedics',              'clinical'],
-    [8, 'المسالك البولية',     'Urology',                  'clinical'],
-    [9, 'الصيدلية',          'Pharmacy',                 'support'],
-    [11, 'الإدارة',          'Administration',           'admin'],
-    [12, 'تقنية المعلومات',    'IT',                       'admin'],
-    [13, 'المختبر',           'Laboratory',               'support'],
-    [14, 'الأشعة',            'Radiology',                'support'],
-    [15, 'الجلدية',            'Dermatology',              'clinical'],
-    [16, 'الأنف والأذن والحنجرة', 'ENT',                   'clinical'],
-    [17, 'طب العيون',          'Ophthalmology',            'clinical'],
-    [18, 'الطب النفسي',        'Psychiatry',               'clinical'],
-    [19, 'الأورام',            'Oncology',                 'clinical'],
-    [20, 'الكلى وغسيل الكلى',  'Nephrology & Dialysis',    'clinical'],
-    [21, 'الصدرية والرئوية',   'Pulmonology',              'clinical'],
-    [22, 'العلاج الطبيعي والتأهيل', 'Physiotherapy & Rehabilitation', 'clinical'],
-    [23, 'بنك الدم',           'Blood Bank',               'support'],
-    [25, 'السجلات الطبية',     'Medical Records',          'support'],
-    [26, 'الاستقبال والتسجيل', 'Reception & Registration', 'support'],
-    [27, 'غرف العمليات',       'Operating Room',           'clinical'],
-    [28, 'التغذية العلاجية',    'Nutrition & Dietetics',    'support'],
-    [29, 'الخدمة الاجتماعية',   'Social Work',              'support'],
+    [1, 'طب الأسنان العام',          'General Dentistry',              'specialty'],
+    [2, 'تقويم الأسنان',             'Orthodontics',                   'specialty'],
+    [3, 'علاج الجذور (العصب)',        'Endodontics',                    'specialty'],
+    [4, 'جراحة الفم والوجه والفكين',   'Oral & Maxillofacial Surgery',   'specialty'],
+    [5, 'أمراض اللثة',               'Periodontics',                   'specialty'],
+    [6, 'طب أسنان الأطفال',          'Pediatric Dentistry',            'specialty'],
+    [7, 'التعويضات السنية (التركيبات)', 'Prosthodontics',                 'specialty'],
+    [10, 'الاستقبال والإدارة',        'Reception & Administration',     'admin'],
+    [11, 'تقنية المعلومات',          'IT',                             'admin'],
   ];
   for (const d of depts) {
     db.run('INSERT OR IGNORE INTO departments (dept_id, name_ar, name_en, type) VALUES (?, ?, ?, ?)', d);
@@ -1548,7 +1531,7 @@ async function seedData(opts) {
     const hash = await hashPassword('HIS@2024', salt);
     db.run(`INSERT INTO users (username, password_hash, salt, full_name_ar, full_name_en, role, department_id, is_active, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-      ['admin', hash, salt, 'مدير النظام', 'System Administrator', 'it_admin', 12, nowISO()]
+      ['admin', hash, salt, 'مدير النظام', 'System Administrator', 'it_admin', 11, nowISO()]
     );
   }
 
@@ -1698,10 +1681,32 @@ async function seedData(opts) {
   // SEED DATA — Realistic accounts, patients, clinical data
   // ============================================================
 
-  if (demo) await seedHospitalData();
+  if (demo) await seedDentalDemo();
 
   await saveDBToIndexedDB();
   console.log(`[DB] Seed data loaded (${demo ? 'demo' : 'production: reference data only'})`);
+}
+
+// Phase-1 minimal demo seed: just the 7 dental-clinic staff logins so every role
+// boots and the role-picker works. The rich demo data (patients, odontograms,
+// treatment plans, appointments, invoices, recalls) is layered on in Phase 3.
+async function seedDentalDemo() {
+  if (dbGet("SELECT user_id FROM users WHERE username = 'dr.omar'")) return;
+  const now = nowISO();
+  async function mkUser(username, password, nameAr, nameEn, role, deptId, spec) {
+    const salt = generateSalt();
+    const hash = await hashPassword(password, salt);
+    db.run(`INSERT INTO users (username, password_hash, salt, full_name_ar, full_name_en, role, department_id, specialization, is_active, created_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`, [username, hash, salt, nameAr, nameEn, role, deptId, spec || null, now]);
+    return dbLastId();
+  }
+  // admin / HIS@2024 (it_admin) already created in seedData()
+  await mkUser('manager',   'manager123', 'عبدالرحمن الفيصل', 'Abdulrahman Al-Faisal', 'clinic_manager', 10, null);
+  await mkUser('dr.omar',   'doctor123',  'د. عمر الراشد',    'Dr. Omar Al-Rashed',    'dentist',        1,  'General Dentistry');
+  await mkUser('dr.sara',   'doctor123',  'د. سارة الحمدان',  'Dr. Sara Al-Hamdan',    'specialist',     2,  'Orthodontics');
+  await mkUser('hyg.mona',  'nurse123',   'منى الحربي',       'Mona Al-Harbi',         'hygienist',      1,  'Dental Hygiene');
+  await mkUser('reception', 'recept123',  'سارة الجهني',      'Sara Al-Juhani',        'receptionist',   10, null);
+  console.log('[DB] Dental demo staff seeded (Phase 1 stub)');
 }
 
 async function seedHospitalData() {

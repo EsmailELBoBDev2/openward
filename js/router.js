@@ -297,106 +297,32 @@ function renderSidebar(role) {
   switch (role) {
     case 'it_admin':
       items = [
-        { id: 'it-users',     icon: '&#128101;', label: t('user_management') },
-        { id: 'it-depts',     icon: '&#127970;', label: t('dept_setup') },
-        { id: 'it-settings',  icon: '&#9881;',   label: t('system_settings') },
+        { id: 'it-users',       icon: '&#128101;', label: t('user_management') },
+        { id: 'it-specialties', icon: '&#129463;', label: t('specialty_setup') },
+        { id: 'it-settings',    icon: '&#9881;',   label: t('system_settings') },
       ];
       break;
-    case 'hospital_manager':
-      // Stripped: hm-analytics + hm-reports merged into hm-overview (was 6 items, now 4).
-      // Reason: managers want a single dashboard, not 3 separate views with overlapping info.
+    case 'clinic_manager':
       items = [
-        { id: 'hm-overview',  icon: '&#128202;', label: t('overview') },
-        { id: 'hm-beds',      icon: '&#127916;', label: t('hm_beds') },
-        { id: 'hm-blackbox',  icon: '&#128274;', label: t('blackbox_viewer') },
+        { id: 'mgr-overview', icon: '&#128202;', label: t('overview') },
+        { id: 'mgr-audit',    icon: '&#128274;', label: t('blackbox_viewer') },
       ];
       break;
-    case 'consultant': {
+    // Dentist and Specialist share the clinical chair: odontogram, plans, Rx, schedule.
+    case 'dentist':
+    case 'specialist':
       items = [
-        { id: 'con-patients', icon: '&#128101;', label: t('my_dept_patients') },
-        { id: 'con-rounds',   icon: '&#127973;', label: lang === 'ar' ? 'وضع الجولة' : 'Rounding Mode' },  // NEW
-        { id: 'con-problems', icon: '&#128203;', label: t('problem_list') },
-        { id: 'con-assign',   icon: '&#128203;', label: t('case_assignment') },
-        { id: 'con-staff',    icon: '&#128100;', label: t('staff_overview') },
-      ];
-      const conUser = getCurrentUser();
-      if (conUser && conUser.department_id === 3) {
-        items.splice(1, 0, { id: 'con-surgical', icon: '&#129656;', label: t('surgical_schedule') });
-      }
-      break;
-    }
-    case 'doctor': {
-      // Stripped: doc-rx and doc-labs removed from sidebar.
-      // Reason: writing Rx / ordering labs without patient context is the WRONG mental model
-      // and removes our allergy/DDI safety checks. Doctors should always click patient → action.
-      items = [
-        { id: 'doc-patients',      icon: '&#128101;', label: t('my_patients') },
-        { id: 'doc-appointments',  icon: '&#128197;', label: t('doc_appointments') },
-        { id: 'doc-problems',      icon: '&#128203;', label: t('problem_list') },
-        { id: 'doc-consult',       icon: '&#128203;', label: t('my_consultations') },
-        { id: 'doc-discharge',     icon: '&#128196;', label: lang === 'ar' ? 'ملخص التخريج' : 'Discharge Summary' },
-      ];
-      const docUser = getCurrentUser();
-      if (docUser && docUser.department_id === 3) {
-        items.splice(1, 0, { id: 'doc-surgical', icon: '&#129656;', label: t('surgical_schedule') });
-      }
-      break;
-    }
-    case 'emergency_doctor':
-      items = [
-        { id: 'er-register',  icon: '&#10133;',  label: t('register_patient') },
-        { id: 'er-cases',     icon: '&#128101;', label: t('active_cases') },
+        { id: 'dr-patients',     icon: '&#128101;', label: t('my_patients') },
+        { id: 'dr-chart',        icon: '&#129463;', label: t('odontogram_nav') },
+        { id: 'dr-plans',        icon: '&#128203;', label: t('treatment_plans_nav') },
+        { id: 'dr-appointments', icon: '&#128197;', label: t('doc_appointments') },
       ];
       break;
-    case 'triage_nurse':
-      // NEW role (was missing — Maria persona had no home before)
+    case 'hygienist':
       items = [
-        { id: 'tn-arrivals', icon: '&#128657;', label: lang === 'ar' ? 'الوصول والفرز' : 'Arrivals & Triage' },
-        { id: 'tn-register', icon: '&#10133;',  label: t('register_patient') },
-        { id: 'tn-queue',    icon: '&#128101;', label: lang === 'ar' ? 'قائمة الانتظار' : 'Waiting Queue' },
-      ];
-      break;
-    case 'senior_nurse':
-      // Stripped: sn-beds removed (bed view is admin-level, fits hospital manager).
-      // Senior nurse cares about THEIR ward — sn-ward shows beds in their dept already.
-      items = [
-        { id: 'sn-ward',    icon: '&#127973;', label: t('ward_overview') },
-        { id: 'sn-assign',  icon: '&#128203;', label: t('nurse_assignment') },
-        { id: 'sn-supply',  icon: '&#128230;', label: t('supply_stock') },
-      ];
-      break;
-    case 'nurse':
-      items = [
-        { id: 'nr-patients',    icon: '&#128101;', label: t('my_patients') },
-        { id: 'nr-tasks',       icon: '&#9745;',   label: t('my_tasks') },
-        { id: 'nr-mar',         icon: '&#128138;', label: t('mar_title') },
-        { id: 'nr-assessments', icon: '&#128203;', label: t('assessments_title') },
-        { id: 'nr-fluids',      icon: '&#128167;', label: t('fluid_balance_title') },
-        { id: 'nr-shift',       icon: '&#128340;', label: t('end_of_shift') },
-      ];
-      break;
-    case 'pharmacist': {
-      const unverifiedCount = dbGet(`SELECT COUNT(*) as c FROM prescriptions WHERE status='active' AND verified_at IS NULL`);
-      const uvc = unverifiedCount ? unverifiedCount.c : 0;
-      items = [
-        { id: 'ph-queue',     icon: '&#128203;', label: t('prescription_queue') + (uvc > 0 ? ` <span class="sidebar-badge">${uvc}</span>` : '') },
-        { id: 'ph-inventory', icon: '&#128230;', label: t('drug_inventory') },
-        { id: 'ph-receive',   icon: '&#128229;', label: t('receive_stock') },
-        { id: 'ph-log',       icon: '&#128196;', label: t('dispensing_log') },
-      ];
-      break;
-    }
-    case 'lab_technician':
-      items = [
-        { id: 'lt-pending',   icon: '&#128300;', label: t('lab_pending_samples') },
-        { id: 'lt-results',   icon: '&#128203;', label: t('lab_results_entry') },
-        { id: 'lt-history',   icon: '&#128196;', label: t('lab_history') },
-      ];
-      break;
-    case 'radiologist':
-      items = [
-        { id: 'rad-pending',  icon: '&#128225;', label: t('rad_pending') },
-        { id: 'rad-results',  icon: '&#128203;', label: t('rad_results') },
+        { id: 'asst-patients', icon: '&#128101;', label: t('my_patients') },
+        { id: 'asst-intake',   icon: '&#128203;', label: t('intake_nav') },
+        { id: 'asst-perio',    icon: '&#129463;', label: t('perio_nav') },
       ];
       break;
     case 'receptionist':
@@ -405,20 +331,6 @@ function renderSidebar(role) {
         { id: 'rcp-register',     icon: '&#10133;',  label: t('rcp_register') },
         { id: 'rcp-appointments', icon: '&#128197;', label: t('rcp_appointments') },
         { id: 'rcp-billing',      icon: '&#128181;', label: t('rcp_billing') },
-      ];
-      break;
-    case 'dietitian':
-      items = [
-        { id: 'dt-orders',      icon: '&#127858;', label: t('diet_orders') },
-        { id: 'dt-meals',       icon: '&#127869;', label: t('meal_tracking') },
-        { id: 'dt-assessments', icon: '&#128203;', label: t('nutrition_assessment') },
-      ];
-      break;
-    case 'social_worker':
-      items = [
-        { id: 'sw-cases',     icon: '&#128101;', label: t('sw_cases') },
-        { id: 'sw-new',       icon: '&#10133;',  label: t('sw_new_case') },
-        { id: 'sw-discharge', icon: '&#128196;', label: t('sw_discharge_plan') },
       ];
       break;
     case 'patient': {
@@ -449,23 +361,21 @@ function renderSidebar(role) {
   // and IT also get the review queue.
   if (role && role !== 'patient') {
     items.push({ id: 'incident-report', icon: '&#9888;', label: t('incident_report_nav') });
-    if (role === 'hospital_manager' || role === 'it_admin') {
+    if (role === 'clinic_manager' || role === 'it_admin') {
       items.push({ id: 'incident-queue', icon: '&#128203;', label: t('incident_queue_nav') });
     }
   }
 
   // Cross-role clinical tools (patient-centric; appended here to avoid duplicating
-  // into each role menu). Documents = chart attachments; Care Gaps = preventive
-  // nudges; Referrals = internal consult requests.
-  const CLINICAL_NAV = ['doctor', 'consultant', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
-  if (CLINICAL_NAV.includes(role) || role === 'radiologist') {
-    items.push({ id: 'documents', icon: '&#128206;', label: t('documents_nav') });
-  }
+  // into each role menu). Documents = X-rays & consent attachments; Recalls =
+  // recare/preventive nudges; Referrals = specialist consult requests.
+  const CLINICAL_NAV = ['dentist', 'specialist', 'hygienist'];
   if (CLINICAL_NAV.includes(role)) {
+    items.push({ id: 'documents', icon: '&#128206;', label: t('documents_nav') });
     items.push({ id: 'care-gaps', icon: '&#9889;', label: t('care_gaps_nav') });
     items.push({ id: 'patient-summary', icon: '&#128203;', label: t('summary_nav') });
   }
-  if (['doctor', 'consultant', 'emergency_doctor'].includes(role)) {
+  if (['dentist', 'specialist'].includes(role)) {
     items.push({ id: 'referrals', icon: '&#128228;', label: t('referrals_nav') });
   }
 
@@ -482,21 +392,13 @@ function renderSidebar(role) {
 
 function navigateToDefault(role) {
   const defaults = {
-    it_admin:         'it-users',
-    hospital_manager: 'hm-overview',
-    consultant:       'con-patients',
-    doctor:           'doc-patients',
-    emergency_doctor: 'er-register',
-    triage_nurse:     'tn-arrivals',
-    senior_nurse:     'sn-ward',
-    nurse:            'nr-patients',
-    pharmacist:       'ph-queue',
-    lab_technician:   'lt-pending',
-    radiologist:      'rad-pending',
-    receptionist:     'rcp-queue',
-    dietitian:        'dt-orders',
-    social_worker:    'sw-cases',
-    patient:          'pp-overview',
+    it_admin:       'it-users',
+    clinic_manager: 'mgr-overview',
+    dentist:        'dr-patients',
+    specialist:     'dr-patients',
+    hygienist:      'asst-patients',
+    receptionist:   'rcp-queue',
+    patient:        'pp-overview',
   };
   navigateTo(defaults[role] || 'it-users');
 }
@@ -508,31 +410,22 @@ function navigateToDefault(role) {
 // needs a native authority (see README) — but it stops a patient session from
 // rendering staff views (and vice-versa) instead of trusting the menu alone.
 const VIEW_PREFIX_ROLES = {
-  'it-':  ['it_admin'],
-  'hm-':  ['hospital_manager'],
-  'con-': ['consultant'],
-  'doc-': ['doctor', 'consultant'],
-  'er-':  ['emergency_doctor'],
-  'tn-':  ['triage_nurse'],
-  'sn-':  ['senior_nurse'],
-  'nr-':  ['nurse', 'senior_nurse'],
-  'ph-':  ['pharmacist'],
-  'lt-':  ['lab_technician'],
-  'rad-': ['radiologist'],
-  'rcp-': ['receptionist'],
-  'dt-':  ['dietitian'],
-  'sw-':  ['social_worker'],
-  'pp-':  ['patient'],
+  'it-':   ['it_admin'],
+  'mgr-':  ['clinic_manager'],
+  'dr-':   ['dentist', 'specialist'],
+  'asst-': ['hygienist'],
+  'rcp-':  ['receptionist'],
+  'pp-':   ['patient'],
   // Patient-safety incident reporting is cross-role: any staff member may FILE
   // one; only oversight reviews/closes. These are full view ids (not shared
   // stems), so startsWith resolves each to its own role set.
-  'incident-report': ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'pharmacist', 'lab_technician', 'radiologist', 'receptionist', 'dietitian', 'social_worker'],
-  'incident-queue':  ['it_admin', 'hospital_manager'],
+  'incident-report': ['it_admin', 'clinic_manager', 'dentist', 'specialist', 'hygienist', 'receptionist'],
+  'incident-queue':  ['it_admin', 'clinic_manager'],
   // Cross-role clinical tools (full view ids used as their own prefix keys).
-  'documents': ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'radiologist'],
-  'care-gaps': ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'],
-  'patient-summary': ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'],
-  'referrals': ['consultant', 'doctor', 'emergency_doctor'],
+  'documents': ['dentist', 'specialist', 'hygienist'],
+  'care-gaps': ['dentist', 'specialist', 'hygienist'],
+  'patient-summary': ['dentist', 'specialist', 'hygienist'],
+  'referrals': ['dentist', 'specialist'],
 };
 
 function canAccessView(viewId, role) {
@@ -549,7 +442,7 @@ function canAccessView(viewId, role) {
 // is clinically allowed to act (e.g. a nurse id in prescriptions.verified_by).
 // These fail closed with an audited denial; the role triggers in db.js enforce
 // the same rule at the data layer in BOTH browser and server mode.
-const DOCTOR_ROLES = ['doctor', 'consultant', 'emergency_doctor'];
+const DOCTOR_ROLES = ['dentist', 'specialist'];
 function requireRole(allowedRoles, actionLabel) {
   const sess = (typeof getCurrentSession === 'function') ? getCurrentSession() : null;
   const role = sess ? sess.role : null;
@@ -596,11 +489,39 @@ function navigateTo(viewId) {
   }, 50);
 }
 
+// Phase-1 scaffold: a friendly "coming next phase" card so every new dental
+// view id renders something instead of falling through to the default. Each of
+// these gets a real renderer in Phase 5.
+function renderPlaceholder(main, lang, titleEn, titleAr) {
+  const title = lang === 'ar' ? titleAr : titleEn;
+  const note = lang === 'ar'
+    ? 'هذه الشاشة قيد الإنشاء — ستتوفّر في المرحلة التالية من تحويل العيادة.'
+    : 'This screen is being built — it arrives in the next phase of the clinic conversion.';
+  main.innerHTML = `<div class="page-header"><h1>${escapeHtml(title)}</h1></div>
+    <div class="empty-state"><div class="empty-icon">&#129463;</div><p>${escapeHtml(note)}</p></div>`;
+}
+
 function renderView(viewId) {
   const main = document.getElementById('main-content');
   const lang = currentLanguage();
 
   switch (viewId) {
+    // ============================================================
+    // OpenSmile (dental) views. Phase-1 skeleton: real screens are
+    // reused where they already fit; the rest are placeholders that
+    // get their real renderers in Phase 5.
+    // ============================================================
+    case 'it-specialties': renderITDepts(main, lang); break;   // departments table → dental specialties
+    case 'mgr-overview':   renderPlaceholder(main, lang, 'Clinic Dashboard', 'لوحة العيادة'); break;
+    case 'mgr-audit':      renderHMBlackbox(main, lang); break; // the "manager who sees the logs"
+    case 'dr-patients':    renderPlaceholder(main, lang, 'My Patients', 'مرضاي'); break;
+    case 'dr-chart':       renderPlaceholder(main, lang, 'Odontogram', 'مخطط الأسنان'); break;
+    case 'dr-plans':       renderPlaceholder(main, lang, 'Treatment Plans', 'الخطط العلاجية'); break;
+    case 'dr-appointments':renderPlaceholder(main, lang, 'Appointments', 'المواعيد'); break;
+    case 'asst-patients':  renderPlaceholder(main, lang, 'Patients', 'المرضى'); break;
+    case 'asst-intake':    renderPlaceholder(main, lang, 'Medical-History Intake', 'استقبال التاريخ الطبي'); break;
+    case 'asst-perio':     renderPlaceholder(main, lang, 'Perio Charting', 'مخطط اللثة'); break;
+
     // ---- IT Admin ----
     case 'it-users':    renderITUsers(main, lang); break;
     case 'it-depts':    renderITDepts(main, lang); break;
@@ -2878,7 +2799,7 @@ async function removeFlag(flagId, pid) {
 // ============================================================
 // INTERNAL REFERRAL / CONSULT REQUEST (LAN adaptation of OSCAR messaging)
 // ============================================================
-const REFERRAL_ROLES = ['doctor', 'consultant', 'emergency_doctor'];
+const REFERRAL_ROLES = ['dentist', 'specialist'];
 
 function renderReferrals(main, lang) {
   const session = getCurrentSession();
