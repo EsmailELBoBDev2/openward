@@ -2628,10 +2628,22 @@ async function handleRCPRegister(e) {
   const complaint = document.getElementById('rcp-complaint').value.trim();
   const notes  = document.getElementById('rcp-notes').value.trim();
 
+  // Reuse an existing patient record if this national id is already on file;
+  // otherwise create one (a clinic registration IS a patient record, with an MRN).
+  let patientId = null;
+  if (nid) { const ex = dbGet('SELECT patient_id FROM patients WHERE national_id = ?', [nid]); if (ex) patientId = ex.patient_id; }
+  if (!patientId) {
+    const today = nowISO().slice(0, 10).replace(/-/g, '');
+    const seq = (dbGet('SELECT COUNT(*) c FROM patients').c || 0) + 1;
+    const mrn = `OS-${today}-${String(seq).padStart(5, '0')}`;
+    dbRun(`INSERT INTO patients (mrn, national_id, full_name_ar, full_name_en, date_of_birth, gender, phone, registered_by, registered_at, portal_enabled)
+      VALUES (?,?,?,?,?,?,?,?,?,1)`, [mrn, nid || null, nameAr, nameEn, dob || null, gender, phone || null, session.user_id, nowISO()]);
+    patientId = dbLastId();
+  }
   dbRun(`INSERT INTO outpatient_visits
-    (patient_name_ar, patient_name_en, national_id, phone, dob, gender, dept_id, registered_by, registered_at, chief_complaint, visit_type, payment_type, insurance_company, status, notes)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'waiting',?)`,
-    [nameAr, nameEn, nid||null, phone||null, dob||null, gender, deptId, session.user_id, nowISO(), complaint, type, payment, insco, notes||null]
+    (patient_id, patient_name_ar, patient_name_en, national_id, phone, dob, gender, dept_id, registered_by, registered_at, chief_complaint, visit_type, payment_type, insurance_company, status, notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'waiting',?)`,
+    [patientId, nameAr, nameEn, nid||null, phone||null, dob||null, gender, deptId, session.user_id, nowISO(), complaint, type, payment, insco, notes||null]
   );
   await saveDBToIndexedDB();
   showSuccess(lang==='ar'?'تم تسجيل المريض بنجاح':'Patient registered successfully');

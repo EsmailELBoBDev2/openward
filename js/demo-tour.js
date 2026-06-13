@@ -1,17 +1,18 @@
 // ============================================================
-// GUIDED DEMO TOUR — "follow one patient through the hospital"
+// GUIDED DEMO TOUR — "follow one toothache through the dental clinic"
 // ============================================================
 // Demo installs only (never rendered in production or server mode — the
 // entry points are gated in setupShowcaseLogin / the boot hook).
 //
 // The tour registers a REAL patient through the REAL forms and follows him
-// across role logins: ER registration → a deliberately unsafe prescription
-// the app REFUSES → the safe one → a stat blood panel + chest X-ray → the
-// lab posting a LIFE-THREATENING potassium → the radiologist's report → the
-// doctor meeting the red critical-lab banner and acknowledging it on the
-// record → pharmacy verify/dispense → bedside MAR with two-identifier
-// checks → the manager's tamper-evident audit trail. Every click runs the
-// actual handlers — nothing is mocked.
+// across role logins: reception registration (creates the record + queues
+// him) → hygienist records a penicillin allergy → the dentist charts caries
+// on tooth 36, builds a costed treatment plan, has an <strong>amoxicillin Rx
+// REFUSED</strong> by the allergy guard, prescribes the safe clindamycin
+// instead, and completes the filling → reception invoices + books a 6-month
+// recall → the manager's dashboard + tamper-evident audit of every step →
+// Salem reading his own plan, prescription and bill in the portal. Every
+// click runs the actual handlers — nothing is mocked.
 //
 // AUTOPLAY: the tour can also drive ITSELF (offer popup → "Sit back").
 // Pacing follows interactive-demo research: dwell time derived from text
@@ -25,8 +26,8 @@
 const TOUR_KEY = 'ow_tour';
 const TOUR_PATIENT = {
   nameAr: 'سالم التجريبي', nameEn: 'Salem Al-Demo',
-  natId: '1099887766', dob: '1965-04-12',
-  complaint: 'Headache and dizziness since this morning — صداع ودوخة منذ الصباح',
+  natId: '1099887766', dob: '1986-05-20',
+  complaint: 'Pain in a lower-left back tooth for two days — ألم في ضرس خلفي سفلي منذ يومين',
 };
 
 function tourState() { try { return JSON.parse(localStorage.getItem(TOUR_KEY)) || null; } catch (e) { return null; } }
@@ -53,725 +54,219 @@ function tourPickOption(id, needle) {
     if ((o.dataset.name || o.textContent || '').toLowerCase().includes(n)) { el.value = o.value; el.dispatchEvent(new Event('change', { bubbles: true })); return; }
   }
 }
-function tourMonaId() { const r = dbGet("SELECT user_id FROM users WHERE username = 'nurse.mona'"); return r ? r.user_id : null; }
+// ---- dental tour helpers ----
+function tourClearOverlays() { try { closeModal(); } catch (e) {} document.querySelectorAll('.alert-overlay').forEach(el => { try { el.remove(); } catch (e) {} }); }
+function tourOpenForPatient(view, pid) { try { window.SELECTED_PATIENT_ID = pid; navigateTo(view); } catch (e) {} }
 
-// Fill the LYTE (Electrolytes) result modal: Na/K/Cl/CO2 components, with the
-// potassium (component index 1) at a life-threatening 6.8 flagged critical_high.
-function tourFillLyteModal() {
-  const vals = ['138', '6.8', '101', '22'];
-  const flags = ['normal', 'critical_high', 'normal', 'normal'];
-  vals.forEach((v, i) => {
-    const inp = document.querySelector(`.comp-val[data-idx="${i}"]`);
-    const fl = document.querySelector(`.comp-flag[data-idx="${i}"]`);
-    if (inp) inp.value = v;
-    if (fl) fl.value = flags[i];
-  });
-}
-function tourFillRadModal() {
-  const f = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
-  f('rad-indication', 'Headache, dizziness — pre-admission workup');
-  f('rad-technique', 'PA and lateral chest radiograph');
-  f('rad-findings-detail', 'Lungs are clear. Cardiomediastinal silhouette within normal limits. No pleural effusion or pneumothorax.');
-  f('rad-impression', 'No acute cardiopulmonary process.');
-  f('rad-flag', 'normal');
-}
-
-// ---- the script: one step = one beat of the story ----
-// step: { role:[user,pw,labelEn,labelAr], view, title:{en,ar}, body:{en,ar},
-//         mode:'click'|'auto'|'info'|'final', enter(s), auto(s),
-//         target(s) -> CSS selector|Element|null, targets:[...] (rotating
-//         spotlight), done(s) -> bool }
+// ---- the dental story: one toothache, every role, nothing mocked ----
 const TOUR_STEPS = [
-  { // THE LOGIN PAGE — the tour literally starts at the front door
+  { // login door
     role: null, view: null, mode: 'info',
     ch: { en: '🚪 The door', ar: '🚪 الباب' },
-    title: { en: 'Every story starts at this door', ar: 'كل قصة تبدأ من هذا الباب' },
+    title: { en: 'Every visit starts at this door', ar: 'كل زيارة تبدأ من هذا الباب' },
     body: {
-      en: 'This login page is the only entrance. In demo mode the spotlight shows you three things: the <strong>role picker</strong> (hop into any of 14 staff roles, no passwords to remember), the <strong>Patient Portal</strong> toggle (patients have a door too), and the <strong>production switch</strong> — one click wipes the demo and builds a real, zero-default-credential install.<br><br>Press <strong>Next</strong> and we’ll follow one patient through all of it.',
-      ar: 'صفحة الدخول هذه هي المدخل الوحيد. في الوضع التجريبي تريك الإضاءة ثلاثة أشياء: <strong>قائمة الأدوار</strong> (ادخل بأي دور من ١٤ دوراً بلا كلمات مرور)، وزر <strong>بوابة المريض</strong> (للمرضى بابهم أيضاً)، و<strong>مفتاح التشغيل الفعلي</strong> — ضغطة واحدة تمسح التجربة وتبني نسخة حقيقية بلا حسابات افتراضية.<br><br>اضغط <strong>التالي</strong> لنتبع مريضاً واحداً عبر كل شيء.',
+      en: 'This is the only way in. In demo mode the spotlight shows three things: the <strong>role picker</strong> (jump into any of the clinic’s staff roles, no passwords), the <strong>Patient Portal</strong> toggle (patients have a door too), and the <strong>production switch</strong> — one click wipes the demo and builds a real, zero-default-credential clinic.<br><br>Press <strong>Next</strong> and we’ll follow one patient — a toothache — through the whole clinic.',
+      ar: 'هذا هو المدخل الوحيد. في الوضع التجريبي تُظهر الإضاءة ثلاثة أشياء: <strong>قائمة الأدوار</strong> (ادخل بأي دور بلا كلمات مرور)، وزر <strong>بوابة المريض</strong>، و<strong>مفتاح التشغيل الفعلي</strong> — ضغطة تمسح التجربة وتبني عيادة حقيقية بلا حسابات افتراضية.<br><br>اضغط <strong>التالي</strong> لنتابع مريضاً واحداً بألم أسنان عبر العيادة كلها.',
     },
     targets: ['#demo-persona', '#login-patient-btn', '#prod-setup-btn'],
     target() { return null; }, done() { return false; },
   },
-  { // the ambulance calls ahead — triage pre-registers
-    role: ['nurse.noura', 'nurse123', 'Triage Nurse', 'ممرضة الفرز'],
-    view: 'tn-arrivals', mode: 'click',
-    ch: { en: '🚑 Arrival', ar: '🚑 الوصول' },
-    title: { en: 'The ambulance calls ahead', ar: 'الإسعاف يتصل مسبقاً' },
+  { // reception registers Salem
+    role: ['reception', 'recept123', 'Receptionist', 'موظف الاستقبال'],
+    view: 'rcp-register', mode: 'click',
+    ch: { en: '🛎️ Front desk', ar: '🛎️ الاستقبال' },
+    title: { en: 'A new patient walks in with a toothache', ar: 'مريض جديد يدخل بألم أسنان' },
     body: {
-      en: 'Triage nurse Noura takes the radio call: male, 61, headache and dizziness, 7 minutes out. I filled the pre-arrival board — severity, ETA, paramedic notes.<br><br>👉 <strong>Click “Add” to post it</strong> — the whole ER sees him coming before the doors open.',
-      ar: 'ممرضة الفرز نورة تتلقى نداء اللاسلكي: ذكر، ٦١ عاماً، صداع ودوخة، يصل خلال ٧ دقائق. عبّأتُ لوحة ما قبل الوصول — الخطورة، وقت الوصول، ملاحظات المسعفين.<br><br>👉 <strong>اضغطي «إضافة»</strong> — كل قسم الطوارئ يراه قادماً قبل أن تُفتح الأبواب.',
+      en: 'Receptionist Sara greets Salem and registers him — name, ID, phone, and his complaint: pain in a lower-left molar for two days. I’ve filled the form.<br><br>👉 <strong>Click “Register Patient”</strong> — this creates his record (with a brand-new MRN) and drops him into the chair queue.',
+      ar: 'موظفة الاستقبال سارة تستقبل سالم وتسجّله — الاسم، الهوية، الهاتف، وشكواه: ألم في ضرس خلفي سفلي منذ يومين. عبّأتُ النموذج.<br><br>👉 <strong>اضغطي «تسجيل المريض»</strong> — يُنشئ ملفه برقم طبي جديد ويضعه في قائمة الكراسي.',
     },
     enter() {
       setTimeout(() => {
-        if (!document.querySelector('#tn-add-arrival form') && typeof showAddArrivalForm === 'function') showAddArrivalForm();
-        setTimeout(() => {
-          tourSet('ar-mode', 'ambulance'); tourSet('ar-sev', 'urgent'); tourSet('ar-eta', '7');
-          tourSet('ar-label', TOUR_PATIENT.nameEn); tourSet('ar-age', '61'); tourSet('ar-gender', 'male');
-          tourSet('ar-cc', TOUR_PATIENT.complaint); tourSet('ar-notes', 'BP 132/86, HR 88 en route');
-        }, 300);
-      }, 350);
+        tourSet('rcp-name-ar', TOUR_PATIENT.nameAr); tourSet('rcp-name-en', TOUR_PATIENT.nameEn);
+        tourSet('rcp-nid', TOUR_PATIENT.natId); tourSet('rcp-phone', '0551112233');
+        tourSet('rcp-dob', TOUR_PATIENT.dob); tourSet('rcp-gender', 'male');
+        tourPickOption('rcp-dept', 'general'); tourSet('rcp-complaint', TOUR_PATIENT.complaint);
+      }, 300);
     },
-    auto() { const f = document.querySelector('#tn-add-arrival form'); if (f) f.requestSubmit(); },
-    target() { return '#tn-add-arrival form button[type="submit"]'; },
-    done(s) {
-      const a = dbGet("SELECT arrival_id FROM incoming_arrivals WHERE patient_label = ? AND status = 'pending' ORDER BY arrival_id DESC LIMIT 1", [TOUR_PATIENT.nameEn]);
-      if (!a) return false;
-      s.arrivalId = a.arrival_id; tourSave(s); return true;
-    },
+    auto() { const el = document.getElementById('rcp-name-ar'); const f = el && el.closest('form'); if (f) f.requestSubmit(); },
+    target() { return '#main-content form button[type="submit"]'; },
+    done(s) { const p = dbGet('SELECT patient_id, mrn FROM patients WHERE national_id = ?', [TOUR_PATIENT.natId]); if (!p) return false; s.patientId = p.patient_id; s.mrn = p.mrn; tourSave(s); return true; },
   },
-  { // the board hand-off
-    role: ['nurse.noura', 'nurse123', 'Triage Nurse', 'ممرضة الفرز'],
-    view: 'tn-arrivals', mode: 'info',
-    ch: { en: '🚑 Arrival', ar: '🚑 الوصول' },
-    title: { en: 'One tap when the doors open', ar: 'لمسة واحدة حين تُفتح الأبواب' },
+  { // the queue
+    role: ['reception', 'recept123', 'Receptionist', 'موظف الاستقبال'],
+    view: 'rcp-queue', mode: 'info',
+    ch: { en: '🛎️ Front desk', ar: '🛎️ الاستقبال' },
+    title: { en: 'He’s in the queue', ar: 'دخل قائمة الانتظار' },
     body: {
-      en: 'There he is on the board, sorted by severity and ETA. When the ambulance pulls in, that green <strong>“Arrived → Register”</strong> button carries everything — name, complaint, paramedic notes, suggested triage level — straight into the registration form. Nothing retyped.<br><br>We’ll let <strong>Dr. Omar</strong> take it from here — press <strong>Next</strong>.',
-      ar: 'ها هو على اللوحة، مرتباً بالخطورة ووقت الوصول. حين تصل سيارة الإسعاف، زر <strong>«وصل → تسجيل»</strong> الأخضر ينقل كل شيء — الاسم والشكوى وملاحظات المسعفين ومستوى الفرز المقترح — مباشرة إلى نموذج التسجيل. لا شيء يُكتب مرتين.<br><br>سنترك الأمر لـ<strong>د. عمر</strong> — اضغطي <strong>التالي</strong>.',
+      en: 'Salem now shows on the live queue every clinician can see. Reception’s part is done — over to the clinical team.<br><br>Press <strong>Next</strong>.',
+      ar: 'سالم يظهر الآن في قائمة الانتظار التي يراها كل أعضاء الفريق. انتهى دور الاستقبال — لننتقل للفريق العلاجي.<br><br>اضغط <strong>التالي</strong>.',
     },
-    target(s) { return `[onclick*="convertArrivalToPatient(${s.arrivalId})"]`; },
-    done() { return false; },
+    target() { return '#main-content table'; }, done() { return false; },
   },
-  { // ER registration (the visitor presses the real Register button)
-    role: ['dr.omar', 'doctor123', 'ER Doctor', 'طبيب الطوارئ'],
-    view: 'er-register', mode: 'click',
-    ch: { en: '🚑 Arrival', ar: '🚑 الوصول' },
-    title: { en: 'A patient arrives at the ER', ar: 'مريض يصل إلى الطوارئ' },
+  { // hygienist records penicillin allergy
+    role: ['hyg.mona', 'nurse123', 'Hygienist', 'أخصائية صحة الأسنان'],
+    view: 'asst-intake', mode: 'click',
+    ch: { en: '🪥 Intake', ar: '🪥 الاستقبال الطبي' },
+    title: { en: 'The one fact that changes everything', ar: 'المعلومة التي تغيّر كل شيء' },
     body: {
-      en: 'I pre-filled the arrival form for <strong>Salem Al-Demo</strong> — note the documented <strong>Penicillin allergy</strong> and <strong>cardiac condition</strong>; they matter later. Admitting to Internal Medicine.<br><br>👉 <strong>Click the big “Register” button</strong> — then watch the app <em>review its own suggestions with you</em> (diet, complexity — derived from his conditions) and confirm them.',
-      ar: 'عبّأتُ نموذج الوصول للمريض <strong>سالم التجريبي</strong> — لاحظ <strong>حساسية البنسلين</strong> الموثقة و<strong>المرض القلبي</strong>؛ سيهمّان لاحقاً. التنويم في الباطنة.<br><br>👉 <strong>اضغط زر «تسجيل» الكبير</strong> — ثم لاحظ كيف <em>يقترح النظام تلقائياً</em> (التغذية، درجة التعقيد) وأكّد الاقتراحات.',
+      en: 'Hygienist Mona takes Salem’s medical history. He mentions a <strong>penicillin allergy</strong> — a rash and facial swelling once. She records it. Watch how this single entry guards a prescription a few minutes from now.<br><br>👉 <strong>Click “Save”.</strong>',
+      ar: 'أخصائية صحة الأسنان منى تأخذ التاريخ الطبي لسالم. يذكر <strong>حساسية من البنسلين</strong> — طفح وتورّم في الوجه سابقاً. تسجّلها. لاحظ كيف يحمي هذا الإدخال وصفةً بعد دقائق.<br><br>👉 <strong>اضغطي «حفظ».</strong>',
+    },
+    enter(s) { tourOpenForPatient('asst-intake', s.patientId); setTimeout(() => { if (typeof openAddAllergy === 'function') openAddAllergy(s.patientId); setTimeout(() => { tourSet('al-name', 'Penicillin'); tourSet('al-react', 'Rash and facial swelling'); tourSet('al-sev', 'severe'); }, 320); }, 480); },
+    auto(s) { if (typeof saveAllergy === 'function') saveAllergy(s.patientId); },
+    target() { return '.generic-modal .btn-primary'; },
+    done(s) { return !!dbGet("SELECT id FROM patient_allergies WHERE patient_id=? AND allergen='Penicillin'", [s.patientId]); },
+  },
+  { // dentist charts the caries
+    role: ['dr.omar', 'doctor123', 'Dentist', 'طبيب الأسنان'],
+    view: 'dr-chart', mode: 'click',
+    ch: { en: '🦷 The chair', ar: '🦷 الكرسي' },
+    title: { en: 'Charting the bad tooth', ar: 'تسجيل السن المصابة' },
+    body: {
+      en: 'Dr. Omar examines Salem and finds <strong>deep decay in tooth 36</strong> — the lower-left first molar (FDI numbering). He charts it on the odontogram with a single click; the allergy and his medical history ride along the top of the screen the whole time.<br><br>👉 <strong>Click “Save”.</strong>',
+      ar: 'الدكتور عمر يفحص سالم ويجد <strong>تسوّساً عميقاً في السن 36</strong> — الرحى الأولى السفلية اليسرى (ترقيم FDI). يسجّلها على مخطط الأسنان بنقرة واحدة، والحساسية والتاريخ الطبي يظهران أعلى الشاشة طوال الوقت.<br><br>👉 <strong>اضغط «حفظ».</strong>',
+    },
+    enter(s) { tourOpenForPatient('dr-chart', s.patientId); setTimeout(() => { if (typeof openToothEditor === 'function') openToothEditor(36); setTimeout(() => { tourSet('te-status', 'caries'); tourSet('te-surfaces', 'O'); tourSet('te-note', 'Deep occlusal caries, symptomatic'); }, 320); }, 480); },
+    auto() { if (typeof saveToothStatus === 'function') saveToothStatus(36); },
+    target() { return '.generic-modal .btn-primary'; },
+    done(s) { return !!dbGet('SELECT chart_id FROM odontogram WHERE patient_id=? AND tooth_fdi=36', [s.patientId]); },
+  },
+  { // dentist builds the plan
+    role: ['dr.omar', 'doctor123', 'Dentist', 'طبيب الأسنان'],
+    view: 'dr-plans', mode: 'click',
+    ch: { en: '🦷 The chair', ar: '🦷 الكرسي' },
+    title: { en: 'A plan, with a price', ar: 'خطة، بسعرها' },
+    body: {
+      en: 'He proposes a <strong>composite filling on 36</strong>. The procedure and its price come straight from the clinic’s catalog — so Salem sees exactly what it costs before anything starts.<br><br>👉 <strong>Click “Add”.</strong>',
+      ar: 'يقترح <strong>حشوة كمبوزيت للسن 36</strong>. الإجراء وسعره يأتيان مباشرة من كتالوج العيادة — فيرى سالم التكلفة بوضوح قبل أن يبدأ أي شيء.<br><br>👉 <strong>اضغط «إضافة».</strong>',
+    },
+    enter(s) { tourOpenForPatient('dr-plans', s.patientId); setTimeout(() => { if (typeof openAddPlanItem === 'function') openAddPlanItem(s.patientId); setTimeout(() => { tourPickOption('pi-proc', 'D2391'); tourSet('pi-tooth', '36'); if (typeof planItemProcChanged === 'function') planItemProcChanged(); }, 320); }, 480); },
+    auto(s) { if (typeof saveAddPlanItem === 'function') saveAddPlanItem(s.patientId); },
+    target() { return '.generic-modal .btn-primary'; },
+    done(s) { const it = dbGet("SELECT item_id FROM treatment_plan_items WHERE patient_id=? AND procedure_code='D2391' ORDER BY item_id DESC LIMIT 1", [s.patientId]); if (!it) return false; s.fillingItemId = it.item_id; tourSave(s); return true; },
+  },
+  { // the app blocks the unsafe Rx
+    role: ['dr.omar', 'doctor123', 'Dentist', 'طبيب الأسنان'],
+    view: 'dr-chart', mode: 'click',
+    ch: { en: '⛔ The guard rail', ar: '⛔ الحاجز' },
+    title: { en: 'The app refuses the wrong drug', ar: 'النظام يرفض الدواء الخاطئ' },
+    body: {
+      en: 'Post-op, Dr. Omar reaches for <strong>amoxicillin</strong> — a penicillin. The instant he tries, OpenSmile <strong>stops him cold</strong>: Salem is penicillin-allergic, severe. Nobody had to remember the allergy — the record did, and it refuses to let it through quietly.<br><br>👉 <strong>Watch the block.</strong>',
+      ar: 'بعد العلاج يهمّ الدكتور عمر بوصف <strong>أموكسيسيلين</strong> — وهو من البنسلين. لحظة محاولته <strong>يوقفه النظام تماماً</strong>: سالم لديه حساسية شديدة من البنسلين. لم يحتج أحد لتذكّر الحساسية — السجلّ تذكّرها ورفض تمريرها بصمت.<br><br>👉 <strong>شاهد المنع.</strong>',
+    },
+    enter(s) { tourClearOverlays(); tourOpenForPatient('dr-chart', s.patientId); setTimeout(() => { if (typeof dentalPrescribe === 'function') dentalPrescribe(s.patientId); setTimeout(() => { const sel = document.getElementById('dp-drug'); if (sel) { const a = [...sel.options].find(o => /Amoxicillin 500/.test(o.textContent)); if (a) sel.value = a.value; } tourSet('dp-dose', '500 mg'); tourSet('dp-freq', 'TID'); }, 320); }, 480); },
+    auto(s) { if (typeof doDentalPrescribe === 'function') doDentalPrescribe(s.patientId); },
+    target() { return '.alert-overlay'; },
+    done() { return !!document.querySelector('.alert-overlay'); },
+  },
+  { // safe alternative
+    role: ['dr.omar', 'doctor123', 'Dentist', 'طبيب الأسنان'],
+    view: 'dr-chart', mode: 'click',
+    ch: { en: '✅ The safe one', ar: '✅ البديل الآمن' },
+    title: { en: 'The safe alternative goes straight through', ar: 'البديل الآمن يمرّ مباشرة' },
+    body: {
+      en: 'He backs out and prescribes <strong>clindamycin</strong> instead — a safe choice for a penicillin allergy. Same two clicks, no warning at all. The guard rail only fires when it should, so it never becomes noise to click past.<br><br>👉 <strong>Click “Prescribe”.</strong>',
+      ar: 'يتراجع ويصف <strong>كليندامايسين</strong> بدلاً منه — خيار آمن مع حساسية البنسلين. النقرتان نفسهما، بلا أي تحذير. الحاجز يعمل فقط عند الحاجة، فلا يتحوّل إلى إزعاج يُتجاوز.<br><br>👉 <strong>اضغط «وصف».</strong>',
+    },
+    enter(s) { tourClearOverlays(); tourOpenForPatient('dr-chart', s.patientId); setTimeout(() => { if (typeof dentalPrescribe === 'function') dentalPrescribe(s.patientId); setTimeout(() => { const sel = document.getElementById('dp-drug'); if (sel) { const c = [...sel.options].find(o => /Clindamycin/.test(o.textContent)); if (c) sel.value = c.value; } tourSet('dp-dose', '300 mg'); tourSet('dp-freq', 'TID'); }, 320); }, 480); },
+    auto(s) { if (typeof doDentalPrescribe === 'function') doDentalPrescribe(s.patientId); },
+    target() { return '.generic-modal .btn-primary'; },
+    done(s) { return !!dbGet("SELECT rx_id FROM prescriptions WHERE patient_id=? AND drug_name LIKE 'Clindamycin%'", [s.patientId]); },
+  },
+  { // complete the filling
+    role: ['dr.omar', 'doctor123', 'Dentist', 'طبيب الأسنان'],
+    view: 'dr-plans', mode: 'click',
+    ch: { en: '🦷 The chair', ar: '🦷 الكرسي' },
+    title: { en: 'Filling done', ar: 'تمّت الحشوة' },
+    body: {
+      en: 'Dr. Omar places the filling and marks it <strong>complete</strong>. The procedure flips to “done” and its value rolls straight into the day’s production — which the manager will see in a moment.<br><br>👉 <strong>Click “Complete”.</strong>',
+      ar: 'الدكتور عمر يضع الحشوة ويعلّمها <strong>مكتملة</strong>. ينتقل الإجراء إلى «تمّ» وتُحتسب قيمته فوراً في إنتاج اليوم — الذي سيراه المدير بعد قليل.<br><br>👉 <strong>اضغط «تم».</strong>',
+    },
+    enter(s) { tourOpenForPatient('dr-plans', s.patientId); },
+    auto(s) { if (s.fillingItemId && typeof completePlanItem === 'function') completePlanItem(s.fillingItemId); },
+    target() { return '#main-content .btn-success'; },
+    done(s) { const it = dbGet('SELECT status FROM treatment_plan_items WHERE item_id=?', [s.fillingItemId]); return !!(it && it.status === 'completed'); },
+  },
+  { // reception bills + recall
+    role: ['reception', 'recept123', 'Receptionist', 'موظف الاستقبال'],
+    view: 'rcp-billing', mode: 'info',
+    ch: { en: '💳 Checkout', ar: '💳 المحاسبة' },
+    title: { en: 'Checkout, and a 6-month recall', ar: 'الدفع، وموعد مراجعة بعد ٦ أشهر' },
+    body: {
+      en: 'Back at the front desk the completed filling is invoiced and paid (250 SAR, cash), and Salem is booked for a <strong>6-month recall</strong> so he doesn’t slip through the cracks.<br><br>Press <strong>Next</strong>.',
+      ar: 'عند الاستقبال تُحرَّر فاتورة الحشوة وتُدفع (٢٥٠ ر.س نقداً)، ويُحجز لسالم <strong>موعد مراجعة بعد ٦ أشهر</strong> حتى لا يُنسى.<br><br>اضغط <strong>التالي</strong>.',
     },
     enter(s) {
-      tourSet('reg-name-ar', TOUR_PATIENT.nameAr); tourSet('reg-name-en', TOUR_PATIENT.nameEn);
-      tourSet('reg-national-id', s.natId || TOUR_PATIENT.natId); tourSet('reg-dob', TOUR_PATIENT.dob);
-      tourSet('reg-gender', 'male'); tourSet('reg-triage', '3');
-      tourSet('reg-complaint', TOUR_PATIENT.complaint);
-      tourSet('reg-bed', s.bed || 'B-300');
-      tourSet('reg-bp-sys', '132'); tourSet('reg-bp-dia', '86'); tourSet('reg-hr', '88');
-      tourSet('reg-temp', '37.2'); tourSet('reg-o2', '97');
-      tourPickOption('reg-dept', 'internal');
-      const cond = document.querySelector('input[name="conditions"][value="cardiac"]');
-      if (cond && !cond.checked) cond.click();
-      if (typeof addAllergyRow === 'function' && document.querySelectorAll('#allergy-list .allergy-name').length === 0) {
-        addAllergyRow();
-        const rows = document.querySelectorAll('#allergy-list .form-row');
-        const row = rows[rows.length - 1];
-        if (row) {
-          const name = row.querySelector('.allergy-name'); if (name) name.value = 'Penicillin';
-          const sev = row.querySelector('.allergy-severity'); if (sev) sev.value = 'severe';
-          const rea = row.querySelector('.allergy-reaction'); if (rea) rea.value = 'anaphylaxis';
+      try {
+        if (s.patientId && !dbGet("SELECT invoice_id FROM invoices WHERE patient_id=? AND notes='tour'", [s.patientId])) {
+          const p = dbGet('SELECT * FROM patients WHERE patient_id=?', [s.patientId]);
+          const u = dbGet("SELECT user_id FROM users WHERE username='reception'");
+          dbRun("INSERT INTO invoices (patient_id, patient_name_ar, patient_name_en, national_id, dept_id, visit_date, subtotal, discount, total, paid_amount, payment_type, status, created_by, created_at, notes) VALUES (?,?,?,?,1,?,250,0,250,250,'cash','paid',?,?, 'tour')", [s.patientId, p.full_name_ar, p.full_name_en, p.national_id, new Date().toISOString().slice(0, 10), u ? u.user_id : 1, nowISO()]);
+          const inv = dbLastId();
+          dbRun("INSERT INTO invoice_items (invoice_id, description_en, description_ar, qty, unit_price, total_price) VALUES (?, 'Composite Filling — Posterior','حشوة كمبوزيت خلفية',1,250,250)", [inv]);
+          dbRun("INSERT INTO recalls (patient_id, type, due_date, status, created_at) VALUES (?, 'checkup', ?, 'due', ?)", [s.patientId, new Date(Date.now() + 182 * 86400000).toISOString().slice(0, 10), nowISO()]);
+          saveDBToIndexedDB();
         }
-      }
+      } catch (e) {}
     },
-    auto() {
-      const review = document.querySelector('.review-confirm-btn');
-      if (review) { review.click(); return; }   // phase 2: confirm the smart-review panel
-      const f = document.getElementById('register-patient-form'); if (f) f.requestSubmit();
-      setTimeout(() => { const r2 = document.querySelector('.review-confirm-btn'); if (r2) r2.click(); }, 900);
-    },
-    target() { return document.querySelector('.review-confirm-btn') || '#register-patient-form button[type="submit"]'; },
-    done(s) {
-      const p = dbGet('SELECT p.patient_id, p.mrn, a.admission_id FROM patients p JOIN admissions a ON a.patient_id = p.patient_id WHERE p.national_id = ? ORDER BY a.admission_id DESC LIMIT 1', [s.natId || TOUR_PATIENT.natId]);
-      if (!p) return false;
-      s.patientId = p.patient_id; s.admissionId = p.admission_id; s.mrn = p.mrn; tourSave(s);
-      return true;
-    },
+    target() { return '#main-content'; }, done() { return false; },
   },
-  { // open the chart, meet the safety banner
-    role: ['dr.omar', 'doctor123', 'ER Doctor', 'طبيب الطوارئ'],
-    view: 'er-cases', mode: 'click',
-    title: { en: 'Open Salem’s chart', ar: 'افتح ملف سالم' },
+  { // manager dashboard
+    role: ['manager', 'manager123', 'Clinic Manager', 'مدير العيادة'],
+    view: 'mgr-overview', mode: 'info',
+    ch: { en: '📊 The owner', ar: '📊 المدير' },
+    title: { en: 'The whole day on one screen', ar: 'اليوم كله في شاشة واحدة' },
     body: {
-      en: 'Salem is in the ER case list now.<br><br>👉 <strong>Click his “Details” button</strong> — and notice the red <strong>safety banner</strong>: the Penicillin allergy follows him to every screen, no one has to remember it.',
-      ar: 'سالم الآن في قائمة حالات الطوارئ.<br><br>👉 <strong>اضغط زر «تفاصيل»</strong> — ولاحظ <strong>شريط الأمان</strong> الأحمر: حساسية البنسلين ترافقه في كل شاشة.',
+      en: 'The clinic manager opens the dashboard: today’s appointments, recalls due, and <strong>money collected vs. outstanding</strong> — including the filling Salem just paid for. Production is tracked by specialty, not guesswork.<br><br>Press <strong>Next</strong>.',
+      ar: 'مدير العيادة يفتح لوحة المتابعة: مواعيد اليوم، الاستدعاءات المستحقة، و<strong>المحصَّل مقابل المتبقّي</strong> — بما في ذلك حشوة سالم التي دُفعت للتو. الإنتاج يُتابَع حسب التخصص، لا بالتخمين.<br><br>اضغط <strong>التالي</strong>.',
     },
-    auto(s) { if (typeof showPatientDetail === 'function') showPatientDetail(s.patientId, s.admissionId); },
-    target(s) { return `[onclick*="showPatientDetail(${s.patientId},"]`; },
-    done() { const m = document.getElementById('main-content'); return !!(m && /Penicillin/.test(m.innerHTML)); },
+    targets: ['#main-content .stat-card'], target() { return null; }, done() { return false; },
   },
-  { // look around the ER: the features that are ALWAYS one tap away
-    role: ['dr.omar', 'doctor123', 'ER Doctor', 'طبيب الطوارئ'],
-    view: 'er-cases', mode: 'info',
-    title: { en: 'Always within reach', ar: 'دائماً في المتناول' },
+  { // manager audit log
+    role: ['manager', 'manager123', 'Clinic Manager', 'مدير العيادة'],
+    view: 'mgr-audit', mode: 'info',
+    ch: { en: '🔒 The black box', ar: '🔒 الصندوق الأسود' },
+    title: { en: 'Every step, signed and unerasable', ar: 'كل خطوة موثّقة ولا تُمحى' },
     body: {
-      en: 'Watch the spotlight rotate — these live on <em>every</em> screen:<br>🚨 <strong>Code Blue</strong> — one tap summons the resus team with the patient context attached.<br>🧮 <strong>Clinical calculators</strong> — NEWS2, GCS, MELD, Wells… 18 of them, citation-pinned.<br>🔍 <strong>Global search</strong> — any patient by name or MRN from anywhere.',
-      ar: 'تابع الإضاءة المتنقلة — هذه متوفرة في <em>كل</em> شاشة:<br>🚨 <strong>النداء الأزرق</strong> — لمسة واحدة تستدعي فريق الإنعاش مع سياق المريض.<br>🧮 <strong>الحاسبات السريرية</strong> — NEWS2 وGCS وMELD وغيرها، 18 حاسبة موثقة المراجع.<br>🔍 <strong>البحث الشامل</strong> — أي مريض بالاسم أو الرقم الطبي من أي مكان.',
+      en: 'And here is the heart of it: a <strong>tamper-evident audit log</strong>. Salem’s registration, the recorded allergy, the charting, the costed plan, the <strong>blocked amoxicillin</strong>, the clindamycin, the completed filling, the invoice — every action, who did it and when, hash-chained so it can’t be quietly rewritten. This is what the manager actually watches.<br><br>Press <strong>Next</strong>.',
+      ar: 'وهنا جوهر النظام: <strong>سجل تدقيق محصَّن ضد العبث</strong>. تسجيل سالم، الحساسية المسجّلة، التخطيط على الأسنان، الخطة بسعرها، <strong>منع الأموكسيسيلين</strong>، الكليندامايسين، الحشوة المكتملة، الفاتورة — كل فعل، ومن قام به ومتى، مربوط بسلسلة تجزئة لا تُعاد كتابتها بصمت. هذا ما يراقبه المدير فعلاً.<br><br>اضغط <strong>التالي</strong>.',
     },
-    targets: ['#code-blue-fab', '#calc-fab', '#global-search'],
-    target() { return null; }, done() { return false; },
+    target() { return '#main-content table'; }, done() { return false; },
   },
-  { // the consultant hands the case to a ward doctor — for real, through the UI
-    role: ['dr.ahmed', 'doctor123', 'Consultant', 'استشاري الباطنة'],
-    view: 'con-assign', mode: 'click',
-    ch: { en: '🩺 The ward', ar: '🩺 الجناح' },
-    title: { en: 'The consultant staffs the case', ar: 'الاستشاري يوزّع الحالة' },
-    body: {
-      en: 'Salem landed in Internal Medicine, so consultant Dr. Ahmed sees him in the <strong>unassigned cases</strong> list. I picked <strong>Dr. Sarah</strong> from his ward team.<br><br>👉 <strong>Click “Assign”</strong> — from this moment Salem appears in her patient list, her prescription pad, and her lab form.',
-      ar: 'وصل سالم إلى الباطنة، فيراه الاستشاري د. أحمد في قائمة <strong>الحالات غير الموزعة</strong>. اخترتُ <strong>د. سارة</strong> من فريق جناحه.<br><br>👉 <strong>اضغط «إسناد»</strong> — من هذه اللحظة يظهر سالم في قائمتها ووصفاتها وطلبات فحوصاتها.',
-    },
-    enter(s) {
-      setTimeout(() => {
-        const doc = dbGet("SELECT user_id FROM users WHERE username = 'dr.sarah'");
-        const sel = document.getElementById('assign-doc-' + s.admissionId);
-        if (sel && doc) { sel.value = String(doc.user_id); sel.dispatchEvent(new Event('change', { bubbles: true })); }
-      }, 350);
-    },
-    auto(s) {
-      const doc = dbGet("SELECT user_id FROM users WHERE username = 'dr.sarah'");
-      const sel = document.getElementById('assign-doc-' + s.admissionId);
-      if (sel && doc && !sel.value) sel.value = String(doc.user_id);
-      if (typeof handleAssignCase === 'function') handleAssignCase(s.admissionId, s.patientId);
-    },
-    target(s) { return `[onclick*="handleAssignCase(${s.admissionId},"]`; },
-    done(s) {
-      const doc = dbGet("SELECT user_id FROM users WHERE username = 'dr.sarah'");
-      return !!(doc && dbGet('SELECT id FROM case_assignments WHERE admission_id = ? AND doctor_id = ?', [s.admissionId, doc.user_id]));
-    },
-  },
-  { // the unsafe order (the app must refuse)
-    role: ['dr.sarah', 'doctor123', 'Ward Doctor', 'طبيبة الجناح'],
-    view: 'doc-rx', mode: 'click',
-    ch: { en: '🩺 The ward', ar: '🩺 الجناح' },
-    title: { en: 'Try to prescribe the WRONG drug', ar: 'جرّب وصف الدواء الخاطئ' },
-    body: {
-      en: 'You are Dr. Sarah on the ward now (the tour assigned Salem to her). I selected <strong>Amoxicillin</strong> — a penicillin-class drug for a patient with a <strong>documented penicillin allergy</strong>.<br><br>👉 <strong>Click “Prescribe”.</strong> The app should stop you. That is the point.',
-      ar: 'أنت الآن د. سارة في الجناح (الجولة أسندت سالم إليها). اخترتُ <strong>أموكسيسيلين</strong> — من فئة البنسلين لمريض لديه <strong>حساسية بنسلين موثقة</strong>.<br><br>👉 <strong>اضغط «وصف الدواء».</strong> يجب أن يوقفك النظام — وهذا هو المطلوب.',
-    },
-    enter(s) {
-      // the consultant hand-off, done for real: Salem is now Dr. Sarah's case
-      const doc = dbGet("SELECT user_id FROM users WHERE username = 'dr.sarah'");
-      const consult = dbGet("SELECT user_id FROM users WHERE username = 'dr.ahmed'");
-      if (doc && !dbGet('SELECT id FROM case_assignments WHERE admission_id = ? AND doctor_id = ?', [s.admissionId, doc.user_id])) {
-        dbRun('INSERT INTO case_assignments (admission_id, doctor_id, assigned_by, assigned_at) VALUES (?,?,?,?)',
-          [s.admissionId, doc.user_id, (consult || doc).user_id, nowISO()]);
-        saveDBToIndexedDB();
-        navigateTo('doc-rx');   // re-render now that the assignment exists
-      }
-      setTimeout(() => {
-        const sel = document.getElementById('rx-patient');
-        if (sel) sel.value = String(s.admissionId);
-        tourPickOption('rx-drug', 'amoxicillin');
-        tourSet('rx-dose', '500mg'); tourSet('rx-route', 'oral'); tourSet('rx-freq', 'three_times_daily');
-      }, 350);
-    },
-    auto() { const f = document.querySelector('#rx-drug') && document.querySelector('#rx-drug').closest('form'); if (f) f.requestSubmit(); },
-    target() { const d = document.getElementById('rx-drug'); return d ? d.closest('form').querySelector('button[type="submit"]') : null; },
-    done() { const o = document.querySelector('.alert-overlay'); return !!(o && /allerg|حساسية/i.test(o.textContent)); },
-  },
-  { // read the refusal, take the way out
-    role: ['dr.sarah', 'doctor123', 'Ward Doctor', 'طبيبة الجناح'],
-    view: 'doc-rx', mode: 'click',
-    ch: { en: '🩺 The ward', ar: '🩺 الجناح' },
-    title: { en: 'The app said no', ar: 'النظام رفض' },
-    body: {
-      en: 'This is the <strong>red allergy alert</strong>: it names the allergen, the severity, and demands a <em>typed reason</em> from anyone who overrides it — which lands in the permanent audit log.<br><br>👉 <strong>Choose the safe way out (Cancel / decline)</strong> and we’ll order something sensible instead.',
-      ar: 'هذا هو <strong>تنبيه الحساسية الأحمر</strong>: يذكر المادة والشدة ويطلب <em>سبباً مكتوباً</em> من أي شخص يتجاوزه — ويُسجَّل في سجل التدقيق الدائم.<br><br>👉 <strong>اختر الخيار الآمن (إلغاء)</strong> وسنصف بديلاً مناسباً.',
-    },
-    auto() { const o = document.querySelector('.alert-overlay'); if (!o) return; const btns = [...o.querySelectorAll('button')]; const c = btns.find(b => /cancel|إلغاء|decline|رفض/i.test(b.textContent)); if (c) c.click(); },
-    target() { const o = document.querySelector('.alert-overlay'); if (!o) return null; const btns = [...o.querySelectorAll('button')]; return btns.find(b => /cancel|إلغاء|decline|رفض/i.test(b.textContent)) || null; },
-    done(s) {
-      return !document.querySelector('.alert-overlay')
-        && !dbGet("SELECT rx_id FROM prescriptions WHERE admission_id = ? AND drug_name LIKE '%moxicillin%'", [s.admissionId]);
-    },
-  },
-  { // the safe order goes through (watch me)
-    role: ['dr.sarah', 'doctor123', 'Ward Doctor', 'طبيبة الجناح'],
-    view: 'doc-rx', mode: 'auto',
-    ch: { en: '🩺 The ward', ar: '🩺 الجناح' },
-    title: { en: 'Order the right drug', ar: 'وصف الدواء الصحيح' },
-    body: {
-      en: 'Watch — I’m prescribing <strong>Paracetamol 500mg</strong> instead: no allergy match, no condition conflict, so it goes straight through to the pharmacy queue.',
-      ar: 'شاهد — أصف الآن <strong>باراسيتامول 500mg</strong>: لا حساسية ولا تعارض مع حالته، فيمرّ مباشرة إلى طابور الصيدلية.',
-    },
-    enter(s) {
-      try { dbRun("UPDATE drugs SET stock_qty = 200 WHERE name_generic LIKE '%Paracetamol%' AND stock_qty < 10"); } catch (e) {}
-      setTimeout(() => {
-        const sel = document.getElementById('rx-patient'); if (sel) sel.value = String(s.admissionId);
-        tourPickOption('rx-drug', 'paracetamol');
-        tourSet('rx-dose', '500mg'); tourSet('rx-route', 'oral'); tourSet('rx-freq', 'three_times_daily');
-        const f = sel && sel.closest('form'); if (f) setTimeout(() => f.requestSubmit(), 600);
-      }, 350);
-    },
-    target() { return null; },
-    done(s) {
-      const rx = dbGet("SELECT rx_id FROM prescriptions WHERE admission_id = ? AND drug_name LIKE '%aracetamol%' ORDER BY rx_id DESC LIMIT 1", [s.admissionId]);
-      if (!rx) return false;
-      s.rxId = rx.rx_id; tourSave(s); return true;
-    },
-  },
-  { // NEW — order the workup: stat bloods + a chest X-ray, one submit
-    role: ['dr.sarah', 'doctor123', 'Ward Doctor', 'طبيبة الجناح'],
-    view: 'doc-labs', mode: 'click',
-    ch: { en: '🩺 The ward', ar: '🩺 الجناح' },
-    title: { en: 'Order the workup — bloods + X-ray', ar: 'اطلب الفحوصات — دم وأشعة' },
-    body: {
-      en: 'Headache and dizziness in a cardiac patient deserve a workup. I queued a <strong>stat Electrolytes panel</strong> (Na, K, Cl, CO₂) and a <strong>Chest X-ray (أشعة)</strong> — one form, one click, and each lands in the right department’s queue.<br><br>👉 <strong>Click “Order”.</strong>',
-      ar: 'صداع ودوخة عند مريض قلبي يستحقان فحوصات. جهّزتُ <strong>أملاح الدم العاجلة</strong> (صوديوم، بوتاسيوم، كلور) و<strong>أشعة سينية للصدر</strong> — نموذج واحد، ضغطة واحدة، وكلٌّ يصل إلى طابور قسمه.<br><br>👉 <strong>اضغط «طلب».</strong>',
-    },
-    enter(s) {
-      setTimeout(() => {
-        if (typeof _selectedLabTests !== 'undefined') _selectedLabTests.length = 0;   // defensively clear stale picks
-        tourSet('lab-patient', String(s.admissionId));
-        if (typeof addSuggestedLab === 'function') { addSuggestedLab('LYTE'); addSuggestedLab('CXR'); }
-        tourSet('lab-priority', 'stat');
-      }, 350);
-    },
-    auto() { const f = document.querySelector('form[onsubmit="handleOrderLab(event)"]'); if (f) f.requestSubmit(); },
-    target() { return 'form[onsubmit="handleOrderLab(event)"] button[type="submit"]'; },
-    done(s) {
-      const lyte = dbGet("SELECT order_id FROM lab_orders WHERE admission_id = ? AND test_code = 'LYTE' ORDER BY order_id DESC LIMIT 1", [s.admissionId]);
-      const cxr = dbGet("SELECT order_id FROM lab_orders WHERE admission_id = ? AND test_code = 'CXR' ORDER BY order_id DESC LIMIT 1", [s.admissionId]);
-      if (!lyte || !cxr) return false;
-      s.lyteId = lyte.order_id; s.cxrId = cxr.order_id; tourSave(s); return true;
-    },
-  },
-  { // the doctor also writes the diet order (cardiac patient ≠ regular tray)
-    role: ['dr.sarah', 'doctor123', 'Ward Doctor', 'طبيبة الجناح'],
-    view: 'doc-patients', mode: 'click',
-    ch: { en: '🩺 The ward', ar: '🩺 الجناح' },
-    title: { en: 'Feed the heart right', ar: 'غذاء يناسب القلب' },
-    body: {
-      en: 'Treatment isn’t only pills. Salem is a cardiac patient, so I opened his chart and picked a <strong>Cardiac diet</strong> (the form even suggests it from his diagnosis).<br><br>👉 <strong>Click “Order Diet”</strong> — the kitchen and the dietitian see it instantly.',
-      ar: 'العلاج ليس حبوباً فقط. سالم مريض قلب، لذا فتحتُ ملفه واخترتُ <strong>حمية قلبية</strong> (النموذج يقترحها من تشخيصه).<br><br>👉 <strong>اضغط «طلب الحمية»</strong> — المطبخ وأخصائية التغذية يريانها فوراً.',
-    },
-    enter(s) {
-      setTimeout(() => {
-        if (typeof showPatientDetail === 'function') showPatientDetail(s.patientId, s.admissionId);
-        setTimeout(() => {
-          const btn = document.querySelector(`[onclick*="showDietOrderForm(${s.patientId},"]`);
-          if (btn) btn.click();
-          setTimeout(() => {
-            const sel = document.querySelector('#doc-action-form select[name="diet_type"]');
-            if (sel) { sel.value = 'Cardiac'; sel.dispatchEvent(new Event('change', { bubbles: true })); }
-          }, 300);
-        }, 400);
-      }, 350);
-    },
-    auto(s) {
-      const f = document.querySelector('#doc-action-form form');
-      if (f) {
-        const sel = f.querySelector('select[name="diet_type"]');
-        if (sel && sel.value !== 'Cardiac') sel.value = 'Cardiac';
-        f.requestSubmit(); return;
-      }
-      const btn = document.querySelector(`[onclick*="showDietOrderForm(${s.patientId},"]`);
-      if (btn) btn.click();
-      else if (typeof showPatientDetail === 'function') showPatientDetail(s.patientId, s.admissionId);
-    },
-    target(s) {
-      const f = document.querySelector('#doc-action-form form');
-      if (f) return f.querySelector('button[type="submit"]');
-      return document.querySelector(`[onclick*="showDietOrderForm(${s.patientId},"]`) || `[onclick*="showPatientDetail(${s.patientId},"]`;
-    },
-    done(s) {
-      const o = dbGet("SELECT order_id FROM diet_orders WHERE admission_id = ? AND status = 'active' AND diet_type = 'Cardiac' ORDER BY order_id DESC LIMIT 1", [s.admissionId]);
-      if (!o) return false;
-      s.dietOrderId = o.order_id; tourSave(s); return true;
-    },
-  },
-  { // the senior nurse staffs Salem's bedside care
-    role: ['nurse.fatima', 'nurse123', 'Senior Nurse', 'الممرضة الأولى'],
-    view: 'sn-assign', mode: 'click',
-    ch: { en: '🩺 The ward', ar: '🩺 الجناح' },
-    title: { en: 'Every patient gets a named nurse', ar: 'لكل مريض ممرضة مسؤولة' },
-    body: {
-      en: 'Senior nurse Fatima runs the shift board. Salem shows up as <strong>unassigned</strong>; I picked <strong>nurse Mona</strong> for the morning shift.<br><br>👉 <strong>Click “Assign”</strong> — Salem now appears on Mona’s personal worklist, with her “what needs me now” widget watching his results.',
-      ar: 'الممرضة الأولى فاطمة تدير لوحة الوردية. يظهر سالم <strong>غير مُسنَد</strong>؛ اخترتُ <strong>الممرضة منى</strong> لوردية الصباح.<br><br>👉 <strong>اضغطي «إسناد»</strong> — يظهر سالم الآن في قائمة منى الشخصية، وأداة «ما يحتاجني الآن» تراقب نتائجه.',
-    },
-    enter(s) {
-      setTimeout(() => {
-        const mona = tourMonaId();
-        const sel = document.getElementById('nassign-' + s.admissionId);
-        if (sel && mona) { sel.value = String(mona); sel.dispatchEvent(new Event('change', { bubbles: true })); }
-      }, 350);
-    },
-    auto(s) {
-      const mona = tourMonaId();
-      const sel = document.getElementById('nassign-' + s.admissionId);
-      if (sel && mona && !sel.value) sel.value = String(mona);
-      if (typeof handleAssignNurse === 'function') handleAssignNurse(s.admissionId, s.patientId);
-      // junior-nurse/high-complexity warning modal: take the safe "action taken" path
-      setTimeout(() => { const ok = document.getElementById('rd-accept-btn'); if (ok) ok.click(); }, 400);
-    },
-    target(s) {
-      const ok = document.getElementById('rd-accept-btn');
-      if (ok) return ok;
-      const sel = document.getElementById('nassign-' + s.admissionId);
-      return sel ? sel.closest('tr').querySelector('button.btn-primary') : null;
-    },
-    done(s) { return !!dbGet("SELECT assignment_id FROM nurse_assignments WHERE admission_id = ? AND shift_date = date('now')", [s.admissionId]); },
-  },
-  { // the lab receives the specimen
-    role: ['lab.nasser', 'lab123', 'Lab Technician', 'تقني المختبر'],
-    view: 'lt-pending', mode: 'click',
-    ch: { en: '🧪 Lab & imaging', ar: '🧪 المختبر والأشعة' },
-    title: { en: 'The specimen reaches the lab', ar: 'العينة تصل المختبر' },
-    body: {
-      en: 'You are the lab now. Salem’s nurse already drew the blood (status: <em>collected</em>) — the lab logs it in before anything gets measured, so a lost tube is impossible to miss.<br><br>👉 <strong>Click “Mark Received”</strong> on Salem’s stat Electrolytes.',
-      ar: 'أنت المختبر الآن. ممرضة سالم سحبت العينة بالفعل (الحالة: <em>مسحوبة</em>) — والمختبر يسجّل استلامها قبل أي قياس، فلا تضيع أنبوبة دون أن يُلاحظ.<br><br>👉 <strong>اضغط «تأكيد الاستلام»</strong> على عينة سالم العاجلة.',
-    },
-    enter(s) {
-      // the ward nurse drew the sample — stage the 'collected' hop (narrated above)
-      const o = dbGet('SELECT status FROM lab_orders WHERE order_id = ?', [s.lyteId]);
-      if (o && o.status === 'ordered') {
-        dbRun("UPDATE lab_orders SET status = 'collected', collected_by = ?, collected_at = ? WHERE order_id = ?", [tourMonaId(), nowISO(), s.lyteId]);
-        saveDBToIndexedDB();
-        navigateTo('lt-pending');
-      }
-    },
-    auto(s) { if (typeof handleLabReceive === 'function') handleLabReceive(s.lyteId); },
-    target(s) { return `[onclick*="handleLabReceive(${s.lyteId})"]`; },
-    done(s) { const o = dbGet('SELECT status FROM lab_orders WHERE order_id = ?', [s.lyteId]); return !!(o && (o.status === 'received' || o.status === 'resulted')); },
-  },
-  { // NEW — enter the result: a life-threatening potassium
-    role: ['lab.nasser', 'lab123', 'Lab Technician', 'تقني المختبر'],
-    view: 'lt-pending', mode: 'click',
-    ch: { en: '🧪 Lab & imaging', ar: '🧪 المختبر والأشعة' },
-    title: { en: 'A dangerous number — potassium 6.8', ar: 'رقم خطير — بوتاسيوم ٦٫٨' },
-    body: {
-      en: 'I opened the result panel and typed the values: sodium and chloride normal — but <strong>potassium 6.8 mEq/L</strong> (normal 3.5–5.1), flagged <strong>critical high</strong>. That level can stop a heart.<br><br>👉 <strong>Click “Save”</strong> and watch the system take it from here.',
-      ar: 'فتحتُ نافذة النتائج وأدخلت القيم: الصوديوم والكلور طبيعيان — لكن <strong>البوتاسيوم 6.8</strong> (الطبيعي 3.5–5.1) بعلامة <strong>حرج مرتفع</strong>. هذا المستوى قد يوقف القلب.<br><br>👉 <strong>اضغط «حفظ»</strong> وشاهد النظام يتولى الأمر.',
-    },
-    enter(s) {
-      setTimeout(() => {
-        if (!document.getElementById('lr-submit-btn') && typeof showLabResultForm === 'function') showLabResultForm(s.lyteId);
-        setTimeout(tourFillLyteModal, 350);
-      }, 400);
-    },
-    auto(s) {
-      const save = document.getElementById('lr-submit-btn');
-      if (save) { tourFillLyteModal(); save.click(); return; }
-      if (typeof showLabResultForm === 'function') { showLabResultForm(s.lyteId); setTimeout(() => { tourFillLyteModal(); }, 350); }
-    },
-    target(s) { return document.getElementById('lr-submit-btn') || `[onclick*="showLabResultForm(${s.lyteId})"]`; },
-    done(s) { const o = dbGet('SELECT status, is_critical FROM lab_orders WHERE order_id = ?', [s.lyteId]); return !!(o && o.status === 'resulted' && o.is_critical === 1); },
-  },
-  { // NEW — the radiologist reads the X-ray
-    role: ['rad.mohammed', 'rad123', 'Radiologist', 'أخصائي الأشعة'],
-    view: 'rad-pending', mode: 'click',
-    ch: { en: '🧪 Lab & imaging', ar: '🧪 المختبر والأشعة' },
-    title: { en: 'Reading the X-ray', ar: 'قراءة الأشعة' },
-    body: {
-      en: 'You are the radiologist. Salem’s chest film is in the worklist (stat orders jump the queue). I drafted the report — clear lungs, no acute process.<br><br>👉 <strong>Click “Save”</strong> to file it. The ordering doctor sees the report the moment it’s in.',
-      ar: 'أنت أخصائي الأشعة. صورة صدر سالم في قائمة العمل (الطلبات العاجلة تتقدم الطابور). كتبتُ التقرير — رئتان سليمتان، لا علّة حادة.<br><br>👉 <strong>اضغط «حفظ»</strong> لاعتماده. الطبيب يرى التقرير فور حفظه.',
-    },
-    enter(s) {
-      setTimeout(() => {
-        if (!document.getElementById('rad-submit') && typeof showRadResultForm === 'function') showRadResultForm(s.cxrId);
-        setTimeout(tourFillRadModal, 350);
-      }, 400);
-    },
-    auto(s) {
-      const save = document.getElementById('rad-submit');
-      if (save) { tourFillRadModal(); save.click(); return; }
-      if (typeof showRadResultForm === 'function') { showRadResultForm(s.cxrId); setTimeout(tourFillRadModal, 350); }
-    },
-    target(s) { return document.getElementById('rad-submit') || `[onclick*="showRadResultForm(${s.cxrId})"]`; },
-    done(s) { const o = dbGet('SELECT status FROM lab_orders WHERE order_id = ?', [s.cxrId]); return !!(o && o.status === 'resulted'); },
-  },
-  { // NEW — the red flag finds the doctor
-    role: ['dr.sarah', 'doctor123', 'Ward Doctor', 'طبيبة الجناح'],
-    view: 'doc-patients', mode: 'click',
-    ch: { en: '🚨 The catch', ar: '🚨 الإنذار' },
-    title: { en: 'The red flag finds the doctor', ar: 'العلامة الحمراء تصل الطبيبة' },
-    body: {
-      en: 'Dr. Sarah is back. That potassium is on Salem’s chart now — flagged, pulsing, impossible to scroll past.<br><br>👉 <strong>Open Salem’s “Details”</strong>: a red <strong>CRITICAL LAB</strong> banner is waiting at the top (and his nurse sees a 🚨 flag on her list too — the X-ray report is filed right below it).',
-      ar: 'عادت د. سارة. ذلك البوتاسيوم الآن على ملف سالم — مُعلَّم، نابض، يستحيل تجاوزه.<br><br>👉 <strong>افتح «تفاصيل» سالم</strong>: شريط <strong>فحص حرج</strong> أحمر بانتظارك أعلى الملف (وممرضته ترى علامة 🚨 في قائمتها أيضاً — وتقرير الأشعة محفوظ تحته).',
-    },
-    auto(s) { if (typeof showPatientDetail === 'function') showPatientDetail(s.patientId, s.admissionId); },
-    target(s) { return document.getElementById(`critical-banner-${s.admissionId}`) || `[onclick*="showPatientDetail(${s.patientId},"]`; },
-    done(s) { return !!document.getElementById(`critical-banner-${s.admissionId}`); },
-  },
-  { // NEW — acknowledge it, on the record
-    role: ['dr.sarah', 'doctor123', 'Ward Doctor', 'طبيبة الجناح'],
-    view: 'doc-patients', mode: 'click',
-    ch: { en: '🚨 The catch', ar: '🚨 الإنذار' },
-    title: { en: 'Acknowledge it — on the record', ar: 'أقرّ بها — في السجل' },
-    body: {
-      en: 'Critical results demand a named human response. <strong>Click “Acknowledge This Result”</strong> — a comment is <em>required</em> (I drafted one: repeat sample, start the hyperkalemia protocol), and the acknowledgement is written to the permanent audit chain with your name on it.',
-      ar: 'النتائج الحرجة تتطلب رداً بشرياً مسمّى. <strong>اضغط «الإقرار بهذه النتيجة»</strong> — التعليق <em>إلزامي</em> (كتبتُ واحداً: إعادة العينة وبدء بروتوكول فرط البوتاسيوم)، ويُسجَّل الإقرار في سلسلة التدقيق الدائمة باسمك.',
-    },
-    enter() { /* the banner is already on screen from the previous beat */ },
-    auto(s) {
-      const confirmBtn = document.getElementById('ack-confirm-btn');
-      if (confirmBtn) {
-        const c = document.getElementById('ack-comment');
-        if (c && !c.value) c.value = 'Reviewed. Repeating sample to exclude hemolysis; starting hyperkalemia protocol (ECG, calcium gluconate, insulin/dextrose).';
-        confirmBtn.click(); return;
-      }
-      const ackBtn = document.querySelector(`[onclick*="showCriticalAckModal(${s.lyteId},"]`);
-      if (ackBtn) ackBtn.click();
-      else if (typeof showPatientDetail === 'function') showPatientDetail(s.patientId, s.admissionId);
-    },
-    target(s) {
-      const confirmBtn = document.getElementById('ack-confirm-btn');
-      if (confirmBtn) {
-        const c = document.getElementById('ack-comment');
-        if (c && !c.value) c.value = 'Reviewed. Repeating sample to exclude hemolysis; starting hyperkalemia protocol (ECG, calcium gluconate, insulin/dextrose).';
-        return confirmBtn;
-      }
-      return `[onclick*="showCriticalAckModal(${s.lyteId},"]`;
-    },
-    done(s) { return !!dbGet('SELECT ack_id FROM lab_critical_acks WHERE order_id = ?', [s.lyteId]); },
-  },
-  { // pharmacist verifies
-    role: ['pharm.ali', 'pharm123', 'Pharmacist', 'الصيدلاني'],
-    view: 'ph-queue', mode: 'click',
-    ch: { en: '💊 Pharmacy', ar: '💊 الصيدلية' },
-    title: { en: 'Pharmacy is the second pair of eyes', ar: 'الصيدلية عين ثانية' },
-    body: {
-      en: 'You are the pharmacist now — and there is Salem’s Paracetamol, waiting. Pharmacy re-runs the allergy check independently before anything reaches a nurse.<br><br>👉 <strong>Click “✓ Verify”</strong> on Salem’s order.',
-      ar: 'أنت الصيدلاني الآن — وهذه وصفة سالم بانتظارك. الصيدلية تعيد فحص الحساسية باستقلالية قبل أن يصل أي دواء للتمريض.<br><br>👉 <strong>اضغط «تحقق»</strong> على وصفة سالم.',
-    },
-    auto(s) { if (typeof handleVerifyRx === 'function') handleVerifyRx(s.rxId); },
-    target(s) { return `[onclick*="handleVerifyRx(${s.rxId})"]`; },
-    done(s) { const rx = dbGet('SELECT verified_at FROM prescriptions WHERE rx_id = ?', [s.rxId]); return !!(rx && rx.verified_at); },
-  },
-  { // dispense (stock-guarded)
-    role: ['pharm.ali', 'pharm123', 'Pharmacist', 'الصيدلاني'],
-    view: 'ph-queue', mode: 'click',
-    ch: { en: '💊 Pharmacy', ar: '💊 الصيدلية' },
-    title: { en: 'Dispense it', ar: 'صرف الدواء' },
-    body: {
-      en: 'Verified → now dispense. Dispensing atomically claims the order and deducts stock — two pharmacists can’t double-dispense the same order even by clicking at the same instant.<br><br>👉 <strong>Click “Dispense”.</strong>',
-      ar: 'تم التحقق → الآن الصرف. الصرف يحجز الوصفة ويخصم المخزون بعملية واحدة — لا يمكن لصيدليين صرف نفس الوصفة مرتين حتى لو ضغطا معاً.<br><br>👉 <strong>اضغط «صرف».</strong>',
-    },
-    auto(s) { if (typeof handleDispense === 'function') handleDispense(s.rxId); },
-    target(s) { return `[onclick*="handleDispense(${s.rxId})"]`; },
-    done(s) { const rx = dbGet("SELECT status FROM prescriptions WHERE rx_id = ?", [s.rxId]); return !!(rx && rx.status === 'dispensed'); },
-  },
-  { // look around the pharmacy
-    role: ['pharm.ali', 'pharm123', 'Pharmacist', 'الصيدلاني'],
-    view: 'ph-queue', mode: 'info',
-    ch: { en: '💊 Pharmacy', ar: '💊 الصيدلية' },
-    title: { en: 'More in the pharmacy', ar: 'المزيد في الصيدلية' },
-    body: {
-      en: 'The spotlight is rotating through the rest of the pharmacist\'s world: 📦 <strong>live inventory</strong> with low-stock thresholds, 📥 <strong>receive stock</strong>, and the 📜 <strong>dispense log</strong> — every pill accounted for.<br><br>Press <strong>Next</strong> to follow Salem\'s dose to the ward.',
-      ar: 'الإضاءة تتنقل عبر بقية عالم الصيدلاني: 📦 <strong>مخزون حيّ</strong> مع حدود النقص، 📥 <strong>استلام مخزون</strong>، و📜 <strong>سجل الصرف</strong> — كل حبة محسوبة.<br><br>اضغط <strong>التالي</strong> لمتابعة جرعة سالم إلى الجناح.',
-    },
-    targets: ['.nav-btn[data-view="ph-inventory"]', '.nav-btn[data-view="ph-receive"]', '.nav-btn[data-view="ph-log"]'],
-    target() { return null; }, done() { return false; },
-  },
-  { // Mona's landing list — the assignment did something real
-    role: ['nurse.mona', 'nurse123', 'Ward Nurse', 'ممرضة الجناح'],
-    view: 'nr-patients', mode: 'info',
-    ch: { en: '🛏️ Bedside', ar: '🛏️ بجانب السرير' },
-    title: { en: 'Mona’s shift list knows him already', ar: 'قائمة منى تعرفه بالفعل' },
-    body: {
-      en: 'This is nurse Mona’s own landing page. Salem is on it <em>because Fatima assigned him</em> — and look at the <strong>“What needs your attention”</strong> widget: his unacknowledged-then-acked critical lab put him at the top, and his row carries the 🚨 flag. Nobody had to brief her.<br><br>Press <strong>Next</strong> to give his dose.',
-      ar: 'هذه صفحة الممرضة منى. سالم فيها <em>لأن فاطمة أسندته إليها</em> — وانظري إلى أداة <strong>«ما يحتاج انتباهك»</strong>: فحصه الحرج وضعه في الصدارة، وصفّه يحمل علامة 🚨. لم يحتج أحد لإطلاعها.<br><br>اضغطي <strong>التالي</strong> لإعطاء جرعته.',
-    },
-    target(s) { return `[onclick*="showNurseActions(${s.admissionId},"]`; },
-    done() { return false; },
-  },
-  { // nurse charts it on the MAR (two identifiers!)
-    role: ['nurse.mona', 'nurse123', 'Ward Nurse', 'ممرضة الجناح'],
-    view: 'nr-mar', mode: 'click',
-    ch: { en: '🛏️ Bedside', ar: '🛏️ بجانب السرير' },
-    title: { en: 'Give the dose — to the RIGHT patient', ar: 'إعطاء الجرعة — للمريض الصحيح' },
-    body: {
-      en: 'You are Salem’s nurse (her landing list flags his 🚨 critical lab too). Open the charting dialog and look at the top: <strong>name + MRN + date of birth</strong> — two-identifier verification against the wristband (room numbers don’t count). Mark it <em>Given</em> and save.<br><br>👉 <strong>Click “Log” on Salem’s Paracetamol, then Save.</strong>',
-      ar: 'أنتِ ممرضة سالم (قائمتها تُظهر علامة 🚨 لفحصه الحرج أيضاً). افتحي نافذة التوثيق وانظري أعلاها: <strong>الاسم + الرقم الطبي + تاريخ الميلاد</strong> — تحقق بمعرّفين مقابل سوار المعصم. اختاري <em>أُعطي</em> واحفظي.<br><br>👉 <strong>اضغطي «إعطاء» على باراسيتامول سالم ثم احفظي.</strong>',
-    },
-    auto(s) {
-      if (document.getElementById('mar-save-btn')) { document.getElementById('mar-save-btn').click(); return; }
-      const btn = document.querySelector(`[onclick*="showMARLogForm(${s.rxId},"]`); if (btn) btn.click();
-      setTimeout(() => { const sv = document.getElementById('mar-save-btn'); if (sv) sv.click(); }, 700);
-    },
-    target(s) { return document.getElementById('mar-save-btn') || `[onclick*="showMARLogForm(${s.rxId},"]`; },
-    done(s) { return !!dbGet("SELECT mar_id FROM med_admin_records WHERE prescription_id = ? AND status = 'given' LIMIT 1", [s.rxId]); },
-  },
-  { // look around the nurse's world
-    role: ['nurse.mona', 'nurse123', 'Ward Nurse', 'ممرضة الجناح'],
-    view: 'nr-mar', mode: 'info',
-    ch: { en: '🛏️ Bedside', ar: '🛏️ بجانب السرير' },
-    title: { en: 'A nurse\'s shift, organized', ar: 'وردية الممرضة، منظمة' },
-    body: {
-      en: 'Beyond the MAR, the spotlight shows the nurse\'s other tools: ✅ <strong>prioritized tasks</strong> (a "what needs me now" list — unacked critical labs come first), 💧 <strong>fluids I/O balance</strong>, 📋 <strong>assessments</strong> (Morse falls, Braden, pain) — and the 🧮 calculators are right there too.<br><br><strong>Next</strong>: the view from the top.',
-      ar: 'إلى جانب سجل الإعطاء، تعرض الإضاءة بقية أدوات الممرضة: ✅ <strong>مهام مرتّبة بالأولوية</strong> (الفحوصات الحرجة غير المُقرّة أولاً)، 💧 <strong>ميزان السوائل</strong>، 📋 <strong>التقييمات</strong> — والحاسبات 🧮 في المتناول أيضاً.<br><br><strong>التالي</strong>: المشهد من الأعلى.',
-    },
-    targets: ['.nav-btn[data-view="nr-tasks"]', '.nav-btn[data-view="nr-fluids"]', '.nav-btn[data-view="nr-assessments"]', '#calc-fab'],
-    target() { return null; }, done() { return false; },
-  },
-  { // the dietitian logs how Salem actually ate
-    role: ['diet.amira', 'diet123', 'Dietitian', 'أخصائية التغذية'],
-    view: 'dt-meals', mode: 'click',
-    ch: { en: '🥗 Allied care', ar: '🥗 الرعاية المساندة' },
-    title: { en: 'The cardiac tray, accounted for', ar: 'وجبة القلب، محسوبة' },
-    body: {
-      en: 'Dietitian Amira sees Dr. Sarah’s <strong>Cardiac diet order</strong> in her worklist. Lunch went out — I filled the meal log (what was served, how much he ate).<br><br>👉 <strong>Click “Log Meal”</strong> — intake percentages feed nutrition assessments and flag patients who stop eating.',
-      ar: 'أخصائية التغذية أميرة ترى <strong>حمية القلب</strong> التي طلبتها د. سارة في قائمتها. خرجت وجبة الغداء — عبّأتُ سجل الوجبة (ماذا قُدّم وكم أكل).<br><br>👉 <strong>اضغطي «تسجيل وجبة»</strong> — نسب التناول تغذي تقييمات التغذية وتكشف من توقف عن الأكل.',
-    },
-    enter(s) {
-      setTimeout(() => {
-        if (!document.querySelector('#meal-form-area form') && typeof showMealLogForm === 'function') showMealLogForm(s.dietOrderId, s.admissionId);
-        setTimeout(() => {
-          const f = document.querySelector('#meal-form-area form');
-          if (f) {
-            const items = f.querySelector('textarea[name="items_served"]');
-            if (items && !items.value) items.value = 'Low-sodium grilled chicken, brown rice, steamed vegetables, fruit';
-            const mt = f.querySelector('select[name="meal_type"]'); if (mt) mt.value = 'lunch';
-          }
-        }, 300);
-      }, 350);
-    },
-    auto(s) {
-      const f = document.querySelector('#meal-form-area form');
-      if (f) {
-        const items = f.querySelector('textarea[name="items_served"]');
-        if (items && !items.value) items.value = 'Low-sodium grilled chicken, brown rice, steamed vegetables, fruit';
-        f.requestSubmit(); return;
-      }
-      if (typeof showMealLogForm === 'function') showMealLogForm(s.dietOrderId, s.admissionId);
-    },
-    target(s) {
-      const f = document.querySelector('#meal-form-area form');
-      if (f) return f.querySelector('button[type="submit"]');
-      return `[onclick*="showMealLogForm(${s.dietOrderId},"]`;
-    },
-    done(s) { return !!dbGet('SELECT log_id FROM meal_log WHERE diet_order_id = ? ORDER BY log_id DESC LIMIT 1', [s.dietOrderId]); },
-  },
-  { // the social worker opens discharge planning
-    role: ['sw.hessa', 'social123', 'Social Worker', 'الأخصائية الاجتماعية'],
-    view: 'sw-new', mode: 'click',
-    ch: { en: '🥗 Allied care', ar: '🥗 الرعاية المساندة' },
-    title: { en: 'Discharge starts on day one', ar: 'التخطيط للخروج يبدأ من اليوم الأول' },
-    body: {
-      en: 'Social worker Hessa opens a case the day Salem is admitted — home situation, support system, insurance — so discharge day never becomes a scramble.<br><br>👉 <strong>Click “Create Case”</strong>. It lands on her caseload board with a risk level and a paper trail.',
-      ar: 'الأخصائية الاجتماعية حصة تفتح ملفاً يوم دخول سالم — وضع السكن، الدعم الأسري، التأمين — حتى لا يتحول يوم الخروج إلى ارتباك.<br><br>👉 <strong>اضغطي «إنشاء حالة»</strong>. تظهر على لوحة حالاتها بمستوى خطورة ومسار موثق.',
-    },
-    enter(s) {
-      setTimeout(() => {
-        const f = document.querySelector('form[onsubmit="handleCreateSWCase(event)"]');
-        if (!f) return;
-        const adm = f.querySelector('select[name="admission_id"]');
-        if (adm) { adm.value = String(s.admissionId); adm.dispatchEvent(new Event('change', { bubbles: true })); }
-        const psy = f.querySelector('textarea[name="psychosocial_assessment"]');
-        if (psy && !psy.value) psy.value = 'Lives alone; daughter nearby visits weekly. Independent in daily activities before admission. Needs medication-routine education and a follow-up plan before discharge.';
-        const risk = f.querySelector('select[name="risk_level"]'); if (risk) risk.value = 'medium';
-        const liv = f.querySelector('select[name="living_situation"]'); if (liv && liv.options.length) liv.selectedIndex = Math.min(1, liv.options.length - 1);
-      }, 400);
-    },
-    auto() { const f = document.querySelector('form[onsubmit="handleCreateSWCase(event)"]'); if (f) f.requestSubmit(); },
-    target() { const f = document.querySelector('form[onsubmit="handleCreateSWCase(event)"]'); return f ? f.querySelector('button[type="submit"]') : null; },
-    done(s) {
-      const c = dbGet("SELECT case_id FROM social_work_cases WHERE admission_id = ? ORDER BY case_id DESC LIMIT 1", [s.admissionId]);
-      if (!c) return false;
-      s.swCaseId = c.case_id; tourSave(s); return true;
-    },
-  },
-  { // the front desk books the follow-up — linked by national ID
-    role: ['reception.sara', 'recept123', 'Receptionist', 'موظفة الاستقبال'],
-    view: 'rcp-appointments', mode: 'click',
-    ch: { en: '🗂️ Front desk', ar: '🗂️ الاستقبال' },
-    title: { en: 'Book the follow-up before he leaves', ar: 'احجزي المراجعة قبل خروجه' },
-    body: {
-      en: 'Reception books Salem a cardiology follow-up for next week. I typed his <strong>national ID</strong> — watch the appointment link itself to his chart automatically (his MRN attaches; it shows up in his patient portal too).<br><br>👉 <strong>Click “Add”.</strong>',
-      ar: 'الاستقبال يحجز لسالم مراجعة قلبية الأسبوع القادم. أدخلتُ <strong>رقم هويته</strong> — لاحظي كيف يرتبط الموعد بملفه تلقائياً (رقمه الطبي يلتصق به؛ ويظهر في بوابة المريض أيضاً).<br><br>👉 <strong>اضغطي «إضافة».</strong>',
-    },
-    enter(s) {
-      setTimeout(() => {
-        if (!document.querySelector('#appt-form-container form') && typeof showApptForm === 'function') showApptForm();
-        setTimeout(() => {
-          tourSet('appt-name-ar', TOUR_PATIENT.nameAr); tourSet('appt-name-en', TOUR_PATIENT.nameEn);
-          tourSet('appt-nid', s.natId || TOUR_PATIENT.natId);
-          tourPickOption('appt-dept', 'internal'); tourPickOption('appt-doctor', 'sarah');
-          const d = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
-          tourSet('appt-date', d); tourSet('appt-time', '10:00');
-          tourSet('appt-reason', 'Cardiology follow-up — post hyperkalemia');
-        }, 300);
-      }, 350);
-    },
-    auto() { const f = document.querySelector('#appt-form-container form'); if (f) f.requestSubmit(); },
-    target() {
-      const f = document.querySelector('#appt-form-container form');
-      if (f) return f.querySelector('button[type="submit"]');
-      return 'button[onclick="showApptForm()"]';
-    },
-    done(s) { return !!dbGet("SELECT appt_id FROM appointments WHERE national_id = ? AND status = 'scheduled' ORDER BY appt_id DESC LIMIT 1", [s.natId || TOUR_PATIENT.natId]); },
-  },
-  { // the manager sees everything in the audit trail
-    role: ['manager', 'manager123', 'Hospital Manager', 'مدير المستشفى'],
-    view: 'hm-blackbox', mode: 'info',
-    ch: { en: '🏛️ Oversight', ar: '🏛️ الإشراف' },
-    title: { en: 'Everything you did is on the record', ar: 'كل ما فعلته مسجَّل' },
-    body: {
-      en: 'The manager’s “black box”: registration, the <strong>refused Amoxicillin alert</strong>, the orders, the <strong>critical-lab acknowledgement</strong>, the X-ray report, the dispense, the MAR entry — every step you just took, hash-chained so silent edits are detectable. This audit trail is the spine of the whole system.<br><br>Press <strong>Next</strong>.',
-      ar: '«الصندوق الأسود» للمدير: التسجيل، <strong>تنبيه الأموكسيسيلين المرفوض</strong>، الطلبات، <strong>إقرار الفحص الحرج</strong>، تقرير الأشعة، الصرف، توثيق الإعطاء — كل خطوة قمت بها الآن، مسلسلة التجزئة بحيث يُكشف أي تعديل خفي.<br><br>اضغط <strong>التالي</strong>.',
-    },
-    target() { return '#main-content table'; },
-    done() { return false; },
-  },
-  { // look around the manager's cockpit
-    role: ['manager', 'manager123', 'Hospital Manager', 'مدير المستشفى'],
-    view: 'hm-overview', mode: 'info',
-    ch: { en: '🏛️ Oversight', ar: '🏛️ الإشراف' },
-    title: { en: 'The manager\'s cockpit', ar: 'قمرة قيادة المدير' },
-    body: {
-      en: 'The spotlight tours the oversight tools: 📊 <strong>live analytics</strong> (admissions, LOS, critical labs — lazy-loaded charts), 🛏️ <strong>the bed map</strong>, and 📑 <strong>reports</strong>. The manager sees the hospital, not patient charts — oversight roles deliberately have no prescribing or charting rights.',
-      ar: 'الإضاءة تستعرض أدوات الإشراف: 📊 <strong>تحليلات حيّة</strong>، 🛏️ <strong>خريطة الأسرّة</strong>، و📑 <strong>التقارير</strong>. المدير يرى المستشفى لا ملفات المرضى — أدوار الإشراف بلا صلاحيات وصف أو توثيق عمداً.',
-    },
-    targets: ['.nav-btn[data-view="hm-analytics"]', '.nav-btn[data-view="hm-beds"]', '.nav-btn[data-view="hm-reports"]'],
-    target() { return null; }, done() { return false; },
-  },
-  { // IT keeps the lights on
-    role: ['admin', 'HIS@2024', 'IT Admin', 'مدير النظام'],
-    view: 'it-settings', mode: 'info',
-    ch: { en: '🏛️ Oversight', ar: '🏛️ الإشراف' },
-    title: { en: 'The quiet role that protects it all', ar: 'الدور الهادئ الذي يحمي كل شيء' },
-    body: {
-      en: 'IT admin tools, spotlit in turn: <strong>device encryption</strong> (AES-256 at rest, passphrase-locked on logout), <strong>one-click backup</strong> of the whole database, and <strong>user management</strong> — create staff, disable accounts, audit access. And remember the login page’s 🚀 button: production mode starts with zero default credentials.',
-      ar: 'أدوات مدير النظام بالتناوب: <strong>تشفير الجهاز</strong> (AES-256 للبيانات المخزنة، يُقفل بعبارة سر عند الخروج)، <strong>نسخة احتياطية بضغطة واحدة</strong> لقاعدة البيانات كاملة، و<strong>إدارة المستخدمين</strong>. وتذكّر زر 🚀 في شاشة الدخول: وضع التشغيل الفعلي يبدأ بلا أي حسابات افتراضية.',
-    },
-    targets: ['button[onclick="toggleDeviceEncryption()"]', 'button[onclick="downloadBackup()"]', '.nav-btn[data-view="it-users"]'],
-    target() { return null; }, done() { return false; },
-  },
-  { // Salem himself logs in from home
+  { // patient portal login
     role: null, view: null, mode: 'auto',
     ch: { en: '🧍 The patient', ar: '🧍 المريض' },
     title: { en: 'Salem checks his own record', ar: 'سالم يطالع ملفه بنفسه' },
     body: {
-      en: 'The last login belongs to the patient. Watch — Salem signs into the <strong>Patient Portal</strong> from home with nothing but the <strong>MRN and date of birth printed on his wristband</strong>. No app store, no setup.',
-      ar: 'آخر تسجيل دخول للمريض نفسه. شاهد — سالم يدخل <strong>بوابة المريض</strong> من منزله بلا شيء سوى <strong>الرقم الطبي وتاريخ الميلاد المطبوعَين على سوار معصمه</strong>. لا متجر تطبيقات، لا إعداد.',
+      en: 'The last login belongs to Salem. From home, with nothing but the <strong>MRN and date of birth on his appointment card</strong>, he opens the Patient Portal — no app store, no setup.',
+      ar: 'آخر تسجيل دخول لسالم نفسه. من منزله، بلا شيء سوى <strong>الرقم الطبي وتاريخ الميلاد المطبوعَين على بطاقة موعده</strong>، يفتح بوابة المريض — لا متجر تطبيقات ولا إعداد.',
     },
-    enter(s) {
-      (async () => {
-        try {
-          const sess = (typeof getCurrentSession === 'function') ? getCurrentSession() : null;
-          if (sess && sess.role === 'patient') return;
-          try { await logout(); } catch (e) {}
-          const r = await loginPatient(s.mrn, TOUR_PATIENT.dob, '');
-          if (r && r.success) routeToDashboard();
-        } catch (e) { console.warn('[tour] portal login failed', e); }
-      })();
-    },
+    enter(s) { (async () => { try { const sess = (typeof getCurrentSession === 'function') ? getCurrentSession() : null; if (sess && sess.role === 'patient') return; try { await logout(); } catch (e) {} const r = await loginPatient(s.mrn, TOUR_PATIENT.dob, ''); if (r && r.success) routeToDashboard(); } catch (e) { console.warn('[tour] portal login failed', e); } })(); },
     auto(s) { const st = tourState(); const sp = st && TOUR_STEPS[st.i]; if (sp && sp.enter) sp.enter(s); },
-    target() { return null; },
-    done() { const sess = (typeof getCurrentSession === 'function') ? getCurrentSession() : null; return !!(sess && sess.role === 'patient'); },
+    target() { return null; }, done() { const sess = (typeof getCurrentSession === 'function') ? getCurrentSession() : null; return !!(sess && sess.role === 'patient'); },
   },
   { // what the patient sees
-    role: null, view: 'pp-labs', mode: 'info',
+    role: null, view: 'pp-overview', mode: 'info',
     ch: { en: '🧍 The patient', ar: '🧍 المريض' },
-    title: { en: 'His results, in plain words', ar: 'نتائجه، بلغة بسيطة' },
+    title: { en: 'His plan and his bill, in plain words', ar: 'خطته وفاتورته بلغة بسيطة' },
     body: {
-      en: 'Salem sees his own labs — including the <strong>critical potassium</strong>, marked in red, with a plain-language explanation instead of jargon. His prescriptions, visits, and the <strong>follow-up appointment reception just booked</strong> are all here too. Transparency is also care.<br><br>Press <strong>Next</strong> for the wrap-up.',
-      ar: 'يرى سالم فحوصاته بنفسه — بما فيها <strong>البوتاسيوم الحرج</strong> بعلامة حمراء وشرح مبسّط بلا مصطلحات. وصفاته وزياراته و<strong>موعد المراجعة الذي حجزه الاستقبال للتو</strong> كلها هنا أيضاً. الشفافية رعاية أيضاً.<br><br>اضغط <strong>التالي</strong> للختام.',
+      en: 'Salem sees his <strong>treatment plan</strong>, his <strong>clindamycin prescription</strong>, the paid invoice, and his upcoming <strong>recall</strong> — everything the clinic just did for him, on his own phone, in plain language. Transparency is part of care.<br><br>Press <strong>Next</strong> for the wrap-up.',
+      ar: 'يرى سالم <strong>خطته العلاجية</strong>، و<strong>وصفة الكليندامايسين</strong>، والفاتورة المدفوعة، و<strong>موعد المراجعة</strong> القادم — كل ما فعلته العيادة له، على هاتفه، بلغة بسيطة. الشفافية جزء من الرعاية.<br><br>اضغط <strong>التالي</strong> للختام.',
     },
-    target() { return document.querySelector('#main-content .badge.badge-danger') || '.nav-btn[data-view="pp-labs"]'; },
-    done() { return false; },
+    target() { return '#main-content .stat-card'; }, done() { return false; },
   },
   { // finale
     role: null, view: null, mode: 'final',
     ch: { en: '🎉 Wrap-up', ar: '🎉 الختام' },
-    title: { en: '🎉 One patient. Every role. Zero paper.', ar: '🎉 مريض واحد. كل الأدوار. بلا ورق.' },
+    title: { en: '🎉 One toothache. Every role. Zero paper.', ar: '🎉 ألم أسنان واحد. كل الأدوار. بلا ورق.' },
     body: {
-      en: 'Ambulance call → triage board → registration → consultant hand-off → a <strong>blocked unsafe prescription</strong> → the safe one → stat bloods + أشعة → a <strong>critical potassium caught and acknowledged on the record</strong> → the X-ray read → pharmacy double-check → a named nurse + two-identifier bedside charting → a cardiac diet, logged meals, discharge planning → a linked follow-up booking → the manager’s tamper-evident audit of every step → and Salem reading it all himself.<br><br><strong>Fifteen logins. Every role in the hospital. Every guard rail live.</strong><br><br>Explore freely with the role picker — or flip it to production:',
-      ar: 'نداء إسعاف → لوحة الفرز → تسجيل → إسناد الاستشاري → <strong>إيقاف وصفة خاطئة</strong> → الوصفة الآمنة → دم عاجل وأشعة → <strong>بوتاسيوم حرج اكتُشف وأُقرّ به في السجل</strong> → قراءة الأشعة → تدقيق الصيدلية → ممرضة مسؤولة وتوثيق بمعرّفين → حمية قلبية ووجبات مسجلة وتخطيط للخروج → موعد مراجعة مرتبط بالملف → سجل تدقيق محصَّن لكل خطوة → وسالم يقرأ كل ذلك بنفسه.<br><br><strong>خمسة عشر تسجيل دخول. كل أدوار المستشفى. كل الحواجز حيّة.</strong><br><br>استكشف بحرية من قائمة الأدوار — أو حوّله للتشغيل الفعلي:',
+      en: 'Walk-in → registration with a new MRN → a recorded penicillin allergy → an odontogram finding on tooth 36 → a costed treatment plan → a <strong>blocked amoxicillin</strong> → the safe clindamycin → a completed filling → checkout + a 6-month recall → the manager’s production view and <strong>tamper-evident audit</strong> → and Salem reading it all himself.<br><br><strong>Seven logins. Every role in the clinic. The safety guard live.</strong><br><br>Explore freely with the role picker — or switch it to production:',
+      ar: 'دخول مباشر → تسجيل برقم طبي جديد → تسجيل حساسية البنسلين → اكتشاف على مخطط الأسنان في السن 36 → خطة علاجية بسعرها → <strong>منع الأموكسيسيلين</strong> → كليندامايسين الآمن → حشوة مكتملة → دفع وموعد مراجعة بعد ٦ أشهر → لوحة الإنتاج وسجل التدقيق المحصَّن لدى المدير → وسالم يقرأ كل ذلك بنفسه.<br><br><strong>سبعة تسجيلات دخول. كل أدوار العيادة. حاجز الأمان حيّ.</strong><br><br>استكشف بحرية من قائمة الأدوار — أو حوّله للتشغيل الفعلي:',
     },
-    target() { return null; },
-    done() { return false; },
+    target() { return null; }, done() { return false; },
   },
 ];
+
 
 // ---- engine ----
 let _tourTimer = null;
