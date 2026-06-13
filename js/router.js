@@ -1713,54 +1713,77 @@ async function dismissCareGap(admissionId, gapKey, pid) {
 // ============================================================
 // CHART DOCUMENTS / ATTACHMENTS (LAN-only: bytes live in the one server DB)
 // ============================================================
-const ATTACH_ROLES = ['doctor', 'consultant', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'radiologist'];
-const ATTACH_MAX_BYTES = 600 * 1024;   // keep a single upload under the bridge body cap
+const ATTACH_ROLES = ['dentist', 'specialist', 'hygienist'];
+const ATTACH_MAX_BYTES = 1200 * 1024;   // ~1.2MB/image for the browser/IndexedDB demo
+const ATTACH_KINDS = [
+  { key: 'scan_3d',       en: '3D Scan',        ar: 'مسح ثلاثي الأبعاد' },
+  { key: 'xray',          en: 'X-ray',          ar: 'أشعة' },
+  { key: 'photo',         en: 'Intraoral Photo', ar: 'صورة داخل الفم' },
+  { key: 'document',      en: 'Document',       ar: 'مستند' },
+  { key: 'payment_proof', en: 'Payment Proof',  ar: 'إثبات دفع' },
+];
+function attKindLabel(k, lang) { const x = ATTACH_KINDS.find(a => a.key === k); return x ? (lang === 'ar' ? x.ar : x.en) : (k || ''); }
 
 function renderDocumentsBody(pid, lang) {
-  const patient = dbGet('SELECT patient_id, mrn, full_name_ar, full_name_en FROM patients WHERE patient_id = ?', [pid]);
+  const ar = lang === 'ar';
+  const patient = dbGet('SELECT * FROM patients WHERE patient_id = ?', [pid]);
   if (!patient) return emptyState();
+  const age = patient.date_of_birth ? Math.floor((Date.now() - new Date(patient.date_of_birth)) / 31557600000) : '—';
   const rows = dbAll('SELECT attach_id, filename, mime, kind, size_bytes, data, note, uploaded_at FROM patient_attachments WHERE patient_id = ? ORDER BY attach_id DESC', [pid]);
+  const isImg = (a) => /^data:image\//.test(a.data || '');
   const items = rows.length ? rows.map(a => {
     const kb = a.size_bytes ? Math.max(1, Math.round(a.size_bytes / 1024)) + ' KB' : '';
-    const preview = a.kind === 'image'
-      ? `<img src="${a.data}" alt="${escapeHtml(a.filename || '')}" style="max-width:200px;max-height:200px;border-radius:6px;display:block;margin-bottom:6px;">`
-      : `<div style="font-size:2em;">${a.kind === 'pdf' ? '&#128196;' : '&#128206;'}</div>`;
+    const preview = isImg(a)
+      ? `<img src="${a.data}" alt="${escapeHtml(a.filename || '')}" style="width:100%;max-height:180px;object-fit:cover;border-radius:6px;margin-bottom:6px;">`
+      : `<div style="font-size:2em;">${a.kind === 'document' ? '&#128196;' : '&#128206;'}</div>`;
     return `<div class="card" style="display:inline-block;vertical-align:top;width:240px;margin:6px;">
       ${preview}
+      <div><span class="badge badge-info">${escapeHtml(attKindLabel(a.kind, lang))}</span></div>
       <div><strong>${escapeHtml(a.filename || '(file)')}</strong></div>
-      <div class="muted" style="font-size:.85em;">${escapeHtml(String(a.uploaded_at || '').slice(0, 16).replace('T', ' '))} • ${kb}</div>
-      ${a.note ? `<div style="font-size:.9em;">${escapeHtml(a.note)}</div>` : ''}
-      <div style="margin-top:6px;">
-        <a class="btn btn-sm btn-secondary" href="${a.data}" download="${escapeHtml(a.filename || 'document')}">${t('att_download')}</a>
-        <button class="btn btn-sm btn-danger" onclick="deleteAttachment(${a.attach_id}, ${pid})">${t('att_delete')}</button>
+      <div class="muted" style="font-size:.8em;">${escapeHtml(String(a.uploaded_at || '').slice(0, 16).replace('T', ' '))} • ${kb}</div>
+      ${a.note ? `<div style="font-size:.85em;">${escapeHtml(a.note)}</div>` : ''}
+      <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">
+        ${isImg(a) ? `<button class="btn btn-sm btn-success" onclick="sendImageToLab(${a.attach_id}, ${pid})">&#128228; ${ar ? 'إرسال للمعمل' : 'Send to lab'}</button>` : ''}
+        <a class="btn btn-sm btn-secondary" href="${a.data}" download="${escapeHtml(a.filename || 'file')}">${ar ? 'تنزيل' : 'Download'}</a>
+        <button class="btn btn-sm btn-danger" onclick="deleteAttachment(${a.attach_id}, ${pid})">${ar ? 'حذف' : 'Delete'}</button>
       </div>
     </div>`;
-  }).join('') : `<p class="muted">${t('att_none')}</p>`;
-
+  }).join('') : `<p class="muted">${ar ? 'لا توجد ملفات بعد' : 'No files yet'}</p>`;
+  const kindOpts = ATTACH_KINDS.map(k => `<option value="${k.key}">${escapeHtml(ar ? k.ar : k.en)}</option>`).join('');
   return `
     <div class="card">
-      <h3>${t('att_upload')}</h3>
-      <p class="muted">${t('att_hint')}</p>
+      <h3>&#129463; ${ar ? 'ملف المريض' : 'Patient File'} — ${escapeHtml(ar ? patient.full_name_ar : (patient.full_name_en || patient.full_name_ar))}
+        <span class="muted" style="font-weight:400;font-size:.75em;">${escapeHtml(patient.mrn)} · ${age} ${ar ? 'سنة' : 'yrs'}${patient.branch ? ' · ' + escapeHtml(branchLabel(patient.branch, lang)) : ''}</span></h3>
+      <div class="form-group"><label>&#128221; ${ar ? 'ملاحظات خاصة / مشاكل حالية / حساسية لأدوية' : 'Special notes / current issues / drug sensitivities'}</label>
+        <textarea id="pf-notes" rows="2" placeholder="${ar ? 'أي ملاحظات مهمة…' : 'Any important notes…'}">${escapeHtml(patient.notes || '')}</textarea>
+        <button class="btn btn-sm btn-secondary" style="margin-top:6px" onclick="savePatientNotes(${pid})">${ar ? 'حفظ الملاحظات' : 'Save notes'}</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>${ar ? 'رفع صور / أشعة / مسح' : 'Upload images / X-rays / scans'}</h3>
+      <p class="muted">${ar ? 'اختر صورة أو أكثر؛ تُحفظ في ملف المريض ويمكن إرسالها للمعمل عبر واتساب.' : 'Select one or more images; they are saved to the patient file and can be sent to the lab via WhatsApp.'}</p>
       <div class="form-row" style="align-items:flex-end;">
-        <div class="form-group" style="flex:2;"><label>${t('att_file')}</label><input type="file" id="att-file" accept="image/*,application/pdf"></div>
-        <div class="form-group" style="flex:2;"><label>${t('att_note')}</label><input type="text" id="att-note" maxlength="120"></div>
-        <div class="form-group"><button class="btn btn-primary" onclick="uploadAttachment(${pid})">${t('att_upload_btn')}</button></div>
+        <div class="form-group"><label>${ar ? 'النوع' : 'Type'}</label><select id="att-kind">${kindOpts}</select></div>
+        <div class="form-group" style="flex:2;"><label>${ar ? 'الملفات (صورة أو أكثر)' : 'Files (one or more)'}</label><input type="file" id="att-file" accept="image/*,application/pdf" multiple></div>
+        <div class="form-group" style="flex:1;"><label>${ar ? 'ملاحظة' : 'Note'}</label><input type="text" id="att-note" maxlength="120"></div>
+        <div class="form-group"><button class="btn btn-primary" onclick="uploadAttachment(${pid})">&#11014; ${ar ? 'رفع' : 'Upload'}</button></div>
       </div>
     </div>
     <div>${items}</div>`;
 }
 
 function renderDocuments(main, lang) {
-  const session = getCurrentSession();
-  const patients = _problemListPatients(session);
-  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('documents_title')}</h1></div>${emptyState()}`; return; }
-  const pid = patients[0].patient_id;
+  const ar = lang === 'ar';
+  const patients = dbAll('SELECT patient_id, mrn, full_name_ar, full_name_en FROM patients ORDER BY patient_id DESC');
+  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${ar ? 'ملف المريض' : 'Patient File'}</h1></div>${emptyState()}`; return; }
+  const sel = window.SELECTED_PATIENT_ID;
+  const pid = (sel && patients.some(p => p.patient_id === sel)) ? sel : patients[0].patient_id;
   const patOptions = patients.map(p =>
-    `<option value="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
+    `<option value="${p.patient_id}" ${p.patient_id === pid ? 'selected' : ''}>${escapeHtml(p.mrn)} — ${escapeHtml(ar ? p.full_name_ar : (p.full_name_en || p.full_name_ar))}</option>`).join('');
   main.innerHTML = `
-    <div class="page-header"><h1>${t('documents_title')}</h1></div>
+    <div class="page-header"><h1>&#128193; ${ar ? 'ملف المريض' : 'Patient File'}</h1></div>
     <div class="card">
-      <div class="form-group"><label>${t('patient_col')}</label>
+      <div class="form-group"><label>${ar ? 'المريض' : 'Patient'}</label>
         <select id="doc-att-patient" onchange="navigateDocuments(this.value)">${patOptions}</select></div>
     </div>
     <div id="doc-att-body">${renderDocumentsBody(pid, lang)}</div>`;
@@ -1771,31 +1794,87 @@ function navigateDocuments(pid) {
   if (body) body.innerHTML = renderDocumentsBody(parseInt(pid, 10), currentLanguage());
 }
 
+// Multi-file upload: each image/PDF saved to the patient file with its kind.
 function uploadAttachment(pid) {
-  const lang = currentLanguage();
+  const lang = currentLanguage(); const ar = lang === 'ar';
   if (!requireRole(ATTACH_ROLES, 'uploading a document')) return;
   const input = document.getElementById('att-file');
   const note = (document.getElementById('att-note').value || '').trim();
-  const f = input && input.files && input.files[0];
-  if (!f) { showError(lang === 'ar' ? 'اختر ملفًا' : 'Choose a file first'); return; }
-  if (f.size > ATTACH_MAX_BYTES) { showError(lang === 'ar' ? 'الحد الأقصى 600 كيلوبايت على الشبكة المحلية' : 'Max 600 KB over the LAN (compress or photograph at lower resolution)'); return; }
-  if (!/^(image\/(png|jpe?g|gif|webp)|application\/pdf)$/i.test(f.type)) { showError(lang === 'ar' ? 'صور أو PDF فقط' : 'Images or PDF only'); return; }
-  const reader = new FileReader();
-  reader.onerror = () => showError(lang === 'ar' ? 'تعذّرت قراءة الملف' : 'Could not read the file');
-  reader.onload = async () => {
-    const dataURL = String(reader.result || '');
-    const kind = /^image\//i.test(f.type) ? 'image' : (/pdf/i.test(f.type) ? 'pdf' : 'other');
-    const user = getCurrentUser();
-    const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
-    dbRun('INSERT INTO patient_attachments (patient_id, filename, mime, kind, size_bytes, data, note, uploaded_by, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?)',
-      [pid, f.name, f.type, kind, f.size, dataURL, note || null, user ? user.user_id : null, nowISO()]);
-    await logAction('ATTACHMENT_ADDED', `Uploaded document "${f.name}" (${kind}, ${Math.round(f.size / 1024)}KB)`,
-      `أُرفق مستند "${f.name}"`, pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
-    showSuccess(t('att_uploaded'));
+  const kind = (document.getElementById('att-kind') || {}).value || 'photo';
+  const files = input && input.files ? [...input.files] : [];
+  if (!files.length) { showError(ar ? 'اختر ملفًا أو أكثر' : 'Choose one or more files'); return; }
+  const user = getCurrentUser();
+  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
+  let processed = 0, ok = 0, skipped = 0;
+  const finalize = () => {
+    if (++processed < files.length) return;
     saveDBToIndexedDB();
+    if (ok) showSuccess((ar ? 'تم رفع ' : 'Uploaded ') + ok + (ar ? ' ملف' : ' file(s)') + (skipped ? (ar ? ` (تم تخطّي ${skipped})` : ` (${skipped} skipped)`) : ''));
+    else showError(ar ? 'لم يُرفع أي ملف (الحجم أو النوع غير مسموح)' : 'Nothing uploaded (size/type not allowed)');
     navigateDocuments(pid);
   };
-  reader.readAsDataURL(f);
+  files.forEach(f => {
+    if (f.size > ATTACH_MAX_BYTES || !/^(image\/(png|jpe?g|gif|webp)|application\/pdf)$/i.test(f.type)) {
+      derr('attach.rejected', new Error(`${f.name} (${Math.round(f.size / 1024)}KB ${f.type})`)); skipped++; finalize(); return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        dbRun('INSERT INTO patient_attachments (patient_id, filename, mime, kind, size_bytes, data, note, uploaded_by, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?)',
+          [pid, f.name, f.type, kind, f.size, String(reader.result || ''), note || null, user ? user.user_id : null, nowISO()]);
+        await logAction('ATTACHMENT_ADDED', `Uploaded ${kind} "${f.name}" (${Math.round(f.size / 1024)}KB)`, `أُرفق ملف "${f.name}"`, pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
+        dlog('attach.uploaded', { pid, kind, name: f.name, kb: Math.round(f.size / 1024) }); ok++;
+      } catch (e) { derr('attach.save', e); }
+      finalize();
+    };
+    reader.onerror = () => { derr('attach.read', new Error(f.name)); finalize(); };
+    reader.readAsDataURL(f);
+  });
+}
+
+function savePatientNotes(pid) {
+  const lang = currentLanguage();
+  try {
+    const notes = (document.getElementById('pf-notes').value || '').trim();
+    dbRun('UPDATE patients SET notes = ? WHERE patient_id = ?', [notes || null, pid]);
+    dlog('patient.notesSaved', { pid, len: notes.length });
+    saveDBToIndexedDB();
+    showSuccess(lang === 'ar' ? 'تم حفظ الملاحظات' : 'Notes saved');
+  } catch (e) { derr('patient.notes', e); showError(e.message); }
+}
+
+// Send a saved image to the lab via WhatsApp. Browser-only: wa.me can't attach
+// a file, so we download the image (for the user to attach) and open the lab
+// chat pre-filled with the patient context. The LAN server can later swap this
+// for a true Cloud-API auto-send (see sendImageToLab in server mode).
+function sendImageToLab(attachId, pid) {
+  const lang = currentLanguage(); const ar = lang === 'ar';
+  const a = dbGet('SELECT * FROM patient_attachments WHERE attach_id = ?', [attachId]);
+  const p = dbGet('SELECT * FROM patients WHERE patient_id = ?', [pid]);
+  if (!a || !p) { showError(ar ? 'الصورة غير موجودة' : 'Image not found'); return; }
+  const lab = getSetting('lab_whatsapp', '');
+  if (!lab) { showError(ar ? 'أضف رقم واتساب المعمل من الإعدادات أولاً' : 'Set the lab WhatsApp number in Settings first'); navigateTo('it-settings'); return; }
+  const owner = getSetting('owner_whatsapp', '');
+  const age = p.date_of_birth ? Math.floor((Date.now() - new Date(p.date_of_birth)) / 31557600000) : '';
+  const lines = [
+    (ar ? '🦷 ' : '🦷 ') + getSetting('clinic_name', 'OpenSmile Dental'),
+    (ar ? 'المريض: ' : 'Patient: ') + (ar ? p.full_name_ar : (p.full_name_en || p.full_name_ar)),
+    (ar ? 'الرقم الطبي: ' : 'MRN: ') + p.mrn,
+    age ? (ar ? 'العمر: ' : 'Age: ') + age : '',
+    p.branch ? (ar ? 'الفرع: ' : 'Branch: ') + branchLabel(p.branch, lang) : '',
+    (ar ? 'نوع الصورة: ' : 'Image type: ') + attKindLabel(a.kind, lang),
+    a.note ? (ar ? 'ملاحظة: ' : 'Note: ') + a.note : '',
+    p.notes ? (ar ? 'ملاحظات طبية: ' : 'Clinical notes: ') + p.notes : '',
+    '',
+    ar ? '⬇️ الصورة قيد التنزيل — يُرجى إرفاقها في هذه المحادثة.' : '⬇️ The image is downloading — please attach it to this chat.',
+    owner ? (ar ? `يرجى تأكيد الاستلام للدكتور على ${egDisplay(owner)} (اتصال أو رسالة).` : `Please confirm receipt to the doctor at ${egDisplay(owner)} (call or message).`) : '',
+  ].filter(Boolean);
+  try { const link = document.createElement('a'); link.href = a.data; link.download = a.filename || 'image'; document.body.appendChild(link); link.click(); link.remove(); }
+  catch (e) { derr('lab.download', e); }
+  logAction('LAB_IMAGE_SHARED', `Shared ${a.kind} of ${p.full_name_en || p.full_name_ar} to lab WhatsApp ${egDisplay(lab)}`, `مشاركة صورة مع المعمل`, pid, p.full_name_en, p.mrn);
+  dlog('whatsapp.sendToLab', { lab: egDisplay(lab), pid, attachId, kind: a.kind });
+  try { window.open(`https://wa.me/${lab}?text=${encodeURIComponent(lines.join('\n'))}`, '_blank'); } catch (e) { derr('lab.waOpen', e); }
+  showSuccess(ar ? 'تم تنزيل الصورة وفتح واتساب — أرفق الصورة وأرسلها' : 'Image downloaded + WhatsApp opened — attach the image and send');
 }
 
 async function deleteAttachment(id, pid) {

@@ -248,8 +248,8 @@ const LANG = {
   inc_closed_ok:     { ar: 'أُغلقت الحادثة', en: 'Incident closed' },
 
   // ---- Chart documents / attachments ----
-  documents_nav:    { ar: 'المستندات', en: 'Documents' },
-  documents_title:  { ar: 'مستندات المريض', en: 'Patient Documents' },
+  documents_nav:    { ar: 'ملف المريض', en: 'Patient File' },
+  documents_title:  { ar: 'ملف المريض', en: 'Patient File' },
   att_upload:       { ar: 'رفع مستند', en: 'Upload a document' },
   att_hint:         { ar: 'صور أو PDF حتى 600 ك.ب — تُحفظ على خادم الشبكة المحلية، لا سحابة.', en: 'Images or PDF up to 600 KB — stored on the LAN server, no cloud.' },
   att_file:         { ar: 'الملف', en: 'File' },
