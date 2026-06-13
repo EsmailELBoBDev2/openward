@@ -129,6 +129,19 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   assert(f({ weight: 26 }).value === 66 && /1620 mL\/day/.test(f({ weight: 26 }).interpretation), 'Holliday-Segar 26kg = 66 mL/hr, 1620 mL/day');
 }
 
+// ---- WHO weight-for-age z-score (WHO Child Growth Standards LMS) ----
+{
+  const w = by('peds_wfa').calc;
+  const boyMed = w({ sex: 'male', age: 12, weight: 9.6479 });   // exactly the WHO median
+  assert(Math.abs(parseFloat(boyMed.value)) < 0.02 && /Normal/.test(boyMed.interpretation), 'WHO WFA: boy 12mo at WHO median (9.65kg) -> z~0, Normal');
+  assert(boyMed.unit === 'SD (z)' && /50th|49th|51th/.test(boyMed.interpretation), 'WHO WFA: z-score is primary, ~50th centile at the median');
+  const girlMed = w({ sex: 'female', age: 0, weight: 3.2322 });
+  assert(Math.abs(parseFloat(girlMed.value)) < 0.02, 'WHO WFA: girl at birth at WHO median (3.23kg) -> z~0');
+  const lbw = w({ sex: 'male', age: 0, weight: 2.5 });
+  assert(parseFloat(lbw.value) > -2.05 && parseFloat(lbw.value) < -1.75, `WHO WFA: 2.5kg newborn boy ~ -1.9 SD, got ${lbw.value}`);
+  assert(parseFloat(w({ sex: 'male', age: 12, weight: 8 }).value) < parseFloat(w({ sex: 'male', age: 12, weight: 11 }).value), 'WHO WFA: heavier -> higher z (monotonic)');
+}
+
 // ---- Obstetric EDD & GA (Naegele: EDD = LMP + 280 days) ----
 {
   const o = by('ob_edd').calc;

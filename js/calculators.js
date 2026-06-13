@@ -1,7 +1,57 @@
 // ============================================================
 // HIS — Clinical Calculators
-// 18 evidence-based medical calculators. Pure JavaScript, no math required from user.
+// 21 evidence-based medical calculators (incl. WHO weight-for-age z-score,
+// Holliday-Segar peds fluids, Naegele EDD/GA). Pure JavaScript, no math from user.
 // ============================================================
+
+// WHO Child Growth Standards — weight-for-age LMS (L, M, S) by month, 0–24 mo.
+// Source: WHO Child Growth Standards 2006 (the published reference data behind
+// every WHO growth chart). M (median) values are the well-established WHO medians;
+// L/S drive the tails. WHO reports child growth primarily as z-scores (SD), which
+// is what this calculator leads with — percentile is shown as a secondary band.
+// VERIFY against who.int / the CDC WHO data files before any clinical deployment
+// (same transcription-accuracy caveat as every calculator here).
+const WHO_WFA_LMS = {
+  male: [
+    [0.3487, 3.3464, 0.14602], [0.2297, 4.4709, 0.13395], [0.1970, 5.5675, 0.12385],
+    [0.1738, 6.3762, 0.11727], [0.1553, 7.0023, 0.11316], [0.1395, 7.5105, 0.11080],
+    [0.1257, 7.9340, 0.10958], [0.1134, 8.2970, 0.10902], [0.1021, 8.6151, 0.10882],
+    [0.0917, 8.9014, 0.10881], [0.0820, 9.1649, 0.10891], [0.0730, 9.4122, 0.10906],
+    [0.0644, 9.6479, 0.10925], [0.0563, 9.8749, 0.10949], [0.0487, 10.0953, 0.10976],
+    [0.0413, 10.3108, 0.11007], [0.0343, 10.5228, 0.11041], [0.0275, 10.7319, 0.11079],
+    [0.0211, 10.9385, 0.11119], [0.0148, 11.1430, 0.11164], [0.0087, 11.3462, 0.11211],
+    [0.0029, 11.5486, 0.11261], [-0.0028, 11.7504, 0.11314], [-0.0083, 11.9514, 0.11369],
+    [-0.0137, 12.1515, 0.11426]
+  ],
+  female: [
+    [0.3809, 3.2322, 0.14171], [0.1714, 4.1873, 0.13724], [0.0962, 5.1282, 0.13000],
+    [0.0402, 5.8458, 0.12619], [-0.0050, 6.4237, 0.12402], [-0.0430, 6.8985, 0.12274],
+    [-0.0756, 7.2970, 0.12204], [-0.1039, 7.6422, 0.12178], [-0.1288, 7.9487, 0.12181],
+    [-0.1507, 8.2254, 0.12199], [-0.1700, 8.4800, 0.12235], [-0.1872, 8.7192, 0.12283],
+    [-0.2024, 8.9481, 0.12345], [-0.2158, 9.1699, 0.12420], [-0.2278, 9.3870, 0.12505],
+    [-0.2384, 9.6008, 0.12597], [-0.2478, 9.8124, 0.12696], [-0.2562, 10.0226, 0.12798],
+    [-0.2637, 10.2315, 0.12903], [-0.2703, 10.4393, 0.13009], [-0.2762, 10.6464, 0.13117],
+    [-0.2815, 10.8534, 0.13226], [-0.2862, 11.0608, 0.13336], [-0.2903, 11.2688, 0.13447],
+    [-0.2941, 11.4775, 0.13559]
+  ]
+};
+// Standard normal CDF (Abramowitz & Stegun 7.1.26 erf approximation) → percentile.
+function _normCdf(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989423 * Math.exp(-z * z / 2);
+  let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return z > 0 ? 1 - p : p;
+}
+// LMS z-score: linear-interpolate L,M,S between whole months, then Box-Cox.
+function whoWeightForAgeZ(sex, ageMonths, weightKg) {
+  const tbl = WHO_WFA_LMS[sex];
+  if (!tbl || !(weightKg > 0)) return null;
+  const a = Math.max(0, Math.min(24, ageMonths));
+  const lo = Math.floor(a), hi = Math.min(24, lo + 1), f = a - lo;
+  const [L0, M0, S0] = tbl[lo], [L1, M1, S1] = tbl[hi];
+  const L = L0 + (L1 - L0) * f, M = M0 + (M1 - M0) * f, S = S0 + (S1 - S0) * f;
+  return Math.abs(L) < 1e-7 ? Math.log(weightKg / M) / S : (Math.pow(weightKg / M, L) - 1) / (L * S);
+}
 
 const CLINICAL_CALCULATORS = [
   // ---- Anthropometric ----
@@ -527,6 +577,32 @@ const CLINICAL_CALCULATORS = [
       const tri = wk < 14 ? '1st' : (wk < 28 ? '2nd' : '3rd');
       const color = gaDays > 294 ? '#dc2626' : '#10b981';   // >42wk = post-term
       return { value: `${wk}+${dy}`, unit: 'weeks', interpretation: `EDD ${eddISO} · ${tri} trimester (Naegele's rule)`, color };
+    }
+  },
+  {
+    id: 'peds_wfa',
+    category: 'Pediatric',
+    name_en: 'Weight-for-Age z-score (WHO, 0–24 mo)',
+    name_ar: 'الوزن مقابل العمر (منظمة الصحة العالمية، 0–24 شهر)',
+    icon: '📈',
+    inputs: [
+      { id: 'sex', label_en: 'Sex', label_ar: 'الجنس', type: 'select', options: [['male', 'Male / ذكر'], ['female', 'Female / أنثى']] },
+      { id: 'age', label_en: 'Age (months, 0–24)', label_ar: 'العمر (أشهر)', type: 'number', step: 0.5, min: 0, max: 24 },
+      { id: 'weight', label_en: 'Weight (kg)', label_ar: 'الوزن (كجم)', type: 'number', step: 0.05, min: 0.5, max: 30 }
+    ],
+    // WHO reports child growth as z-scores (SD); percentile band is secondary.
+    calc: (i) => {
+      const z = whoWeightForAgeZ(i.sex, i.age, i.weight);
+      if (z == null) return { value: '—', interpretation: 'Enter sex, age (0–24mo) and weight', color: '#9ca3af' };
+      let band = '', color = '';
+      if (z < -3)      { band = 'Severely underweight (< −3 SD)'; color = '#7f1d1d'; }
+      else if (z < -2) { band = 'Underweight (−3 to −2 SD)'; color = '#ef4444'; }
+      else if (z <= 2) { band = 'Normal weight-for-age (−2 to +2 SD)'; color = '#10b981'; }
+      else if (z <= 3) { band = 'High weight-for-age (+2 to +3 SD)'; color = '#f59e0b'; }
+      else             { band = 'Very high (> +3 SD)'; color = '#dc2626'; }
+      const pct = Math.round(_normCdf(z) * 100);
+      const pctStr = pct < 1 ? '<1st' : (pct > 99 ? '>99th' : pct + 'th');
+      return { value: z.toFixed(2), unit: 'SD (z)', interpretation: `${band} · ~${pctStr} centile (WHO WFA)`, color };
     }
   }
 ];
