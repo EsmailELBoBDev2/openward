@@ -63,6 +63,13 @@ function noThrow(label, fn) { try { fn(); pass++; console.log('  ok  - ' + label
   d.run("UPDATE treatment_plan_items SET status='completed', completed_at='2026-06-13' WHERE procedure_code='D2391'");
   assert(one("SELECT status FROM treatment_plan_items WHERE procedure_code='D2391'") === 'completed', 'a procedure can be marked completed');
 
+  // ---- #4b settings store + branch/notes columns (B1/B2/B4) ----
+  assert(exists('settings'), 'settings key/value table exists');
+  d.run("INSERT INTO settings (key, value) VALUES ('lab_whatsapp','201012345678')");
+  assert(one("SELECT value FROM settings WHERE key='lab_whatsapp'") === '201012345678', 'settings round-trips a value');
+  assert(cols('patients').includes('branch') && cols('patients').includes('notes'), 'patients has branch + notes columns');
+  assert(cols('invoices').includes('proof_attach_id'), 'invoices has proof_attach_id (payment proof link)');
+
   // ---- #5 the allergy guard (the showcase safety moment) ----
   const pen = [{ allergen: 'Penicillin', severity: 'severe' }];
   const amoxHit = checkDrugAllergy('Amoxicillin 500mg', pen);
