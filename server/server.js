@@ -101,9 +101,10 @@ function recordIpFail(ip) {
 // first time a session reads each PHI table (auditing every bridge query would
 // write dozens of rows per page render). Keys are `${session_id}:${table}`;
 // bounded by live-sessions × PHI-table-count, reset on server restart.
-const BRIDGE_PHI_TABLES = ['patients', 'admissions', 'vitals', 'prescriptions', 'lab_orders',
-  'med_admin_records', 'patient_allergies', 'patient_conditions', 'appointments',
-  'consultations', 'sw_contacts', 'fluid_balance', 'nursing_assessments'];
+const BRIDGE_PHI_TABLES = ['patients', 'prescriptions', 'patient_allergies', 'patient_conditions',
+  'patient_flags', 'appointments', 'outpatient_visits', 'invoices', 'invoice_items',
+  'odontogram', 'perio_chart', 'treatment_plans', 'treatment_plan_items', 'recalls',
+  'patient_attachments', 'portal_messages'];
 const bridgePhiAudited = new Set();
 
 // ---- tiny DB helpers over sql.js -------------------------------------------
@@ -216,53 +217,36 @@ function auditNow(actor, actionType, detail, req, patient) { audit(actor, action
 // Clinicians who may read clinical charts/meds. NOT it_admin/hospital_manager —
 // they are oversight (demographics/beds/audit), not a care team, so they don't get
 // chart/med access by default.
-const CLINICAL = ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
+const CLINICAL = ['dentist', 'specialist', 'hygienist'];
 const CAN = {
-  register_patient: ['emergency_doctor', 'triage_nurse', 'receptionist', 'it_admin'],
+  register_patient: ['receptionist', 'it_admin'],
   // demographics (list + basic detail) — oversight + clinicians + receptionist
-  view_patients:    ['it_admin', 'hospital_manager', ...CLINICAL, 'receptionist'],
-  view_chart:       CLINICAL,                            // vitals/clinical chart (NOT receptionist)
+  view_patients:    ['it_admin', 'clinic_manager', ...CLINICAL, 'receptionist'],
+  view_chart:       CLINICAL,                            // odontogram / clinical chart (NOT receptionist)
   view_meds:        CLINICAL,                            // prescriptions
-  record_vitals:    ['nurse', 'senior_nurse', 'triage_nurse', 'doctor', 'emergency_doctor'],
-  view_beds:        ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'senior_nurse', 'nurse', 'emergency_doctor', 'triage_nurse'],
-  prescribe:        ['doctor', 'consultant', 'emergency_doctor'],
-  order_labs:       ['doctor', 'consultant', 'emergency_doctor'],
-  administer_meds:  ['nurse', 'senior_nurse', 'triage_nurse', 'doctor', 'emergency_doctor'],  // record a dose given/held (MAR) at the bedside
-  dispense_meds:    ['pharmacist'],                      // pharmacy: dispense against an Rx and decrement central stock
-  enter_lab_result: ['lab_technician'],                 // lab: post a result to an order
-  discharge_patient:['doctor', 'consultant', 'emergency_doctor'],  // stop active meds + free the bed
-  view_audit:       ['it_admin', 'hospital_manager'],   // full audit log is oversight-only (a consultant would see every dept's PHI access)
-  manage_users:     ['it_admin'],                       // staff/department administration
+  chart_tooth:      CLINICAL,                            // odontogram + perio charting
+  prescribe:        ['dentist', 'specialist'],
+  manage_plan:      ['dentist', 'specialist'],           // treatment-plan items
+  billing:          ['receptionist', 'it_admin', 'clinic_manager'],
+  view_audit:       ['it_admin', 'clinic_manager'],      // full audit log is oversight-only
+  manage_users:     ['it_admin'],                        // staff/specialty administration
 };
 // Roles a staff account may have (mirrors the client ROLES map; 'patient' is not a staff role).
-const VALID_ROLES = new Set(['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'pharmacist', 'lab_technician', 'radiologist', 'receptionist', 'dietitian', 'social_worker']);
+const VALID_ROLES = new Set(['it_admin', 'clinic_manager', 'dentist', 'specialist', 'hygienist', 'receptionist']);
 function can(role, action) { return (CAN[action] || []).includes(role); }
 // usernames are case-insensitive: normalize on store AND lookup (schema UNIQUE is
 // case-sensitive, so 'admin' and 'Admin' would otherwise both be insertable).
 function normUser(s) { return String(s || '').trim().toLowerCase(); }
-// Oversight roles see every patient; everyone else is scoped to their department's
-// active admissions (minimum-necessary access).
-const ALL_PATIENTS_ROLES = ['it_admin', 'hospital_manager'];
-// patient row behind an admission (for attaching patient context to write audits)
-function patientOfAdmission(aid) {
-  return get('SELECT p.* FROM patients p JOIN admissions a ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [aid]) || null;
-}
-// Central admission-access gate: oversight sees all; everyone else only their
-// department's admissions. Used by every endpoint that reads/writes an admission,
-// so scoping can't be bypassed via beds/vitals/orders.
-function canAccessAdmission(actor, role, admissionId) {
-  if (ALL_PATIENTS_ROLES.includes(role)) return true;
-  const a = get('SELECT dept_id FROM admissions WHERE admission_id = ?', [admissionId]);
-  return !!(a && actor && a.dept_id === actor.department_id);
-}
-// Patient-level access gate (same minimum-necessary rule as /api/patients/:id):
-// oversight sees everyone; everyone else only patients with an ACTIVE admission in
-// their department. Used by the FHIR facade so it can never leak a chart the
-// dedicated endpoints would have refused.
+// A single-site dental clinic has no inpatient admissions or department scoping:
+// any staff member who can view_patients sees the whole (small) patient list.
+const ALL_PATIENTS_ROLES = ['it_admin', 'clinic_manager', 'dentist', 'specialist', 'hygienist', 'receptionist'];
+// (admissions removed) — kept as a no-op so any lingering caller fails closed.
+function patientOfAdmission(aid) { return null; }
+function canAccessAdmission(actor, role, admissionId) { return false; }
+// Patient-level access gate: every valid staff role may reach any patient record
+// (the clinic is one site; minimum-necessary scoping by admission no longer applies).
 function canAccessPatient(actor, role, patientId) {
-  if (ALL_PATIENTS_ROLES.includes(role)) return true;
-  if (!actor) return false;
-  return !!get("SELECT 1 AS ok FROM admissions WHERE patient_id = ? AND status = 'active' AND dept_id = ? LIMIT 1", [patientId, actor.department_id]);
+  return !!actor && ALL_PATIENTS_ROLES.includes(role);
 }
 
 // ---- FHIR R4 read facade ----------------------------------------------------
@@ -1132,10 +1116,10 @@ async function handleApi(req, res, pathname) {
 // reference data."
 function seedReference() {
   if (!get('SELECT dept_id FROM departments LIMIT 1')) {
-    run("INSERT INTO departments (name_ar, name_en, type) VALUES ('الطوارئ','Emergency','emergency'), ('الباطنة','Internal Medicine','ward'), ('العناية المركزة','ICU','icu')");
+    run("INSERT INTO departments (name_ar, name_en, type) VALUES ('طب الأسنان العام','General Dentistry','specialty'), ('تقويم الأسنان','Orthodontics','specialty'), ('جراحة الفم والوجه والفكين','Oral & Maxillofacial Surgery','specialty'), ('الاستقبال والإدارة','Reception & Administration','admin')");
   }
   if (!get('SELECT drug_id FROM drugs LIMIT 1')) {
-    run("INSERT INTO drugs (name_generic, unit, is_high_alert) VALUES ('Paracetamol','mg',0), ('Ceftriaxone','mg',0), ('Regular Insulin','units',1)");
+    run("INSERT INTO drugs (name_generic, unit, is_high_alert) VALUES ('Amoxicillin 500mg','capsule',0), ('Clindamycin 300mg','capsule',0), ('Ibuprofen 400mg','tablet',0), ('Lidocaine 2% + Epinephrine','cartridge',0)");
   }
 }
 
@@ -1148,10 +1132,11 @@ async function seedDemoAccounts() {
       [username, await u.hashPassword(pw, salt), salt, ar, en, role, dept, new Date().toISOString()]);
   };
   await mk('admin', 'HIS@2024', 'مدير النظام', 'IT Admin', 'it_admin', null);
-  await mk('er.doc', 'doctor123', 'طبيب طوارئ', 'ER Doctor', 'emergency_doctor', 1);
-  await mk('nurse', 'nurse123', 'ممرضة', 'Ward Nurse', 'nurse', 2);
-  await mk('consultant', 'doctor123', 'استشاري', 'Consultant', 'consultant', 2);
-  await mk('reception', 'front123', 'استقبال', 'Reception', 'receptionist', 1);
+  await mk('manager', 'manager123', 'مدير العيادة', 'Clinic Manager', 'clinic_manager', 4);
+  await mk('dr.omar', 'doctor123', 'طبيب أسنان', 'Dr. Omar', 'dentist', 1);
+  await mk('dr.sara', 'doctor123', 'أخصائية تقويم', 'Dr. Sara', 'specialist', 2);
+  await mk('hyg.mona', 'nurse123', 'أخصائية صحة أسنان', 'Mona', 'hygienist', 1);
+  await mk('reception', 'recept123', 'استقبال', 'Reception', 'receptionist', 4);
   audit(null, 'SERVER_SEED', 'Seeded DEMO accounts', null);
 }
 
@@ -1184,15 +1169,15 @@ async function init() {
 
 // Tables → the columns we expect to carry FK constraints; report any not constrained.
 const EXPECT_FK = {
-  admissions: ['patient_id', 'dept_id'],
   users: ['department_id'],
-  vitals_log: ['admission_id'],
-  prescriptions: ['admission_id', 'drug_id'],
-  lab_orders: ['admission_id'],
-  med_admin_records: ['prescription_id', 'admission_id'],
-  dispensing_log: ['prescription_id', 'drug_id', 'patient_id'],
+  prescriptions: ['drug_id'],
   patient_conditions: ['patient_id'],
   patient_allergies: ['patient_id'],
+  odontogram: ['patient_id'],
+  perio_chart: ['patient_id'],
+  treatment_plans: ['patient_id'],
+  treatment_plan_items: ['plan_id', 'patient_id'],
+  recalls: ['patient_id'],
 };
 function missingFks() {
   const out = [];
