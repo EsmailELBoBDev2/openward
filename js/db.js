@@ -169,6 +169,14 @@ function applySchemaMigrations() {
     try { db.run('ALTER TABLE prescriptions ADD COLUMN verified_at TEXT'); } catch(e) {}
     // Dental: prescriptions are patient-linked (no inpatient admission).
     try { db.run('ALTER TABLE prescriptions ADD COLUMN patient_id INTEGER'); } catch(e) {}
+    // Dental: tie scheduling/billing rows to a patient record + an operatory (chair).
+    try { db.run('ALTER TABLE appointments ADD COLUMN patient_id INTEGER'); } catch(e) {}
+    try { db.run('ALTER TABLE appointments ADD COLUMN operatory_id INTEGER'); } catch(e) {}
+    try { db.run('ALTER TABLE appointments ADD COLUMN procedure_code TEXT'); } catch(e) {}
+    try { db.run('ALTER TABLE outpatient_visits ADD COLUMN patient_id INTEGER'); } catch(e) {}
+    try { db.run('ALTER TABLE outpatient_visits ADD COLUMN operatory_id INTEGER'); } catch(e) {}
+    try { db.run('ALTER TABLE invoices ADD COLUMN patient_id INTEGER'); } catch(e) {}
+    try { db.run('ALTER TABLE invoices ADD COLUMN paid_amount REAL DEFAULT 0'); } catch(e) {}
     // OpenSmile dental tables (odontogram, perio, procedures, plans, chairs, recalls).
     createDentalTables();
     // MAR + critical ack migrations
@@ -947,86 +955,57 @@ async function seedData(opts) {
     );
   }
 
-  // ---- Common Drugs ----
+  // ---- Dental formulary ----
+  // What a dental clinic actually prescribes/keeps chairside, plus a few common
+  // patient HOME meds (anticoagulants/bisphosphonate) kept so the bleeding /
+  // MRONJ contraindication checks have something to match against.
+  // [name_generic, name_brand, name_ar, category, unit, stock_qty, min_threshold]
   const drugs = [
-    // Analgesics
-    ['Paracetamol 500mg', 'Panadol', 'باراسيتامول 500 ملغ', 'analgesic', 'tablet', 500, 50],
-    ['Paracetamol IV 1g/100mL', null, 'باراسيتامول وريدي 1غ', 'analgesic', 'bag', 100, 20],
-    ['Ibuprofen 400mg', 'Brufen', 'ابيوبروفين 400 ملغ', 'analgesic', 'tablet', 300, 30],
-    ['Tramadol 50mg', null, 'ترامادول 50 ملغ', 'analgesic', 'capsule', 100, 20],
-    ['Morphine 10mg/mL', null, 'مورفين 10 ملغ/مل', 'analgesic', 'ampoule', 50, 10],
     // Antibiotics
     ['Amoxicillin 500mg', null, 'أموكسيسيلين 500 ملغ', 'antibiotic', 'capsule', 500, 50],
     ['Amoxicillin/Clavulanate 1g', 'Augmentin', 'أوغمنتين 1 غ', 'antibiotic', 'tablet', 200, 30],
-    ['Azithromycin 500mg', 'Zithromax', 'أزيثروميسين 500 ملغ', 'antibiotic', 'tablet', 150, 20],
-    ['Ciprofloxacin 500mg', 'Ciprobay', 'سيبروفلوكساسين 500 ملغ', 'antibiotic', 'tablet', 200, 30],
-    ['Ceftriaxone 1g', null, 'سيفترياكسون 1 غ', 'antibiotic', 'vial', 200, 30],
-    ['Meropenem 1g', null, 'ميروبينم 1 غ', 'antibiotic', 'vial', 100, 20],
-    ['Vancomycin 1g', null, 'فانكوميسين 1 غ', 'antibiotic', 'vial', 50, 10],
     ['Metronidazole 500mg', 'Flagyl', 'ميترونيدازول 500 ملغ', 'antibiotic', 'tablet', 300, 30],
-    ['Metronidazole IV 500mg', 'Flagyl IV', 'ميترونيدازول وريدي 500 ملغ', 'antibiotic', 'bag', 100, 20],
-    // Antihypertensives
-    ['Amlodipine 5mg', 'Norvasc', 'أملوديبين 5 ملغ', 'antihypertensive', 'tablet', 300, 30],
-    ['Amlodipine 10mg', 'Norvasc', 'أملوديبين 10 ملغ', 'antihypertensive', 'tablet', 200, 30],
-    ['Losartan 50mg', 'Cozaar', 'لوسارتان 50 ملغ', 'antihypertensive', 'tablet', 300, 30],
-    ['Enalapril 10mg', null, 'إنالابريل 10 ملغ', 'antihypertensive', 'tablet', 200, 30],
-    ['Atenolol 50mg', 'Tenormin', 'أتينولول 50 ملغ', 'antihypertensive', 'tablet', 200, 30],
-    ['Bisoprolol 5mg', 'Concor', 'بيسوبرولول 5 ملغ', 'antihypertensive', 'tablet', 200, 30],
-    ['Furosemide 40mg', 'Lasix', 'فيوروسيمايد 40 ملغ', 'antihypertensive', 'tablet', 300, 30],
-    ['Furosemide 20mg/2mL', 'Lasix', 'فيوروسيمايد 20 ملغ/2 مل', 'antihypertensive', 'ampoule', 200, 30],
-    // Antidiabetics
-    ['Metformin 500mg', 'Glucophage', 'ميتفورمين 500 ملغ', 'antidiabetic', 'tablet', 500, 50],
-    ['Metformin 850mg', 'Glucophage', 'ميتفورمين 850 ملغ', 'antidiabetic', 'tablet', 300, 30],
-    ['Glimepiride 2mg', 'Amaryl', 'غليمبيريد 2 ملغ', 'antidiabetic', 'tablet', 200, 30],
-    ['Insulin Glargine 100IU/mL', 'Lantus', 'إنسولين غلارجين', 'antidiabetic', 'vial', 50, 10],
-    ['Insulin Regular 100IU/mL', 'Actrapid', 'إنسولين عادي', 'antidiabetic', 'vial', 50, 10],
-    // Cardiac
-    ['Aspirin 81mg', null, 'أسبرين 81 ملغ', 'cardiac', 'tablet', 500, 50],
-    ['Clopidogrel 75mg', 'Plavix', 'كلوبيدوغريل 75 ملغ', 'cardiac', 'tablet', 200, 30],
-    ['Atorvastatin 20mg', 'Lipitor', 'أتورفاستاتين 20 ملغ', 'cardiac', 'tablet', 300, 30],
-    ['Nitroglycerin 0.5mg', null, 'نيتروغليسرين 0.5 ملغ', 'cardiac', 'tablet', 100, 20],
-    ['Warfarin 5mg', 'Coumadin', 'وارفارين 5 ملغ', 'cardiac', 'tablet', 100, 20],
-    ['Enoxaparin 40mg', 'Clexane', 'إنوكسابارين 40 ملغ', 'cardiac', 'ampoule', 200, 30],
-    ['Enoxaparin 60mg', 'Clexane', 'إنوكسابارين 60 ملغ', 'cardiac', 'ampoule', 150, 20],
-    // Respiratory
-    ['Salbutamol Inhaler', 'Ventolin', 'سالبيوتامول بخاخ', 'respiratory', 'inhaler', 100, 20],
-    ['Ipratropium Inhaler', 'Atrovent', 'إيبراتروبيوم بخاخ', 'respiratory', 'inhaler', 50, 10],
-    ['Salbutamol Nebulizer 5mg/mL', 'Ventolin', 'سالبيوتامول للتبخيرة', 'respiratory', 'vial', 200, 30],
-    // GI
-    ['Omeprazole 20mg', 'Losec', 'أوميبرازول 20 ملغ', 'gi', 'capsule', 300, 30],
-    ['Pantoprazole 40mg', 'Controloc', 'بانتوبرازول 40 ملغ', 'gi', 'tablet', 200, 30],
-    ['Pantoprazole IV 40mg', null, 'بانتوبرازول وريدي 40 ملغ', 'gi', 'vial', 100, 20],
-    ['Metoclopramide 10mg', 'Primperan', 'ميتوكلوبراميد 10 ملغ', 'gi', 'tablet', 200, 30],
-    ['Ondansetron 4mg', 'Zofran', 'أوندانسيترون 4 ملغ', 'gi', 'tablet', 150, 20],
-    ['Ondansetron IV 4mg/2mL', 'Zofran', 'أوندانسيترون وريدي 4 ملغ', 'gi', 'ampoule', 100, 20],
-    ['Lactulose 200mL', null, 'لاكتيولوز 200 مل', 'gi', 'bottle', 50, 10],
-    // Psych / Neuro
-    ['Diazepam 5mg', 'Valium', 'ديازيبام 5 ملغ', 'psych', 'tablet', 100, 20],
-    ['Haloperidol 5mg', 'Haldol', 'هالوبيريدول 5 ملغ', 'psych', 'tablet', 50, 10],
-    ['Phenytoin 100mg', 'Epanutin', 'فينيتوين 100 ملغ', 'psych', 'capsule', 200, 30],
-    ['Levetiracetam 500mg', 'Keppra', 'ليفيتيراسيتام 500 ملغ', 'psych', 'tablet', 100, 20],
-    // Other
-    ['Hydrocortisone 100mg', 'Solu-Cortef', 'هيدروكورتيزون 100 ملغ', 'other', 'vial', 100, 20],
-    ['Dexamethasone 8mg/2mL', null, 'ديكساميثازون 8 ملغ', 'other', 'ampoule', 100, 20],
-    ['Normal Saline 0.9% 1000mL', null, 'محلول ملحي 1000 مل', 'other', 'bag', 500, 50],
-    ['Dextrose 5% 1000mL', null, 'ديكستروز 5% 1000 مل', 'other', 'bag', 300, 30],
-    ['Potassium Chloride 20mEq', null, 'بوتاسيوم كلوريد 20 ميلي مكافئ', 'other', 'ampoule', 200, 30],
+    ['Clindamycin 300mg', 'Dalacin C', 'كليندامايسين 300 ملغ', 'antibiotic', 'capsule', 200, 30],
+    ['Azithromycin 500mg', 'Zithromax', 'أزيثروميسين 500 ملغ', 'antibiotic', 'tablet', 150, 20],
+    ['Penicillin V 500mg', null, 'بنسلين V 500 ملغ', 'antibiotic', 'tablet', 100, 20],
+    // Analgesics / anti-inflammatory
+    ['Ibuprofen 400mg', 'Brufen', 'ايبوبروفين 400 ملغ', 'analgesic', 'tablet', 400, 50],
+    ['Paracetamol 500mg', 'Panadol', 'باراسيتامول 500 ملغ', 'analgesic', 'tablet', 500, 50],
+    ['Diclofenac 50mg', 'Voltaren', 'ديكلوفيناك 50 ملغ', 'analgesic', 'tablet', 200, 30],
+    ['Naproxen 500mg', null, 'نابروكسين 500 ملغ', 'analgesic', 'tablet', 150, 20],
+    ['Tramadol 50mg', null, 'ترامادول 50 ملغ', 'analgesic', 'capsule', 60, 20],
+    ['Dexamethasone 0.5mg', null, 'ديكساميثازون 0.5 ملغ', 'corticosteroid', 'tablet', 100, 20],
+    // Topical / antiseptic mouth care
+    ['Chlorhexidine 0.12% Mouthwash', 'Peridex', 'غسول كلورهيكسيدين 0.12%', 'antiseptic', 'bottle', 100, 20],
+    ['Benzydamine Mouthwash', 'Difflam', 'غسول بنزيدامين', 'antiseptic', 'bottle', 80, 20],
+    ['Lidocaine 2% + Epinephrine', null, 'ليدوكايين 2% + أدرينالين', 'local_anesthetic', 'cartridge', 500, 100],
+    ['Articaine 4% + Epinephrine', 'Septanest', 'أرتيكايين 4% + أدرينالين', 'local_anesthetic', 'cartridge', 400, 100],
+    // Antifungal (oral candidiasis)
+    ['Nystatin Oral Suspension', null, 'نيستاتين معلق فموي', 'antifungal', 'bottle', 50, 10],
+    ['Fluconazole 150mg', 'Diflucan', 'فلوكونازول 150 ملغ', 'antifungal', 'capsule', 50, 10],
+    // Anxiolytic (dental anxiety / pre-op)
+    ['Diazepam 5mg', 'Valium', 'ديازيبام 5 ملغ', 'anxiolytic', 'tablet', 60, 20],
+    // Common patient HOME meds (not dispensed here — reference for safety checks)
+    ['Warfarin 5mg', 'Coumadin', 'وارفارين 5 ملغ', 'anticoagulant', 'tablet', 0, 0],
+    ['Aspirin 81mg', null, 'أسبرين 81 ملغ', 'antiplatelet', 'tablet', 0, 0],
+    ['Clopidogrel 75mg', 'Plavix', 'كلوبيدوغريل 75 ملغ', 'antiplatelet', 'tablet', 0, 0],
+    ['Alendronate 70mg', 'Fosamax', 'أليندرونات 70 ملغ', 'bisphosphonate', 'tablet', 0, 0],
   ];
   for (const d of drugs) {
     db.run(`INSERT OR IGNORE INTO drugs (name_generic, name_brand, name_ar, category, unit, stock_qty, min_threshold, added_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [...d, nowISO()]);
   }
 
-  // ---- Common Drug Interactions ----
-  // We'll add a few critical ones. In a real system this would be a larger table.
+  // ---- Drug interactions relevant to dentistry (mostly post-op analgesic vs.
+  // patient anticoagulant bleeding risk). AI-drafted demo content — needs a
+  // dentist/pharmacist sign-off before real use. ----
   const interactions = [
-    // Warfarin + Aspirin = red
-    ['Warfarin 5mg', 'Aspirin 81mg', 'red', 'Increased bleeding risk when combining anticoagulant with antiplatelet', 'خطر نزيف عالي عند الجمع بين مضاد التخثر ومضاد الصفيحات'],
-    // Metformin + Contrast Dye (represented as note)
-    ['Tramadol 50mg', 'Diazepam 5mg', 'red', 'CNS depression risk: opioid + benzodiazepine can cause respiratory depression', 'خطر تثبيط الجهاز العصبي: الجمع بين الأفيون والبنزوديازيبين قد يسبب توقف التنفس'],
-    ['Enalapril 10mg', 'Potassium Chloride 20mEq', 'yellow', 'ACE inhibitor + potassium supplement increases hyperkalemia risk', 'مثبط ACE + مكمل البوتاسيوم يزيد خطر ارتفاع البوتاسيوم'],
-    ['Warfarin 5mg', 'Metronidazole 500mg', 'yellow', 'Metronidazole increases warfarin effect — monitor INR closely', 'ميترونيدازول يزيد فعالية الوارفارين — يجب مراقبة INR'],
-    ['Ciprofloxacin 500mg', 'Metformin 500mg', 'blue', 'Ciprofloxacin may affect blood glucose when used with metformin', 'سيبروفلوكساسين قد يؤثر على السكر عند استخدامه مع ميتفورمين'],
+    ['Ibuprofen 400mg', 'Warfarin 5mg', 'red', 'NSAID + warfarin sharply raises bleeding risk — avoid; prefer paracetamol post-op', 'مضاد الالتهاب + وارفارين يرفع خطر النزيف بشدة — يُفضّل الباراسيتامول بعد العملية'],
+    ['Diclofenac 50mg', 'Warfarin 5mg', 'red', 'NSAID + warfarin sharply raises bleeding risk — avoid', 'مضاد الالتهاب + وارفارين يرفع خطر النزيف بشدة — تجنّب'],
+    ['Naproxen 500mg', 'Warfarin 5mg', 'red', 'NSAID + warfarin sharply raises bleeding risk — avoid', 'مضاد الالتهاب + وارفارين يرفع خطر النزيف بشدة — تجنّب'],
+    ['Metronidazole 500mg', 'Warfarin 5mg', 'yellow', 'Metronidazole potentiates warfarin — monitor INR closely', 'ميترونيدازول يقوّي مفعول الوارفارين — راقب INR عن قرب'],
+    ['Azithromycin 500mg', 'Warfarin 5mg', 'yellow', 'Macrolide may raise INR — monitor for bleeding', 'الماكروليد قد يرفع INR — راقب علامات النزيف'],
+    ['Ibuprofen 400mg', 'Aspirin 81mg', 'yellow', 'NSAID can blunt aspirin cardioprotection and add GI/bleeding risk', 'مضاد الالتهاب قد يقلّل حماية الأسبرين ويزيد خطر النزيف المعدي'],
   ];
   for (const ix of interactions) {
     const rowA = db.exec(`SELECT drug_id FROM drugs WHERE name_generic = ?`, [ix[0]]);
@@ -1047,12 +1026,14 @@ async function seedData(opts) {
   console.log(`[DB] Seed data loaded (${demo ? 'demo' : 'production: reference data only'})`);
 }
 
-// Phase-1 minimal demo seed: just the 7 dental-clinic staff logins so every role
-// boots and the role-picker works. The rich demo data (patients, odontograms,
-// treatment plans, appointments, invoices, recalls) is layered on in Phase 3.
+// OpenSmile demo seed — a full fictional dental clinic so every screen and the
+// guided tour have realistic data. All names/records are invented (no real PHI).
 async function seedDentalDemo() {
   if (dbGet("SELECT user_id FROM users WHERE username = 'dr.omar'")) return;
   const now = nowISO();
+  const day = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10); // n days from today
+  const at = (d, t) => `${d}T${t}:00.000Z`;
+
   async function mkUser(username, password, nameAr, nameEn, role, deptId, spec) {
     const salt = generateSalt();
     const hash = await hashPassword(password, salt);
@@ -1060,13 +1041,239 @@ async function seedDentalDemo() {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`, [username, hash, salt, nameAr, nameEn, role, deptId, spec || null, now]);
     return dbLastId();
   }
-  // admin / HIS@2024 (it_admin) already created in seedData()
-  await mkUser('manager',   'manager123', 'عبدالرحمن الفيصل', 'Abdulrahman Al-Faisal', 'clinic_manager', 10, null);
-  await mkUser('dr.omar',   'doctor123',  'د. عمر الراشد',    'Dr. Omar Al-Rashed',    'dentist',        1,  'General Dentistry');
-  await mkUser('dr.sara',   'doctor123',  'د. سارة الحمدان',  'Dr. Sara Al-Hamdan',    'specialist',     2,  'Orthodontics');
-  await mkUser('hyg.mona',  'nurse123',   'منى الحربي',       'Mona Al-Harbi',         'hygienist',      1,  'Dental Hygiene');
-  await mkUser('reception', 'recept123',  'سارة الجهني',      'Sara Al-Juhani',        'receptionist',   10, null);
-  console.log('[DB] Dental demo staff seeded (Phase 1 stub)');
+
+  // ── 1. Staff (admin / HIS@2024 already created in seedData) ──
+  const managerId = await mkUser('manager',   'manager123', 'عبدالرحمن الفيصل', 'Abdulrahman Al-Faisal', 'clinic_manager', 10, null);
+  const omarId    = await mkUser('dr.omar',   'doctor123',  'د. عمر الراشد',    'Dr. Omar Al-Rashed',    'dentist',        1,  'General Dentistry');
+  const saraId    = await mkUser('dr.sara',   'doctor123',  'د. سارة الحمدان',  'Dr. Sara Al-Hamdan',    'specialist',     2,  'Orthodontics');
+  const khalidId  = await mkUser('dr.khalid', 'doctor123',  'د. خالد العمري',   'Dr. Khalid Al-Omari',   'specialist',     4,  'Oral & Maxillofacial Surgery');
+  const monaId    = await mkUser('hyg.mona',  'nurse123',   'منى الحربي',       'Mona Al-Harbi',         'hygienist',      1,  'Dental Hygiene');
+  const recepId   = await mkUser('reception', 'recept123',  'سارة الجهني',      'Sara Al-Juhani',        'receptionist',   10, null);
+
+  // ── 2. Operatories (chairs) ──
+  const ops = [['Chair 1', 'كرسي ١'], ['Chair 2', 'كرسي ٢'], ['Surgery Suite', 'غرفة الجراحة']];
+  for (const [en, ar] of ops) db.run('INSERT INTO operatories (name_en, name_ar, active) VALUES (?, ?, 1)', [en, ar]);
+
+  // ── 3. Procedure catalog (ADA-style codes; prices in SAR; AI-drafted demo) ──
+  const PROC = [
+    // [code, en, ar, category, price, durationMin, toothSpecific]
+    ['D0120', 'Periodic Oral Exam', 'فحص دوري', 'diagnostic', 80, 15, 0],
+    ['D0140', 'Limited Problem-Focused Exam', 'فحص محدود', 'diagnostic', 100, 15, 0],
+    ['D0150', 'Comprehensive Oral Exam', 'فحص شامل', 'diagnostic', 150, 30, 0],
+    ['D0220', 'Periapical X-ray', 'أشعة ذروية', 'diagnostic', 50, 10, 1],
+    ['D0274', 'Bitewing X-rays (4 films)', 'أشعة عضّ', 'diagnostic', 90, 10, 0],
+    ['D0330', 'Panoramic X-ray', 'أشعة بانوراما', 'diagnostic', 150, 15, 0],
+    ['D1110', 'Prophylaxis — Adult (Cleaning)', 'تنظيف أسنان — بالغ', 'preventive', 200, 45, 0],
+    ['D1120', 'Prophylaxis — Child', 'تنظيف أسنان — طفل', 'preventive', 150, 30, 0],
+    ['D1206', 'Topical Fluoride Varnish', 'طلاء فلورايد', 'preventive', 80, 15, 0],
+    ['D1351', 'Sealant (per tooth)', 'حشوة وقائية (سيلانت)', 'preventive', 90, 20, 1],
+    ['D2140', 'Amalgam Filling — 1 surface', 'حشوة أملغم — سطح', 'restorative', 180, 30, 1],
+    ['D2330', 'Composite Filling — Anterior', 'حشوة كمبوزيت — أمامية', 'restorative', 220, 40, 1],
+    ['D2391', 'Composite Filling — Posterior 1 surf', 'حشوة كمبوزيت — خلفية', 'restorative', 250, 45, 1],
+    ['D2392', 'Composite Filling — Posterior 2 surf', 'حشوة كمبوزيت — سطحين', 'restorative', 320, 50, 1],
+    ['D2740', 'Porcelain Crown', 'تاج خزفي', 'prosthodontic', 1500, 60, 1],
+    ['D2950', 'Core Buildup', 'بناء قلب السن', 'restorative', 350, 45, 1],
+    ['D3310', 'Root Canal — Anterior', 'علاج عصب — أمامي', 'endodontic', 900, 60, 1],
+    ['D3320', 'Root Canal — Premolar', 'علاج عصب — ضاحك', 'endodontic', 1100, 75, 1],
+    ['D3330', 'Root Canal — Molar', 'علاج عصب — طاحن', 'endodontic', 1400, 90, 1],
+    ['D4341', 'Scaling & Root Planing (per quadrant)', 'تنظيف عميق (ربع فم)', 'periodontic', 400, 45, 0],
+    ['D4910', 'Periodontal Maintenance', 'صيانة لثة', 'periodontic', 250, 45, 0],
+    ['D7140', 'Simple Extraction', 'خلع بسيط', 'oral_surgery', 250, 30, 1],
+    ['D7210', 'Surgical Extraction', 'خلع جراحي', 'oral_surgery', 500, 45, 1],
+    ['D7240', 'Impacted Wisdom Tooth Removal', 'خلع ضرس عقل منطمر', 'oral_surgery', 900, 60, 1],
+    ['D5110', 'Complete Denture — Upper', 'طقم كامل — علوي', 'prosthodontic', 3000, 90, 0],
+    ['D6010', 'Implant Placement', 'زراعة سن', 'prosthodontic', 4000, 90, 1],
+    ['D6240', 'Bridge Pontic (per unit)', 'جسر (وحدة)', 'prosthodontic', 1400, 60, 1],
+    ['D8080', 'Comprehensive Orthodontics', 'تقويم أسنان شامل', 'orthodontic', 8000, 30, 0],
+    ['D8210', 'Removable Orthodontic Appliance', 'جهاز تقويم متحرك', 'orthodontic', 1200, 30, 0],
+    ['D9972', 'External Bleaching (Whitening)', 'تبييض أسنان', 'cosmetic', 800, 60, 0],
+    ['D2962', 'Porcelain Veneer', 'فينير خزفي', 'cosmetic', 1800, 60, 1],
+  ];
+  const PRICE = {}, PNAME = {};
+  for (const [code, en, ar, cat, price, dur, ts] of PROC) {
+    db.run('INSERT OR IGNORE INTO procedures (code, name_en, name_ar, category, default_price, duration_min, tooth_specific) VALUES (?,?,?,?,?,?,?)', [code, en, ar, cat, price, dur, ts]);
+    PRICE[code] = price; PNAME[code] = { en, ar };
+  }
+
+  // ── 4. Patients + their clinical data ──
+  // [nameAr, nameEn, natId, dob, gender, blood, phone, regDaysAgo, portal]
+  const patients = [
+    ['أحمد القحطاني',  'Ahmed Al-Qahtani', '1089567234', '1979-03-15', 'male',   'A+', '0551234567', 420, 1],
+    ['نورة العتيبي',   'Noura Al-Otaibi',  '1104892356', '1996-07-22', 'female', 'O+', '0562345678', 300, 0],
+    ['خالد الشهري',    'Khalid Al-Shehri', '1098765432', '1990-11-03', 'male',   'B+', '0553456789', 180, 0],
+    ['فاطمة الزهراني', 'Fatima Al-Zahrani','1076543210', '1962-01-28', 'female', 'A-', '0564567890', 365, 0],
+    ['عبدالله الدوسري','Abdullah Al-Dosari','1122334455','2017-05-19', 'male',   'O+', '0555678901', 90,  0],
+    ['مريم الحربي',    'Mariam Al-Harbi',  '1066778899', '1971-09-09', 'female', 'AB+','0566789012', 240, 0],
+    ['سعد المطيري',    'Saad Al-Mutairi',  '1033445566', '1988-12-12', 'male',   'B-', '0557890123', 150, 0],
+    ['هند القرني',     'Hind Al-Qarni',    '1100112233', '2003-02-14', 'female', 'O+', '0568901234', 60,  0],
+    ['يوسف الغامدي',   'Yousef Al-Ghamdi', '1055667788', '1968-06-30', 'male',   'A+', '0559012345', 200, 0],
+    ['ليلى السبيعي',   'Layla Al-Subaie',  '1011223344', '1985-10-05', 'female', 'AB-','0560123456', 110, 0],
+  ];
+  const pid = [];
+  patients.forEach((p, i) => {
+    const reg = day(-p[7]);
+    const mrn = `OS-${reg.replace(/-/g, '')}-${String(i + 1).padStart(5, '0')}`;
+    db.run(`INSERT INTO patients (mrn, national_id, full_name_ar, full_name_en, date_of_birth, gender, blood_type, phone, registered_by, registered_at, portal_enabled)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [mrn, p[2], p[0], p[1], p[3], p[4], p[5], p[6], recepId, at(reg, '09:00'), p[8]]);
+    pid.push(dbLastId());
+  });
+
+  // helpers ----------------------------------------------------------------
+  const cond = (i, code, dispEn, cat) => db.run('INSERT INTO patient_conditions (patient_id, condition_code, category, display, status, added_by, added_at) VALUES (?,?,?,?,?,?,?)', [pid[i], code, cat || 'chronic', dispEn, 'active', omarId, now]);
+  const allergy = (i, allergen, reaction, sev) => db.run('INSERT INTO patient_allergies (patient_id, allergen, reaction, severity, added_by, added_at) VALUES (?,?,?,?,?,?)', [pid[i], allergen, reaction, sev, monaId, now]);
+  const flag = (i, en, ar, color) => db.run('INSERT INTO patient_flags (patient_id, label_en, label_ar, color, created_by, created_at, active) VALUES (?,?,?,?,?,?,1)', [pid[i], en, ar, color, omarId, now]);
+  const chart = (i, tooth, status, surfaces, note, by) => db.run('INSERT INTO odontogram (patient_id, tooth_fdi, surfaces, status, note, charted_by, charted_at) VALUES (?,?,?,?,?,?,?)', [pid[i], tooth, surfaces || null, status, note || null, by || omarId, now]);
+  const recall = (i, type, dueDays, status) => db.run('INSERT INTO recalls (patient_id, type, due_date, status, created_at) VALUES (?,?,?,?,?)', [pid[i], type, day(dueDays), status || 'due', now]);
+  const rx = (i, drugName, dose, route, freq, dur, by) => {
+    const d = dbGet('SELECT drug_id FROM drugs WHERE name_generic = ?', [drugName]);
+    db.run(`INSERT INTO prescriptions (patient_id, admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, duration, start_date, status, prescribed_at)
+      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`, [pid[i], by || omarId, d ? d.drug_id : null, drugName, dose, route, freq, dur, day(0), now]);
+  };
+  function plan(i, titleEn, titleAr, status, dentistId) {
+    db.run('INSERT INTO treatment_plans (patient_id, title_en, title_ar, status, dentist_id, created_at) VALUES (?,?,?,?,?,?)', [pid[i], titleEn, titleAr, status, dentistId || omarId, now]);
+    return dbLastId();
+  }
+  const planItem = (planId, i, code, tooth, surfaces, status, dentistId, completedDays) =>
+    db.run(`INSERT INTO treatment_plan_items (plan_id, patient_id, procedure_code, procedure_name_en, procedure_name_ar, tooth_fdi, surfaces, price, status, dentist_id, completed_at, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [planId, pid[i], code, PNAME[code].en, PNAME[code].ar, tooth || null, surfaces || null, PRICE[code], status, dentistId || omarId, status === 'completed' ? at(day(completedDays || 0), '10:00') : null, now]);
+  function appt(i, deptId, doctorId, dDays, time, code, status, opId) {
+    const p = patients[i];
+    db.run(`INSERT INTO appointments (patient_id, patient_name_ar, patient_name_en, national_id, phone, dept_id, doctor_id, operatory_id, appt_date, appt_time, reason, procedure_code, visit_type, status, created_by, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [pid[i], p[0], p[1], p[2], p[6], deptId, doctorId, opId || 1, day(dDays), time, code ? PNAME[code].en : 'Checkup', code || null, 'dental', status, recepId, now]);
+    return dbLastId();
+  }
+  function visit(i, deptId, doctorId, time, complaint, status, opId) {
+    const p = patients[i];
+    db.run(`INSERT INTO outpatient_visits (patient_id, patient_name_ar, patient_name_en, national_id, phone, dob, gender, dept_id, doctor_id, operatory_id, registered_by, registered_at, appointment_time, chief_complaint, visit_type, status)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [pid[i], p[0], p[1], p[2], p[6], p[3], p[4], deptId, doctorId, opId || 1, recepId, at(day(0), '08:30'), time, complaint, 'walk_in', status]);
+    return dbLastId();
+  }
+  function invoice(i, visitDays, items, paymentType, status) {
+    const p = patients[i];
+    let subtotal = 0; items.forEach(it => subtotal += PRICE[it] || 0);
+    const discount = 0, total = subtotal - discount;
+    const paid = status === 'paid' ? total : (status === 'partial' ? Math.round(total / 2) : 0);
+    db.run(`INSERT INTO invoices (patient_id, patient_name_ar, patient_name_en, national_id, dept_id, visit_date, subtotal, discount, total, paid_amount, payment_type, status, created_by, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [pid[i], p[0], p[1], p[2], 1, day(visitDays), subtotal, discount, total, paid, paymentType, status, recepId, now]);
+    const invId = dbLastId();
+    items.forEach(code => db.run('INSERT INTO invoice_items (invoice_id, description_en, description_ar, qty, unit_price, total_price) VALUES (?,?,?,?,?,?)', [invId, PNAME[code].en, PNAME[code].ar, 1, PRICE[code], PRICE[code]]));
+    return invId;
+  }
+
+  // ── Patient 0: Ahmed — AFib on warfarin, penicillin allergy, needs an extraction (bleeding + allergy story). Portal patient. ──
+  cond(0, 'I48.0', 'Atrial fibrillation', 'chronic');
+  cond(0, 'I10', 'Hypertension', 'chronic');
+  allergy(0, 'Penicillin', 'Rash and facial swelling', 'severe');
+  flag(0, 'On anticoagulant (Warfarin)', 'يتناول مميّع دم (وارفارين)', 'danger');
+  chart(0, 46, 'caries', 'O', 'Deep caries, symptomatic'); chart(0, 36, 'filled', 'MO', '');
+  chart(0, 26, 'crown', null, 'PFM crown 2019'); chart(0, 16, 'rct', null, 'RCT + crown');
+  let pl0 = plan(0, 'Caries management & hygiene', 'علاج التسوّس والتنظيف', 'in_progress', omarId);
+  planItem(pl0, 0, 'D0150', null, null, 'completed', omarId, -7);
+  planItem(pl0, 0, 'D1110', null, null, 'completed', omarId, -7);
+  planItem(pl0, 0, 'D2391', 46, 'O', 'planned', omarId);
+  rx(0, 'Clindamycin 300mg', '300 mg', 'PO', 'TID', '5 days', omarId); // penicillin-allergic → clindamycin
+  appt(0, 1, omarId, -7, '09:00', 'D0150', 'completed', 1);
+  appt(0, 1, omarId, 2, '11:30', 'D2391', 'scheduled', 1);
+  invoice(0, -7, ['D0150', 'D1110'], 'insurance', 'paid');
+  recall(0, 'checkup', 170, 'due');
+
+  // ── Patient 1: Noura — orthodontics (specialist), latex allergy ──
+  allergy(1, 'Latex', 'Contact dermatitis', 'moderate');
+  chart(1, 13, 'sound', null, 'Crowding'); chart(1, 23, 'sound', null, 'Crowding');
+  let pl1 = plan(1, 'Comprehensive orthodontics', 'تقويم شامل', 'accepted', saraId);
+  planItem(pl1, 1, 'D0330', null, null, 'completed', saraId, -14);
+  planItem(pl1, 1, 'D8080', null, null, 'in_progress', saraId);
+  appt(1, 2, saraId, -14, '10:00', 'D0150', 'completed', 2);
+  appt(1, 2, saraId, 0, '10:00', 'D8080', 'checked_in', 2); // TODAY
+  invoice(1, -14, ['D0150', 'D0330'], 'cash', 'paid');
+  visit(1, 2, saraId, '10:00', 'Orthodontic adjustment', 'waiting', 2);
+
+  // ── Patient 2: Khalid — pulpitis, needs molar root canal ──
+  cond(2, 'K04.0', 'Pulpitis', 'acute');
+  chart(2, 46, 'caries', 'OD', 'Irreversible pulpitis');
+  let pl2 = plan(2, 'Endodontic treatment 46', 'علاج عصب 46', 'in_progress', omarId);
+  planItem(pl2, 2, 'D3330', 46, null, 'in_progress', omarId);
+  planItem(pl2, 2, 'D2740', 46, null, 'planned', omarId);
+  rx(2, 'Amoxicillin 500mg', '500 mg', 'PO', 'TID', '5 days', omarId);
+  rx(2, 'Ibuprofen 400mg', '400 mg', 'PO', 'TID PRN', '3 days', omarId);
+  appt(2, 1, omarId, 0, '12:00', 'D3330', 'scheduled', 1); // TODAY
+  visit(2, 1, omarId, '12:00', 'Severe toothache lower right', 'waiting', 1);
+  recall(2, 'checkup', -5, 'due');
+
+  // ── Patient 3: Fatima — diabetic, on bisphosphonate (MRONJ flag), perio maintenance ──
+  cond(3, 'E11.9', 'Type 2 diabetes', 'chronic');
+  cond(3, 'M81.0', 'Osteoporosis (on alendronate)', 'chronic');
+  flag(3, 'Bisphosphonate — MRONJ risk before extraction', 'بيسفوسفونات — خطر تنخّر الفك قبل الخلع', 'danger');
+  chart(3, 47, 'missing', null, ''); chart(3, 37, 'missing', null, '');
+  chart(3, 16, 'caries', 'M', '');
+  let pl3 = plan(3, 'Perio maintenance + filling', 'صيانة لثة وحشوة', 'in_progress', omarId);
+  planItem(pl3, 3, 'D4910', null, null, 'completed', omarId, -3);
+  planItem(pl3, 3, 'D2330', 16, 'M', 'planned', omarId);
+  db.run('INSERT INTO perio_chart (patient_id, tooth_fdi, pockets, bleeding, recession, mobility, charted_by, charted_at) VALUES (?,?,?,?,?,?,?,?)', [pid[3], 16, '3,2,4,5,3,3', '0,0,1,1,0,0', 2, 1, monaId, now]);
+  db.run('INSERT INTO perio_chart (patient_id, tooth_fdi, pockets, bleeding, recession, mobility, charted_by, charted_at) VALUES (?,?,?,?,?,?,?,?)', [pid[3], 26, '4,3,5,6,4,3', '1,0,1,1,1,0', 3, 2, monaId, now]);
+  appt(3, 5, omarId, -3, '09:30', 'D4910', 'completed', 1);
+  appt(3, 1, omarId, 7, '09:30', 'D2330', 'scheduled', 1);
+  invoice(3, -3, ['D4910'], 'insurance', 'paid');
+  recall(3, 'perio_maintenance', 25, 'due');
+
+  // ── Patient 4: Abdullah (child) — sealants + fluoride, pediatric ──
+  flag(4, 'Pediatric patient', 'مريض أطفال', 'info');
+  chart(4, 16, 'sealant', null, ''); chart(4, 26, 'sealant', null, '');
+  chart(4, 36, 'caries', 'O', 'Early caries');
+  let pl4 = plan(4, 'Preventive — child', 'وقائي — طفل', 'proposed', omarId);
+  planItem(pl4, 4, 'D1120', null, null, 'completed', omarId, -30);
+  planItem(pl4, 4, 'D1351', 46, null, 'planned', omarId);
+  planItem(pl4, 4, 'D2391', 36, 'O', 'planned', omarId);
+  appt(4, 6, omarId, -30, '14:00', 'D1120', 'completed', 1);
+  invoice(4, -30, ['D1120', 'D1206'], 'cash', 'paid');
+  recall(4, 'checkup', 40, 'due');
+
+  // ── Patient 5: Mariam — crown + bridge prosthodontics ──
+  chart(5, 24, 'missing', null, ''); chart(5, 25, 'to_extract', null, 'Non-restorable');
+  chart(5, 14, 'crown', null, 'Bridge abutment');
+  let pl5 = plan(5, 'Bridge 24-25 + crown', 'جسر وتاج', 'accepted', omarId);
+  planItem(pl5, 5, 'D7140', 25, null, 'planned', omarId);
+  planItem(pl5, 5, 'D6240', 24, null, 'planned', omarId);
+  planItem(pl5, 5, 'D2740', 14, null, 'planned', omarId);
+  appt(5, 1, omarId, 3, '13:00', 'D7140', 'scheduled', 1);
+  recall(5, 'checkup', 5, 'due');
+
+  // ── Patient 6: Saad — cosmetic (whitening + veneers) ──
+  chart(6, 11, 'veneer', null, 'Planned'); chart(6, 21, 'veneer', null, 'Planned');
+  let pl6 = plan(6, 'Smile makeover', 'تجميل الابتسامة', 'proposed', omarId);
+  planItem(pl6, 6, 'D9972', null, null, 'planned', omarId);
+  planItem(pl6, 6, 'D2962', 11, null, 'planned', omarId);
+  planItem(pl6, 6, 'D2962', 21, null, 'planned', omarId);
+  appt(6, 1, omarId, 5, '15:00', 'D9972', 'scheduled', 1);
+
+  // ── Patient 7: Hind — impacted wisdom teeth (oral surgery specialist) ──
+  chart(7, 38, 'impacted', null, 'Mesioangular impaction'); chart(7, 48, 'impacted', null, '');
+  let pl7 = plan(7, 'Wisdom teeth removal', 'خلع ضروس العقل', 'accepted', khalidId);
+  planItem(pl7, 7, 'D7240', 38, null, 'planned', khalidId);
+  planItem(pl7, 7, 'D7240', 48, null, 'planned', khalidId);
+  rx(7, 'Amoxicillin/Clavulanate 1g', '1 g', 'PO', 'BID', '5 days', khalidId);
+  appt(7, 4, khalidId, 1, '11:00', 'D7240', 'scheduled', 3);
+  invoice(7, -2, ['D0140', 'D0330'], 'insurance', 'partial');
+
+  // ── Patient 8: Yousef — missing molar, implant; hypertensive ──
+  cond(8, 'I10', 'Hypertension', 'chronic');
+  chart(8, 46, 'missing', null, 'Lost 2024'); chart(8, 36, 'filled', 'O', '');
+  let pl8 = plan(8, 'Implant 46', 'زراعة 46', 'accepted', khalidId);
+  planItem(pl8, 8, 'D6010', 46, null, 'planned', khalidId);
+  planItem(pl8, 8, 'D2740', 46, null, 'planned', khalidId);
+  appt(8, 4, khalidId, 4, '10:30', 'D6010', 'scheduled', 3);
+  recall(8, 'checkup', -2, 'due');
+
+  // ── Patient 9: Layla — routine checkup + cleaning, recall ──
+  chart(9, 36, 'filled', 'O', ''); chart(9, 46, 'sound', null, '');
+  let pl9 = plan(9, 'Routine care', 'رعاية روتينية', 'completed', omarId);
+  planItem(pl9, 9, 'D0120', null, null, 'completed', omarId, -1);
+  planItem(pl9, 9, 'D1110', null, null, 'completed', omarId, -1);
+  appt(9, 1, omarId, 0, '08:30', 'D0120', 'completed', 1); // TODAY completed
+  invoice(9, -1, ['D0120', 'D1110', 'D0274'], 'card', 'paid');
+  recall(9, 'checkup', 180, 'scheduled');
+
+  console.log('[DB] OpenSmile dental demo seeded — ' + pid.length + ' patients, ' + PROC.length + ' procedures');
 }
 
 async function seedHospitalData() {
