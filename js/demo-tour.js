@@ -301,8 +301,8 @@ function demoTourOffer(force) {
       <div style="font-size:2.5rem">🎬</div>
       <h2 style="margin:6px 0 8px">${ar ? 'جولة إرشادية؟' : 'Want the guided tour?'}</h2>
       <p class="text-muted" style="font-size:0.9rem;margin-bottom:16px">${ar
-        ? 'تابع مريضاً واحداً من باب الطوارئ حتى سجل التدقيق — عبر سبعة أدوار: تسجيل، وصفة يرفضها النظام، دم وأشعة، بوتاسيوم حرج، صيدلية، تمريض، وإدارة.'
-        : 'Follow one patient from the ER door to the audit log — across seven staff roles: registration, a prescription the app refuses, bloods + X-ray, a critical potassium, pharmacy, nursing, and management.'}</p>
+        ? 'تابع مريضاً واحداً بألم أسنان عبر العيادة كلها — من الاستقبال إلى سجل التدقيق: تسجيل، تسجيل حساسية البنسلين، تخطيط الأسنان وخطة علاجية، وصفة يرفضها النظام ثم البديل الآمن، فاتورة وموعد مراجعة، ثم مراجعة المدير، وبوابة المريض.'
+        : 'Follow one toothache through the whole clinic — from the front desk to the audit log: registration, a recorded penicillin allergy, the odontogram + a costed plan, a prescription the app refuses (and the safe alternative), an invoice + recall, the manager review, and the patient portal.'}</p>
       <div style="display:flex;flex-direction:column;gap:8px">
         <button class="btn btn-primary" onclick="this.closest('.alert-overlay').remove(); demoTourStart('step')">${ar ? '▶ ابدأ الجولة — هي تعمل وأنت تقرأ وتضغط «متابعة»' : '▶ Start the tour — it does the work, you just press Continue'}</button>
         <button class="btn btn-secondary btn-sm" onclick="this.closest('.alert-overlay').remove(); demoTourStart('auto')">${ar ? '🤖 تلقائي بالكامل — أشاهد فقط' : '🤖 Fully automatic — I\'ll just watch'}</button>
@@ -567,7 +567,7 @@ function _tourRenderPanel(step, s) {
   const dots = TOUR_STEPS.map((_, i) => `<span class="tour-dot${i === s.i ? ' active' : ''}"></span>`).join('');
   const roleBadge = step.role
     ? `${ar ? step.role[3] : step.role[2]} · ${step.role[0]}`
-    : (step.ch ? (ar ? step.ch.ar : step.ch.en) : 'OpenWard');
+    : (step.ch ? (ar ? step.ch.ar : step.ch.en) : 'OpenSmile');
   const chChip = step.ch ? `<span style="background:#eef2ff;color:#3730a3;border-radius:12px;padding:2px 8px;font-size:0.68rem;font-weight:600;margin-inline-start:6px">${ar ? step.ch.ar : step.ch.en}</span>` : '';
   const counter = `${s.i + 1} / ${TOUR_STEPS.length}`;
   const pace = s.pace || (s.auto ? 'auto' : 'manual');
