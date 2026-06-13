@@ -271,9 +271,9 @@ function routeToDashboard() {
 // Open a patient's record. Clinical staff land on the odontogram/chart; front
 // desk lands on the patient's appointments. The selected id is module-level so
 // the per-patient dental views (Phase 5) can read it.
-let SELECTED_PATIENT_ID = null;
+window.SELECTED_PATIENT_ID = null;
 function showPatientDetail(patientId) {
-  SELECTED_PATIENT_ID = patientId;
+  window.SELECTED_PATIENT_ID = patientId;
   const role = (typeof getCurrentUser === 'function' && getCurrentUser()) ? getCurrentUser().role : null;
   if (['dentist', 'specialist', 'hygienist'].includes(role)) navigateTo('dr-chart');
   else if (role === 'receptionist') navigateTo('rcp-appointments');
@@ -511,15 +511,15 @@ function renderView(viewId) {
     // get their real renderers in Phase 5.
     // ============================================================
     case 'it-specialties': renderITDepts(main, lang); break;   // departments table → dental specialties
-    case 'mgr-overview':   renderPlaceholder(main, lang, 'Clinic Dashboard', 'لوحة العيادة'); break;
+    case 'mgr-overview':   renderMgrOverview(main, lang); break;
     case 'mgr-audit':      renderHMBlackbox(main, lang); break; // the "manager who sees the logs"
-    case 'dr-patients':    renderPlaceholder(main, lang, 'My Patients', 'مرضاي'); break;
-    case 'dr-chart':       renderPlaceholder(main, lang, 'Odontogram', 'مخطط الأسنان'); break;
-    case 'dr-plans':       renderPlaceholder(main, lang, 'Treatment Plans', 'الخطط العلاجية'); break;
-    case 'dr-appointments':renderPlaceholder(main, lang, 'Appointments', 'المواعيد'); break;
-    case 'asst-patients':  renderPlaceholder(main, lang, 'Patients', 'المرضى'); break;
-    case 'asst-intake':    renderPlaceholder(main, lang, 'Medical-History Intake', 'استقبال التاريخ الطبي'); break;
-    case 'asst-perio':     renderPlaceholder(main, lang, 'Perio Charting', 'مخطط اللثة'); break;
+    case 'dr-patients':    renderDrPatients(main, lang); break;
+    case 'dr-chart':       renderOdontogram(main, lang); break;
+    case 'dr-plans':       renderTreatmentPlans(main, lang); break;
+    case 'dr-appointments':renderDrAppointments(main, lang); break;
+    case 'asst-patients':  renderAsstPatients(main, lang); break;
+    case 'asst-intake':    renderAsstIntake(main, lang); break;
+    case 'asst-perio':     renderAsstPerio(main, lang); break;
 
     // ---- IT Admin ----
     case 'it-users':    renderITUsers(main, lang); break;
@@ -3232,369 +3232,86 @@ function printWristband(patientId, admissionId) {
 
 function renderPPOverview(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
-
-  // Get latest visit/admission
-  const activeAdm = dbGet(`SELECT a.*, d.name_ar as dept_ar, d.name_en as dept_en
-    FROM admissions a LEFT JOIN departments d ON a.dept_id = d.dept_id
-    WHERE a.patient_id = ? AND a.status='active' ORDER BY a.admitted_at DESC LIMIT 1`, [patient.patient_id]);
-
-  // Count various items
-  const labCount     = dbGet(`SELECT COUNT(*) as c FROM lab_orders lo JOIN admissions a ON lo.admission_id=a.admission_id WHERE a.patient_id = ? AND lo.status='resulted'`, [patient.patient_id]);
-  const rxCount      = dbGet(`SELECT COUNT(*) as c FROM prescriptions p JOIN admissions a ON p.admission_id=a.admission_id WHERE a.patient_id = ? AND p.status='active'`, [patient.patient_id]);
-  const apptCount    = dbGet(`SELECT COUNT(*) as c FROM appointments WHERE national_id = ? AND status='scheduled' AND appt_date >= ?`,
-    [patient.national_id || '__none__', todayISO()]);
-  const unreadMsgs   = dbGet(`SELECT COUNT(*) as c FROM portal_messages WHERE patient_id = ? AND from_type='staff' AND read_at IS NULL`, [patient.patient_id]);
-
-  // Allergies & conditions
-  const allergies = dbAll(`SELECT * FROM patient_allergies WHERE patient_id = ?`, [patient.patient_id]);
-  const conditions = dbAll(`SELECT * FROM patient_conditions WHERE patient_id = ?`, [patient.patient_id]);
-
-  const greeting = lang === 'ar'
-    ? `مرحباً، ${patient.full_name_ar.split(' ')[0]}!`
-    : `Welcome back, ${(patient.full_name_en || patient.full_name_ar).split(' ')[0]}!`;
-
-  main.innerHTML = `
-    <div class="page-header">
-      <div>
-        <h1 style="font-size:1.6rem">&#128075; ${escapeHtml(greeting)}</h1>
-        <p style="color:#6b7280;margin-top:4px">
-          ${lang==='ar' ? `الرقم الطبي: <strong>${escapeHtml(patient.mrn)}</strong>` : `Medical Record Number: <strong>${escapeHtml(patient.mrn)}</strong>`}
-        </p>
-      </div>
-    </div>
-
-    ${activeAdm ? `
-      <div class="card" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:white;border:none;margin-bottom:16px">
-        <div class="card-body">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
-            <div>
-              <div style="opacity:0.9;font-size:0.85rem;margin-bottom:4px">${lang==='ar'?'أنت حالياً في:':'You are currently admitted to:'}</div>
-              <div style="font-size:1.4rem;font-weight:700">${escapeHtml(lang==='ar'?activeAdm.dept_ar:activeAdm.dept_en)}</div>
-              ${activeAdm.bed_number ? `<div style="opacity:0.9;font-size:0.9rem;margin-top:4px">${lang==='ar'?'السرير:':'Bed:'} <strong>${escapeHtml(activeAdm.bed_number)}</strong></div>` : ''}
-            </div>
-            <div style="text-align:right">
-              <div style="opacity:0.9;font-size:0.85rem">${lang==='ar'?'تاريخ الدخول':'Admitted'}</div>
-              <div style="font-size:1.1rem;font-weight:600">${escapeHtml(activeAdm.admitted_at.substring(0,10))}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    ` : ''}
-
-    <div class="stats-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px">
-      <div class="stat-card" style="cursor:pointer" onclick="navigateTo('pp-labs')">
-        <div style="font-size:2rem;margin-bottom:4px">&#128300;</div>
-        <div style="font-size:1.4rem;font-weight:700">${labCount?labCount.c:0}</div>
-        <div style="color:#6b7280;font-size:0.85rem">${lang==='ar'?'نتائج المختبر':'Lab Results'}</div>
-      </div>
-      <div class="stat-card" style="cursor:pointer" onclick="navigateTo('pp-prescriptions')">
-        <div style="font-size:2rem;margin-bottom:4px">&#128138;</div>
-        <div style="font-size:1.4rem;font-weight:700">${rxCount?rxCount.c:0}</div>
-        <div style="color:#6b7280;font-size:0.85rem">${lang==='ar'?'الأدوية النشطة':'Active Medications'}</div>
-      </div>
-      <div class="stat-card" style="cursor:pointer" onclick="navigateTo('pp-appointments')">
-        <div style="font-size:2rem;margin-bottom:4px">&#128197;</div>
-        <div style="font-size:1.4rem;font-weight:700">${apptCount?apptCount.c:0}</div>
-        <div style="color:#6b7280;font-size:0.85rem">${lang==='ar'?'مواعيد قادمة':'Upcoming Appointments'}</div>
-      </div>
-      <div class="stat-card" style="cursor:pointer" onclick="navigateTo('pp-messages')">
-        <div style="font-size:2rem;margin-bottom:4px">&#128172;</div>
-        <div style="font-size:1.4rem;font-weight:700">${unreadMsgs?unreadMsgs.c:0}</div>
-        <div style="color:#6b7280;font-size:0.85rem">${lang==='ar'?'رسائل غير مقروءة':'Unread Messages'}</div>
-      </div>
-    </div>
-
-    <div class="card mb-3">
-      <div class="card-header"><h3>&#129505; ${lang==='ar'?'معلوماتي الصحية الأساسية':'My Health Summary'}</h3></div>
-      <div class="card-body">
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">
-          <div><div style="color:#6b7280;font-size:0.8rem">${lang==='ar'?'تاريخ الميلاد':'Date of Birth'}</div><div style="font-weight:600">${escapeHtml(patient.date_of_birth||'—')}</div></div>
-          <div><div style="color:#6b7280;font-size:0.8rem">${lang==='ar'?'الجنس':'Gender'}</div><div style="font-weight:600">${escapeHtml(patient.gender||'—')}</div></div>
-          <div><div style="color:#6b7280;font-size:0.8rem">${lang==='ar'?'فصيلة الدم':'Blood Type'}</div><div style="font-weight:600;color:#dc2626">${escapeHtml(patient.blood_type||'—')}</div></div>
-          <div><div style="color:#6b7280;font-size:0.8rem">${lang==='ar'?'الهاتف':'Phone'}</div><div style="font-weight:600">${escapeHtml(patient.phone||'—')}</div></div>
-          <div><div style="color:#6b7280;font-size:0.8rem">${lang==='ar'?'الوزن':'Weight'}</div><div style="font-weight:600">${patient.weight_kg?patient.weight_kg+' kg':'—'}</div></div>
-        </div>
-      </div>
-    </div>
-
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
-      <div class="card">
-        <div class="card-header" style="background:#fef2f2;border-bottom:2px solid #fecaca">
-          <h3>&#9888;&#65039; ${lang==='ar'?'الحساسيات':'Allergies'}</h3>
-        </div>
-        <div class="card-body">
-          ${allergies.length === 0
-            ? `<p style="color:#6b7280">${lang==='ar'?'لا توجد حساسيات مسجلة':'No known allergies'}</p>`
-            : allergies.map(a => `
-              <div style="padding:8px;border-left:4px solid #dc2626;background:#fef2f2;border-radius:4px;margin-bottom:6px">
-                <div style="font-weight:600;color:#7f1d1d">${escapeHtml(a.allergen)}</div>
-                ${a.reaction ? `<div style="font-size:0.85rem;color:#991b1b">${escapeHtml(a.reaction)}</div>` : ''}
-                ${a.severity ? `<span class="badge badge-danger" style="margin-top:4px">${escapeHtml(a.severity)}</span>` : ''}
-              </div>`).join('')
-          }
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header"><h3>&#129656; ${lang==='ar'?'حالاتي الطبية':'My Conditions'}</h3></div>
-        <div class="card-body">
-          ${conditions.length === 0
-            ? `<p style="color:#6b7280">${lang==='ar'?'لا توجد حالات مزمنة مسجلة':'No chronic conditions on record'}</p>`
-            : conditions.map(c => {
-                const cd = (typeof CONDITIONS !== 'undefined' && CONDITIONS[c.condition_code])
-                  ? CONDITIONS[c.condition_code][lang]
-                  : c.condition_code;
-                return `<div style="padding:6px 0;border-bottom:1px solid #f3f4f6">
-                  <span style="font-weight:500">${escapeHtml(cd)}</span>
-                  ${c.severity ? `<span class="badge badge-warning" style="margin-left:8px">${escapeHtml(c.severity)}</span>` : ''}
-                </div>`;
-              }).join('')
-          }
-        </div>
-      </div>
-    </div>
-  `;
+  if (!patient) { main.innerHTML = emptyState(t('patient_login_required')); return; }
+  const pid = patient.patient_id;
+  const money = (n) => Number(n || 0).toLocaleString() + ' ' + (lang === 'ar' ? 'ر.س' : 'SAR');
+  const planItems = dbGet("SELECT COUNT(*) c FROM treatment_plan_items WHERE patient_id=? AND status IN ('planned','in_progress')", [pid]).c;
+  const rxCount = dbGet("SELECT COUNT(*) c FROM prescriptions WHERE patient_id=? AND status='active'", [pid]).c;
+  const apptCount = dbGet("SELECT COUNT(*) c FROM appointments WHERE patient_id=? AND status IN ('scheduled','checked_in') AND appt_date >= ?", [pid, todayISO()]).c;
+  const unread = dbGet("SELECT COUNT(*) c FROM portal_messages WHERE patient_id=? AND from_type='staff' AND read_at IS NULL", [pid]).c;
+  const nextAppt = dbGet("SELECT a.*, u.full_name_en doc_en, u.full_name_ar doc_ar FROM appointments a LEFT JOIN users u ON u.user_id=a.doctor_id WHERE a.patient_id=? AND a.appt_date >= ? AND a.status IN ('scheduled','checked_in') ORDER BY a.appt_date, a.appt_time LIMIT 1", [pid, todayISO()]);
+  const allergies = dbAll('SELECT * FROM patient_allergies WHERE patient_id=?', [pid]);
+  const conditions = dbAll("SELECT * FROM patient_conditions WHERE patient_id=? AND status='active'", [pid]);
+  const recall = dbGet("SELECT * FROM recalls WHERE patient_id=? AND status IN ('due','scheduled') ORDER BY due_date LIMIT 1", [pid]);
+  const greeting = lang === 'ar' ? 'مرحباً، ' + patient.full_name_ar.split(' ')[0] + '!' : 'Welcome back, ' + (patient.full_name_en || patient.full_name_ar).split(' ')[0] + '!';
+  main.innerHTML = '' +
+    '<div class="page-header"><div><h1 style="font-size:1.6rem">&#128075; ' + escapeHtml(greeting) + '</h1>' +
+    '<p style="color:#6b7280;margin-top:4px">' + (lang === 'ar' ? 'الرقم الطبي: ' : 'MRN: ') + '<strong>' + escapeHtml(patient.mrn) + '</strong></p></div></div>' +
+    (nextAppt ? '<div class="card" style="background:linear-gradient(135deg,#0ea5e9,#2563eb);color:#fff;border:none;margin-bottom:16px"><div class="card-body" style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;align-items:center">' +
+      '<div><div style="opacity:.9;font-size:.85rem">' + (lang === 'ar' ? 'موعدك القادم' : 'Your next appointment') + '</div>' +
+      '<div style="font-size:1.3rem;font-weight:700">' + escapeHtml(nextAppt.reason || (lang === 'ar' ? 'كشف' : 'Visit')) + '</div>' +
+      '<div style="opacity:.9">' + (lang === 'ar' ? 'مع ' : 'with ') + escapeHtml(lang === 'ar' ? (nextAppt.doc_ar || '') : (nextAppt.doc_en || '')) + '</div></div>' +
+      '<div style="text-align:right"><div style="font-size:1.2rem;font-weight:700">' + nextAppt.appt_date + '</div><div>' + nextAppt.appt_time + '</div></div></div></div>' : '') +
+    (recall && recall.status === 'due' ? '<div class="card" style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;margin-bottom:16px"><div class="card-body">&#9200; ' +
+      (lang === 'ar' ? 'حان موعد المراجعة الدورية (' + recall.due_date + '). يُنصح بحجز موعد.' : 'You are due for a recall checkup (' + recall.due_date + '). Please book an appointment.') + '</div></div>' : '') +
+    '<div class="stats-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px">' +
+      '<div class="stat-card" style="cursor:pointer" onclick="navigateTo(\'pp-labs\')"><div style="font-size:2rem">&#129463;</div><div style="font-size:1.4rem;font-weight:700">' + planItems + '</div><div style="color:#6b7280;font-size:.85rem">' + (lang === 'ar' ? 'بنود العلاج' : 'Treatment items') + '</div></div>' +
+      '<div class="stat-card" style="cursor:pointer" onclick="navigateTo(\'pp-prescriptions\')"><div style="font-size:2rem">&#128138;</div><div style="font-size:1.4rem;font-weight:700">' + rxCount + '</div><div style="color:#6b7280;font-size:.85rem">' + (lang === 'ar' ? 'الأدوية' : 'Medications') + '</div></div>' +
+      '<div class="stat-card" style="cursor:pointer" onclick="navigateTo(\'pp-appointments\')"><div style="font-size:2rem">&#128197;</div><div style="font-size:1.4rem;font-weight:700">' + apptCount + '</div><div style="color:#6b7280;font-size:.85rem">' + (lang === 'ar' ? 'مواعيد قادمة' : 'Upcoming') + '</div></div>' +
+      '<div class="stat-card" style="cursor:pointer" onclick="navigateTo(\'pp-messages\')"><div style="font-size:2rem">&#128172;</div><div style="font-size:1.4rem;font-weight:700">' + unread + '</div><div style="color:#6b7280;font-size:.85rem">' + (lang === 'ar' ? 'رسائل' : 'Messages') + '</div></div>' +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">' +
+      '<div class="card"><div class="card-header" style="background:#fef2f2;border-bottom:2px solid #fecaca"><h3>&#9888;&#65039; ' + (lang === 'ar' ? 'الحساسيات' : 'Allergies') + '</h3></div><div class="card-body">' +
+        (allergies.length ? allergies.map(a => '<div style="padding:8px;border-left:4px solid #dc2626;background:#fef2f2;border-radius:4px;margin-bottom:6px"><div style="font-weight:600;color:#7f1d1d">' + escapeHtml(a.allergen) + '</div>' + (a.severity ? '<span class="badge badge-danger">' + escapeHtml(a.severity) + '</span>' : '') + '</div>').join('') : '<p style="color:#6b7280">' + (lang === 'ar' ? 'لا توجد حساسيات' : 'No known allergies') + '</p>') +
+      '</div></div>' +
+      '<div class="card"><div class="card-header"><h3>&#129658; ' + (lang === 'ar' ? 'حالاتي الطبية' : 'My conditions') + '</h3></div><div class="card-body">' +
+        (conditions.length ? conditions.map(c => '<div style="padding:6px 0;border-bottom:1px solid #f3f4f6">' + escapeHtml(c.display || c.condition_code) + '</div>').join('') : '<p style="color:#6b7280">' + (lang === 'ar' ? 'لا يوجد' : 'None on record') + '</p>') +
+      '</div></div>' +
+    '</div>';
 }
 
 function renderPPVisits(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
-
-  const visits = dbAll(`
-    SELECT a.*, d.name_ar as dept_ar, d.name_en as dept_en
-    FROM admissions a
-    LEFT JOIN departments d ON a.dept_id = d.dept_id
-    WHERE a.patient_id = ?
-    ORDER BY a.admitted_at DESC
-  `, [patient.patient_id]);
-
-  main.innerHTML = `
-    <div class="page-header"><h1>&#128196; ${t('pp_visits')}</h1></div>
-    ${visits.length === 0 ? `${emptyState(lang==='ar'?'لا توجد زيارات سابقة':'No previous visits')}` : `
-      <div style="display:flex;flex-direction:column;gap:12px">
-        ${visits.map(v => `
-          <div class="card">
-            <div class="card-body">
-              <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
-                <div>
-                  <div style="font-size:1.2rem;font-weight:600">${escapeHtml(lang==='ar'?v.dept_ar:v.dept_en)}</div>
-                  ${v.bed_number ? `<div style="color:#6b7280;font-size:0.9rem;margin-top:4px">${lang==='ar'?'السرير':'Bed'}: ${escapeHtml(v.bed_number)}</div>` : ''}
-                </div>
-                <div style="text-align:right">
-                  <span class="badge ${v.status==='active'?'badge-success':'badge-secondary'}">
-                    ${v.status==='active' ? (lang==='ar'?'منوّم حالياً':'Currently Admitted') : (lang==='ar'?'مخرّج':'Discharged')}
-                  </span>
-                </div>
-              </div>
-              <hr style="margin:12px 0">
-              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
-                <div><div style="color:#6b7280;font-size:0.75rem">${lang==='ar'?'تاريخ الدخول':'Admitted'}</div><div style="font-weight:600">${escapeHtml(v.admitted_at.substring(0,16).replace('T',' '))}</div></div>
-                ${v.discharged_at ? `<div><div style="color:#6b7280;font-size:0.75rem">${lang==='ar'?'تاريخ الخروج':'Discharged'}</div><div style="font-weight:600">${escapeHtml(v.discharged_at.substring(0,16).replace('T',' '))}</div></div>` : ''}
-              </div>
-              ${v.chief_complaint ? `<div style="margin-top:12px;padding:8px;background:#f9fafb;border-radius:6px">
-                <div style="color:#6b7280;font-size:0.75rem;margin-bottom:2px">${lang==='ar'?'الشكوى الرئيسية':'Chief Complaint'}</div>
-                <div>${escapeHtml(v.chief_complaint)}</div>
-              </div>` : ''}
-              ${v.initial_diagnosis ? `<div style="margin-top:8px;padding:8px;background:#f0f9ff;border-radius:6px;border-left:4px solid #0ea5e9">
-                <div style="color:#0c4a6e;font-size:0.75rem;margin-bottom:2px">${lang==='ar'?'التشخيص':'Diagnosis'}</div>
-                <div>${escapeHtml(v.initial_diagnosis)}</div>
-              </div>` : ''}
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    `}
-  `;
+  if (!patient) { main.innerHTML = emptyState(t('patient_login_required')); return; }
+  const visits = dbAll("SELECT a.*, u.full_name_en doc_en, u.full_name_ar doc_ar FROM appointments a LEFT JOIN users u ON u.user_id=a.doctor_id WHERE a.patient_id=? AND a.status='completed' ORDER BY a.appt_date DESC", [patient.patient_id]);
+  main.innerHTML = '<div class="page-header"><h1>' + (lang === 'ar' ? 'زياراتي' : 'My Visits') + '</h1></div><div class="card">' +
+    (visits.length ? '<div class="table-container"><table><thead><tr><th>' + (lang === 'ar' ? 'التاريخ' : 'Date') + '</th><th>' + (lang === 'ar' ? 'الإجراء' : 'Procedure') + '</th><th>' + (lang === 'ar' ? 'الطبيب' : 'Dentist') + '</th></tr></thead><tbody>' +
+      visits.map(v => '<tr><td>' + v.appt_date + '</td><td>' + escapeHtml(v.reason || '—') + '</td><td>' + escapeHtml(lang === 'ar' ? (v.doc_ar || '—') : (v.doc_en || '—')) + '</td></tr>').join('') + '</tbody></table></div>' : emptyState(lang === 'ar' ? 'لا زيارات سابقة' : 'No past visits')) + '</div>';
 }
 
-// Plain-English lab interpretation (patient-friendly)
-function ppInterpretLab(testName, flag, value, lang) {
-  if (!flag || flag === 'normal') {
-    return lang === 'ar'
-      ? '<span style="color:#10b981;">&check; نتيجتك ضمن المعدل الطبيعي. لا حاجة للقلق.</span>'
-      : '<span style="color:#10b981;">&check; Your result is within the normal range. No action needed.</span>';
-  }
-  const isCritical = /critical/i.test(flag);
-  const isHigh = /high/i.test(flag);
-  const isLow  = /low/i.test(flag);
-  const tName = (testName || '').toUpperCase();
-
-  // Test-specific friendly explanations
-  if (/HEMOGLOBIN|HB|HGB/.test(tName)) {
-    if (isLow) return lang === 'ar' ? '<span style="color:#f59e0b;">⚠ هيموغلوبين منخفض — قد يشير لفقر دم. قد تشعر بإرهاق. ناقش مع طبيبك.</span>' : '<span style="color:#f59e0b;">⚠ Low hemoglobin — could mean anemia. May cause fatigue. Discuss with your doctor.</span>';
-    if (isHigh) return lang === 'ar' ? '<span style="color:#f59e0b;">⚠ هيموغلوبين مرتفع — قد يحتاج فحوصات إضافية.</span>' : '<span style="color:#f59e0b;">⚠ Elevated hemoglobin — may need further evaluation.</span>';
-  }
-  if (/POTASSIUM|K\b/.test(tName)) {
-    if (isCritical) return lang === 'ar' ? '<span style="color:#dc2626;font-weight:600;">&#128680; بوتاسيوم حرج — يؤثر على نظم القلب. تواصل مع طوارئ المستشفى فوراً!</span>' : '<span style="color:#dc2626;font-weight:600;">&#128680; Critical potassium — affects heart rhythm. Contact your hospital/ED immediately!</span>';
-    if (isHigh) return lang === 'ar' ? '<span style="color:#dc2626;">⚠ بوتاسيوم مرتفع — يحتاج تقييم سريع.</span>' : '<span style="color:#dc2626;">⚠ Elevated potassium — needs prompt evaluation.</span>';
-    if (isLow)  return lang === 'ar' ? '<span style="color:#f59e0b;">⚠ بوتاسيوم منخفض — قد يسبب ضعفاً وتشنجات.</span>' : '<span style="color:#f59e0b;">⚠ Low potassium — may cause weakness/cramps.</span>';
-  }
-  if (/GLUCOSE|GLUC|FBS|RBS/.test(tName)) {
-    if (isHigh) return lang === 'ar' ? '<span style="color:#f59e0b;">⚠ سكر مرتفع — راقب علامات السكري (عطش، تبول كثير، إرهاق).</span>' : '<span style="color:#f59e0b;">⚠ Elevated glucose — watch for diabetes signs (thirst, frequent urination, fatigue).</span>';
-    if (isLow)  return lang === 'ar' ? '<span style="color:#dc2626;">⚠ سكر منخفض — تناول شيئاً سكرياً فوراً وتواصل مع طبيبك.</span>' : '<span style="color:#dc2626;">⚠ Low glucose — eat something sweet immediately and contact your doctor.</span>';
-  }
-  if (/TROPONIN/.test(tName)) {
-    if (isHigh || isCritical) return lang === 'ar' ? '<span style="color:#dc2626;font-weight:600;">&#128680; تروبونين مرتفع — قد يدل على إجهاد القلب. اتجه للطوارئ فوراً!</span>' : '<span style="color:#dc2626;font-weight:600;">&#128680; Elevated troponin — may indicate heart strain. Go to ED immediately!</span>';
-  }
-  if (/CREATININE|CR/.test(tName)) {
-    if (isHigh) return lang === 'ar' ? '<span style="color:#f59e0b;">⚠ كرياتينين مرتفع — وظائف الكلى تحتاج متابعة.</span>' : '<span style="color:#f59e0b;">⚠ Elevated creatinine — kidney function needs follow-up.</span>';
-  }
-  if (/INR/.test(tName)) {
-    if (isHigh) return lang === 'ar' ? '<span style="color:#dc2626;">⚠ INR مرتفع — خطر نزيف. تواصل مع طبيب التخثر.</span>' : '<span style="color:#dc2626;">⚠ Elevated INR — bleeding risk. Contact your anticoagulation clinic.</span>';
-    if (isLow)  return lang === 'ar' ? '<span style="color:#f59e0b;">⚠ INR منخفض — خطر تجلط. ناقش مع طبيبك.</span>' : '<span style="color:#f59e0b;">⚠ Low INR — clotting risk. Discuss with your doctor.</span>';
-  }
-  // Generic fallback
-  if (isCritical) return lang === 'ar' ? '<span style="color:#dc2626;font-weight:600;">&#128680; نتيجة حرجة — تواصل مع طبيبك فوراً أو اتجه للطوارئ.</span>' : '<span style="color:#dc2626;font-weight:600;">&#128680; Critical result — contact your doctor immediately or go to the ED.</span>';
-  if (isHigh)     return lang === 'ar' ? '<span style="color:#f59e0b;">⚠ النتيجة أعلى من المعدل — ناقش مع طبيبك.</span>' : '<span style="color:#f59e0b;">⚠ Result is higher than normal — discuss with your doctor.</span>';
-  if (isLow)      return lang === 'ar' ? '<span style="color:#f59e0b;">⚠ النتيجة أقل من المعدل — ناقش مع طبيبك.</span>' : '<span style="color:#f59e0b;">⚠ Result is lower than normal — discuss with your doctor.</span>';
-  return '';
-}
-
+// pp-labs is repurposed as the patient's Treatment Plan view.
 function renderPPLabs(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
-
-  const labs = dbAll(`
-    SELECT lo.*, u.full_name_ar as ordered_by_ar, u.full_name_en as ordered_by_en
-    FROM lab_orders lo
-    JOIN admissions a ON lo.admission_id = a.admission_id
-    LEFT JOIN users u ON lo.doctor_id = u.user_id
-    WHERE a.patient_id = ? AND lo.status='resulted'
-    ORDER BY lo.resulted_at DESC LIMIT 50
-  `, [patient.patient_id]);
-
-  main.innerHTML = `
-    <div class="page-header"><h1>&#128300; ${t('pp_labs')}</h1></div>
-    ${labs.length === 0 ? `${emptyState(lang==='ar'?'لا توجد نتائج مختبر':'No lab results available')}` : `
-      <p style="color:#666;font-size:0.88rem;margin-bottom:12px;">${lang === 'ar' ? 'انقر على ▸ بجانب أي نتيجة لمعرفة معناها بلغة بسيطة.' : 'Click ▸ next to any result for a plain-English explanation.'}</p>
-      <div style="display:flex;flex-direction:column;gap:8px;">
-        ${labs.map((lo, i) => {
-          const interpretation = ppInterpretLab(lo.test_name, lo.result_flag, lo.result_value, lang);
-          const borderColor = /critical/i.test(lo.result_flag || '') ? '#dc2626' : /high|low/i.test(lo.result_flag || '') ? '#f59e0b' : '#10b981';
-          return `<div style="background:var(--white);border-left:4px solid ${borderColor};border-radius:8px;padding:12px 14px;box-shadow:0 1px 2px rgba(0,0,0,0.05);">
-            <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="document.getElementById('ppi-${i}').style.display = document.getElementById('ppi-${i}').style.display === 'none' ? 'block' : 'none';">
-              <div style="flex:1;">
-                <strong>${escapeHtml(lo.test_name)}</strong>
-                ${lo.is_critical ? `<span class="badge badge-danger" style="margin-left:6px;">${lang==='ar'?'حرج':'CRITICAL'}</span>` : ''}
-                <div style="margin-top:4px;font-size:0.95rem;">${escapeHtml(lo.result_value || '—')}${lo.result_unit ? ' ' + escapeHtml(lo.result_unit) : ''}
-                  ${lo.result_flag ? `<span class="badge badge-warning" style="margin-left:6px;">${escapeHtml(lo.result_flag)}</span>` : ''}</div>
-                <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;">${(lo.resulted_at || '').substring(0, 16).replace('T', ' ')} • ${escapeHtml(lang === 'ar' ? (lo.ordered_by_ar || '—') : (lo.ordered_by_en || '—'))}</div>
-              </div>
-              <span style="font-size:1.2rem;color:var(--text-secondary);">▸</span>
-            </div>
-            <div id="ppi-${i}" style="display:none;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);font-size:0.88rem;line-height:1.5;">
-              <strong style="color:#3b82f6;">${lang === 'ar' ? 'ماذا تعني هذه النتيجة؟' : 'What does this mean?'}</strong><br>
-              ${interpretation || (lang === 'ar' ? 'النتيجة ضمن النطاق الطبيعي للفحص.' : 'Result is within typical range for this test.')}
-              <p style="margin-top:8px;font-size:0.78rem;color:var(--text-secondary);">${lang === 'ar' ? 'هذا التفسير عام. اسأل طبيبك دائماً للحالة الخاصة بك.' : 'This is a general explanation. Always ask your doctor about your specific case.'}</p>
-            </div>
-          </div>`;
-        }).join('')}
-      </div>
-    `}
-  `;
+  if (!patient) { main.innerHTML = emptyState(t('patient_login_required')); return; }
+  const money = (n) => Number(n || 0).toLocaleString() + ' ' + (lang === 'ar' ? 'ر.س' : 'SAR');
+  const items = dbAll("SELECT * FROM treatment_plan_items WHERE patient_id=? ORDER BY status, created_at", [patient.patient_id]);
+  const planned = items.filter(i => i.status === 'planned' || i.status === 'in_progress').reduce((s, i) => s + (i.price || 0), 0);
+  const stBadge = (s) => s === 'completed' ? '<span class="badge badge-success">' + (lang === 'ar' ? 'مكتمل' : 'Done') + '</span>' : s === 'in_progress' ? '<span class="badge badge-warning">' + (lang === 'ar' ? 'جارٍ' : 'In progress') + '</span>' : '<span class="badge badge-info">' + (lang === 'ar' ? 'مقترح' : 'Planned') + '</span>';
+  main.innerHTML = '<div class="page-header"><h1>' + (lang === 'ar' ? 'خطتي العلاجية' : 'My Treatment Plan') + '</h1></div>' +
+    '<div class="card"><p style="color:#6b7280;margin-top:0">' + (lang === 'ar' ? 'إجمالي العلاج المخطط المتبقّي: ' : 'Estimated remaining treatment: ') + '<strong>' + money(planned) + '</strong></p>' +
+    (items.length ? '<div class="table-container"><table><thead><tr><th>' + (lang === 'ar' ? 'الإجراء' : 'Procedure') + '</th><th>' + (lang === 'ar' ? 'السن' : 'Tooth') + '</th><th>' + (lang === 'ar' ? 'التكلفة' : 'Cost') + '</th><th>' + (lang === 'ar' ? 'الحالة' : 'Status') + '</th></tr></thead><tbody>' +
+      items.map(i => '<tr><td>' + escapeHtml(lang === 'ar' ? (i.procedure_name_ar || i.procedure_name_en) : i.procedure_name_en) + '</td><td>' + (i.tooth_fdi || '—') + '</td><td>' + money(i.price) + '</td><td>' + stBadge(i.status) + '</td></tr>').join('') + '</tbody></table></div>' : emptyState(lang === 'ar' ? 'لا توجد خطة علاجية' : 'No treatment plan yet')) + '</div>';
 }
 
 function renderPPPrescriptions(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
-
-  const rxs = dbAll(`
-    SELECT p.*, u.full_name_ar as dr_ar, u.full_name_en as dr_en
-    FROM prescriptions p
-    JOIN admissions a ON p.admission_id = a.admission_id
-    LEFT JOIN users u ON p.doctor_id = u.user_id
-    WHERE a.patient_id = ?
-    ORDER BY p.prescribed_at DESC LIMIT 50
-  `, [patient.patient_id]);
-
-  const active = rxs.filter(r => r.status === 'active');
-  const past   = rxs.filter(r => r.status !== 'active');
-
-  const rxCard = r => `
-    <div class="card mb-2" style="border-left:4px solid ${r.status==='active'?'#10b981':'#9ca3af'}">
-      <div class="card-body" style="padding:12px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
-          <div>
-            <div style="font-size:1.1rem;font-weight:600">${escapeHtml(r.drug_name)}</div>
-            <div style="color:#6b7280;font-size:0.9rem;margin-top:2px">${escapeHtml(r.dose||'')} • ${escapeHtml(r.route||'')} • ${escapeHtml(r.frequency||'')}</div>
-          </div>
-          <span class="badge ${r.status==='active'?'badge-success':'badge-secondary'}">
-            ${r.status==='active'?(lang==='ar'?'فعّال':'Active'):(lang==='ar'?'منتهي':'Completed')}
-          </span>
-        </div>
-        <div style="margin-top:8px;font-size:0.85rem;color:#6b7280">
-          ${lang==='ar'?'وصفه':'Prescribed by'}: <strong>${escapeHtml(lang==='ar'?(r.dr_ar||'—'):(r.dr_en||'—'))}</strong>
-          • ${escapeHtml((r.prescribed_at||'').substring(0,10))}
-        </div>
-        ${r.status === 'active' ? `<div style="margin-top:10px;text-align:right;">
-          <button class="btn btn-sm btn-primary" onclick="requestRxRefill(${r.rx_id})">&#128189; ${lang === 'ar' ? 'طلب إعادة صرف' : 'Request Refill'}</button>
-        </div>` : ''}
-      </div>
-    </div>`;
-
-  main.innerHTML = `
-    <div class="page-header"><h1>&#128138; ${t('pp_prescriptions')}</h1></div>
-    ${active.length > 0 ? `<h3 style="margin:8px 0">${lang==='ar'?'الأدوية النشطة':'Active Medications'} (${active.length})</h3>${active.map(rxCard).join('')}` : ''}
-    ${past.length > 0 ? `<h3 style="margin:16px 0 8px">${lang==='ar'?'سجل الأدوية السابقة':'Previous Medications'}</h3>${past.map(rxCard).join('')}` : ''}
-    ${rxs.length === 0 ? `${emptyState(lang==='ar'?'لا توجد وصفات طبية':'No prescriptions on record')}` : ''}
-  `;
+  if (!patient) { main.innerHTML = emptyState(t('patient_login_required')); return; }
+  const rxs = dbAll("SELECT * FROM prescriptions WHERE patient_id=? ORDER BY prescribed_at DESC", [patient.patient_id]);
+  main.innerHTML = '<div class="page-header"><h1>' + (lang === 'ar' ? 'أدويتي' : 'My Medications') + '</h1></div><div class="card">' +
+    (rxs.length ? '<div class="table-container"><table><thead><tr><th>' + (lang === 'ar' ? 'الدواء' : 'Medication') + '</th><th>' + (lang === 'ar' ? 'الجرعة' : 'Dose') + '</th><th>' + (lang === 'ar' ? 'التكرار' : 'Frequency') + '</th><th>' + (lang === 'ar' ? 'الحالة' : 'Status') + '</th></tr></thead><tbody>' +
+      rxs.map(r => '<tr><td>' + escapeHtml(r.drug_name) + '</td><td>' + escapeHtml(r.dose || '—') + '</td><td>' + escapeHtml(r.frequency || '—') + '</td><td><span class="badge ' + (r.status === 'active' ? 'badge-success' : 'badge-secondary') + '">' + escapeHtml(r.status) + '</span></td></tr>').join('') + '</tbody></table></div>' : emptyState(lang === 'ar' ? 'لا توجد أدوية' : 'No medications')) + '</div>';
 }
 
 function renderPPAppointments(main, lang) {
   const patient = getCurrentPatient();
-  if (!patient) { main.innerHTML = `${emptyState(t('patient_login_required'))}`; return; }
-
-  // Match on STRONG identifiers only (portal patient link, national id, MRN).
-  // The old query also matched patient_name_ar/_en unconditionally — with common
-  // names that showed OTHER people's appointments (department, doctor, and the
-  // free-text visit reason) in this patient's portal: a PHI leak. Name-only
-  // matching is gone; legacy reception-booked rows without any strong identifier
-  // are intentionally not shown rather than risk cross-patient disclosure.
-  const appts = dbAll(`
-    SELECT a.*, d.name_ar as dept_ar, d.name_en as dept_en, u.full_name_ar as dr_ar, u.full_name_en as dr_en
-    FROM appointments a
-    LEFT JOIN departments d ON a.dept_id = d.dept_id
-    LEFT JOIN users u ON a.doctor_id = u.user_id
-    WHERE a.requested_by_patient_id = ?
-       OR (a.national_id = ? AND a.national_id IS NOT NULL AND a.national_id != '')
-       OR (a.mrn = ? AND a.mrn IS NOT NULL AND a.mrn != '')
-    ORDER BY a.appt_date DESC, a.appt_time DESC LIMIT 50
-  `, [patient.patient_id, patient.national_id || '___none___', patient.mrn || '___none___']);
-
+  if (!patient) { main.innerHTML = emptyState(t('patient_login_required')); return; }
+  const appts = dbAll("SELECT a.*, u.full_name_en doc_en, u.full_name_ar doc_ar FROM appointments a LEFT JOIN users u ON u.user_id=a.doctor_id WHERE a.patient_id=? ORDER BY a.appt_date DESC", [patient.patient_id]);
   const today = todayISO();
-  const upcoming = appts.filter(a => a.appt_date >= today && a.status === 'scheduled');
-  const past     = appts.filter(a => a.appt_date < today || a.status !== 'scheduled');
-
-  const apptCard = a => `
-    <div class="card mb-2">
-      <div class="card-body" style="padding:14px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
-          <div>
-            <div style="font-size:1.05rem;font-weight:600">${escapeHtml(lang==='ar'?a.dept_ar:a.dept_en)}</div>
-            ${a.dr_en ? `<div style="color:#6b7280;font-size:0.9rem;margin-top:2px">${lang==='ar'?'مع':'with'} <strong>${escapeHtml(lang==='ar'?a.dr_ar:a.dr_en)}</strong></div>` : ''}
-            ${a.reason ? `<div style="color:#6b7280;font-size:0.85rem;margin-top:4px">${escapeHtml(a.reason)}</div>` : ''}
-          </div>
-          <div style="text-align:right">
-            <div style="font-size:1.1rem;font-weight:600;color:#3b82f6">${escapeHtml(a.appt_date)}</div>
-            <div style="color:#6b7280">${escapeHtml(a.appt_time)}</div>
-            <span class="badge badge-info" style="margin-top:4px">${escapeHtml(a.status)}</span>
-          </div>
-        </div>
-      </div>
-    </div>`;
-
-  main.innerHTML = `
-    <div class="page-header">
-      <h1>&#128197; ${t('pp_appointments')}</h1>
-      <button class="btn btn-primary" onclick="showPPBookAppt()">&#128197; ${lang === 'ar' ? '+ حجز موعد جديد' : '+ Request New Appointment'}</button>
-    </div>
-    <div id="pp-book-appt-form"></div>
-    ${upcoming.length > 0 ? `<h3 style="margin:8px 0">${lang==='ar'?'مواعيد قادمة':'Upcoming Appointments'} (${upcoming.length})</h3>${upcoming.map(apptCard).join('')}` : ''}
-    ${past.length > 0 ? `<h3 style="margin:16px 0 8px">${lang==='ar'?'سجل المواعيد':'Past Appointments'}</h3>${past.map(apptCard).join('')}` : ''}
-    ${appts.length === 0 ? `<div class="empty-state"><p>${lang==='ar'?'لا توجد مواعيد':'No appointments on record'}</p><p style="color:#6b7280;font-size:0.85rem;margin-top:8px">${lang==='ar'?'اتصل بقسم الاستقبال لجدولة موعد':'Contact reception to schedule an appointment'}</p></div>` : ''}
-  `;
+  main.innerHTML = '<div class="page-header"><h1>' + (lang === 'ar' ? 'مواعيدي' : 'My Appointments') + '</h1><button class="btn btn-primary" onclick="showPPBookAppt()">+ ' + (lang === 'ar' ? 'حجز موعد' : 'Request appointment') + '</button></div><div class="card">' +
+    (appts.length ? '<div class="table-container"><table><thead><tr><th>' + (lang === 'ar' ? 'التاريخ' : 'Date') + '</th><th>' + (lang === 'ar' ? 'الوقت' : 'Time') + '</th><th>' + (lang === 'ar' ? 'السبب' : 'Reason') + '</th><th>' + (lang === 'ar' ? 'الطبيب' : 'Dentist') + '</th><th>' + (lang === 'ar' ? 'الحالة' : 'Status') + '</th></tr></thead><tbody>' +
+      appts.map(a => '<tr ' + (a.appt_date >= today && a.status !== 'completed' ? 'style="background:#eff6ff"' : '') + '><td>' + a.appt_date + '</td><td>' + a.appt_time + '</td><td>' + escapeHtml(a.reason || '—') + '</td><td>' + escapeHtml(lang === 'ar' ? (a.doc_ar || '—') : (a.doc_en || '—')) + '</td><td><span class="badge badge-info">' + escapeHtml(a.status) + '</span></td></tr>').join('') + '</tbody></table></div>' : emptyState(lang === 'ar' ? 'لا مواعيد' : 'No appointments')) + '</div>';
 }
+
 
 function renderPPMessages(main, lang) {
   const patient = getCurrentPatient();
