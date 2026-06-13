@@ -454,6 +454,20 @@ function renderSidebar(role) {
     }
   }
 
+  // Cross-role clinical tools (patient-centric; appended here to avoid duplicating
+  // into each role menu). Documents = chart attachments; Care Gaps = preventive
+  // nudges; Referrals = internal consult requests.
+  const CLINICAL_NAV = ['doctor', 'consultant', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
+  if (CLINICAL_NAV.includes(role) || role === 'radiologist') {
+    items.push({ id: 'documents', icon: '&#128206;', label: t('documents_nav') });
+  }
+  if (CLINICAL_NAV.includes(role)) {
+    items.push({ id: 'care-gaps', icon: '&#9889;', label: t('care_gaps_nav') });
+  }
+  if (['doctor', 'consultant', 'emergency_doctor'].includes(role)) {
+    items.push({ id: 'referrals', icon: '&#128228;', label: t('referrals_nav') });
+  }
+
   nav.innerHTML = items.map(item => {
     // Labels may contain trusted HTML (e.g. sidebar-badge span) — split on first <
     const labelHtml = item.label.includes('<')
@@ -513,6 +527,10 @@ const VIEW_PREFIX_ROLES = {
   // stems), so startsWith resolves each to its own role set.
   'incident-report': ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'pharmacist', 'lab_technician', 'radiologist', 'receptionist', 'dietitian', 'social_worker'],
   'incident-queue':  ['it_admin', 'hospital_manager'],
+  // Cross-role clinical tools (full view ids used as their own prefix keys).
+  'documents': ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'radiologist'],
+  'care-gaps': ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'],
+  'referrals': ['consultant', 'doctor', 'emergency_doctor'],
 };
 
 function canAccessView(viewId, role) {
@@ -679,6 +697,11 @@ function renderView(viewId) {
     // ---- Patient-safety incident reporting (file = all staff; queue = manager) ----
     case 'incident-report': renderIncidentReport(main, lang); break;
     case 'incident-queue':  renderIncidentQueue(main, lang); break;
+
+    // ---- Cross-role clinical tools (adapted peer features) ----
+    case 'documents': renderDocuments(main, lang); break;
+    case 'care-gaps': renderCareGaps(main, lang); break;
+    case 'referrals': renderReferrals(main, lang); break;
 
     default:
       main.innerHTML = `<div class="empty-state"><div class="empty-icon">&#128679;</div><p>${t('loading')}</p></div>`;
@@ -2847,6 +2870,273 @@ async function removeFlag(flagId, pid) {
   showSuccess(t('flag_removed'));
   saveDBToIndexedDB();
   navigateProblemList(pid);
+}
+
+// ============================================================
+// INTERNAL REFERRAL / CONSULT REQUEST (LAN adaptation of OSCAR messaging)
+// ============================================================
+const REFERRAL_ROLES = ['doctor', 'consultant', 'emergency_doctor'];
+
+function renderReferrals(main, lang) {
+  const session = getCurrentSession();
+  const user = getCurrentUser();
+  const myDept = user ? user.department_id : null;
+  const patients = _problemListPatients(session);
+  const depts = dbAll('SELECT dept_id, name_ar, name_en FROM departments ORDER BY dept_id');
+  const patOptions = patients.map(p => `<option value="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
+  const deptOptions = depts.map(d => `<option value="${d.dept_id}">${lang === 'ar' ? escapeHtml(d.name_ar) : escapeHtml(d.name_en)}</option>`).join('');
+  const nameOf = (en, ar) => escapeHtml(lang === 'ar' ? (ar || en || '') : (en || ar || ''));
+
+  const inbox = myDept ? dbAll(`SELECT r.*, p.mrn, p.full_name_ar, p.full_name_en, uf.full_name_en AS fe, uf.full_name_ar AS fa
+    FROM referrals r JOIN patients p ON r.patient_id = p.patient_id LEFT JOIN users uf ON uf.user_id = r.from_user
+    WHERE r.to_dept = ? AND r.status IN ('open','accepted') ORDER BY r.referral_id DESC`, [myDept]) : [];
+  const sent = user ? dbAll(`SELECT r.*, p.mrn, p.full_name_ar, p.full_name_en, d.name_en AS dne, d.name_ar AS dna
+    FROM referrals r JOIN patients p ON r.patient_id = p.patient_id LEFT JOIN departments d ON d.dept_id = r.to_dept
+    WHERE r.from_user = ? ORDER BY r.referral_id DESC LIMIT 50`, [user.user_id]) : [];
+
+  const inboxRows = inbox.length ? inbox.map(r => `<tr>
+      <td>${escapeHtml(r.mrn)} — ${nameOf(r.full_name_en, r.full_name_ar)}</td>
+      <td>${nameOf(r.fe, r.fa)}</td>
+      <td>${r.urgency === 'urgent' ? `<span class="spb-badge" style="background:#dc2626;color:#fff;">${t('ref_urgent')}</span>` : t('ref_routine')}</td>
+      <td>${escapeHtml(r.reason || '')}</td>
+      <td>${t('ref_status_' + r.status)}</td>
+      <td><input type="text" id="ref-note-${r.referral_id}" placeholder="${t('ref_response')}" style="max-width:150px;">
+        ${r.status === 'open' ? `<button class="btn btn-sm btn-secondary" onclick="respondReferral(${r.referral_id},'accept')">${t('ref_accept')}</button>` : ''}
+        <button class="btn btn-sm btn-primary" onclick="respondReferral(${r.referral_id},'complete')">${t('ref_complete')}</button>
+        <button class="btn btn-sm btn-danger" onclick="respondReferral(${r.referral_id},'decline')">${t('ref_decline')}</button></td>
+    </tr>`).join('') : `<tr><td colspan="6" class="muted">${t('ref_none')}</td></tr>`;
+
+  const sentRows = sent.length ? sent.map(r => `<tr>
+      <td>${escapeHtml(r.mrn)} — ${nameOf(r.full_name_en, r.full_name_ar)}</td>
+      <td>${nameOf(r.dne, r.dna)}</td>
+      <td>${t('ref_status_' + r.status)}</td>
+      <td>${escapeHtml(r.reason || '')}</td>
+      <td>${r.response_note ? escapeHtml(r.response_note) : '—'}</td>
+    </tr>`).join('') : `<tr><td colspan="5" class="muted">${t('ref_none')}</td></tr>`;
+
+  main.innerHTML = `
+    <div class="page-header"><h1>${t('referrals_title')}</h1></div>
+    <div class="card">
+      <h3>${t('ref_new')}</h3>
+      <form onsubmit="createReferral(event)">
+        <div class="form-row">
+          <div class="form-group" style="flex:2;"><label>${t('ref_patient')} *</label><select id="ref-patient" required>${patOptions}</select></div>
+          <div class="form-group"><label>${t('ref_to_dept')} *</label><select id="ref-dept" required>${deptOptions}</select></div>
+          <div class="form-group"><label>${t('ref_urgency')}</label><select id="ref-urgency"><option value="routine">${t('ref_routine')}</option><option value="urgent">${t('ref_urgent')}</option></select></div>
+        </div>
+        <div class="form-group"><label>${t('ref_specialty')}</label><input type="text" id="ref-specialty" maxlength="60"></div>
+        <div class="form-group"><label>${t('ref_reason')} *</label><textarea id="ref-reason" rows="2" required></textarea></div>
+        <button type="submit" class="btn btn-primary">${t('ref_submit')}</button>
+      </form>
+    </div>
+    <div class="card"><h3>${t('ref_inbox')}</h3>
+      <table class="table"><thead><tr><th>${t('ref_patient')}</th><th>${t('ref_from')}</th><th>${t('ref_urgency')}</th><th>${t('ref_reason')}</th><th>${t('status')}</th><th></th></tr></thead><tbody>${inboxRows}</tbody></table></div>
+    <div class="card"><h3>${t('ref_outbox')}</h3>
+      <table class="table"><thead><tr><th>${t('ref_patient')}</th><th>${t('ref_to_dept')}</th><th>${t('status')}</th><th>${t('ref_reason')}</th><th>${t('ref_response')}</th></tr></thead><tbody>${sentRows}</tbody></table></div>`;
+}
+
+async function createReferral(e) {
+  e.preventDefault();
+  const lang = currentLanguage();
+  if (!requireRole(REFERRAL_ROLES, 'creating a referral')) return;
+  const user = getCurrentUser();
+  const pid = parseInt(document.getElementById('ref-patient').value, 10);
+  const dept = parseInt(document.getElementById('ref-dept').value, 10) || null;
+  const urgency = document.getElementById('ref-urgency').value || 'routine';
+  const specialty = document.getElementById('ref-specialty').value.trim() || null;
+  const reason = document.getElementById('ref-reason').value.trim();
+  if (!pid || !reason) { showError(lang === 'ar' ? 'المريض والسبب مطلوبان' : 'Patient and reason are required'); return; }
+  const adm = dbGet("SELECT admission_id FROM admissions WHERE patient_id = ? AND status='active' ORDER BY admission_id DESC LIMIT 1", [pid]);
+  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
+  dbRun('INSERT INTO referrals (patient_id, admission_id, from_user, to_dept, to_specialty, reason, urgency, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+    [pid, adm ? adm.admission_id : null, user ? user.user_id : null, dept, specialty, reason, urgency, 'open', nowISO()]);
+  await logAction('REFERRAL_CREATED', `Referred patient to dept ${dept} (${urgency}): ${reason}`, `إحالة المريض للقسم ${dept}`, pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
+  showSuccess(t('ref_sent'));
+  saveDBToIndexedDB();
+  renderView('referrals');
+}
+
+async function respondReferral(id, action) {
+  if (!requireRole(REFERRAL_ROLES, 'responding to a referral')) return;
+  const user = getCurrentUser();
+  const noteEl = document.getElementById('ref-note-' + id);
+  const note = noteEl ? noteEl.value.trim() : '';
+  const status = action === 'accept' ? 'accepted' : (action === 'complete' ? 'completed' : 'declined');
+  const ref = dbGet('SELECT patient_id FROM referrals WHERE referral_id = ?', [id]);
+  dbRun('UPDATE referrals SET status = ?, responded_by = ?, response_note = COALESCE(NULLIF(?, \'\'), response_note), responded_at = ? WHERE referral_id = ?',
+    [status, user ? user.user_id : null, note, nowISO(), id]);
+  await logAction('REFERRAL_UPDATED', `Referral #${id} -> ${status}${note ? ': ' + note : ''}`, `تحديث الإحالة #${id}`, ref ? ref.patient_id : null);
+  showSuccess(t('ref_updated'));
+  saveDBToIndexedDB();
+  renderView('referrals');
+}
+
+// ============================================================
+// CARE-GAP / PREVENTIVE REMINDERS (decision-rules in the safety-nudge style)
+// ============================================================
+const CAREGAP_ROLES = ['doctor', 'consultant', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
+const CARE_GAP_LABELS = { code_status: 'cg_code_status', vte: 'cg_vte', vitals: 'cg_vitals', allergy: 'cg_allergy', vaccine: 'cg_vaccine' };
+
+function computeCareGaps(a) {
+  const dismissed = new Set(dbAll('SELECT gap_key FROM care_gap_overrides WHERE admission_id = ?', [a.admission_id]).map(r => r.gap_key));
+  const gaps = [];
+  const add = k => { if (!dismissed.has(k)) gaps.push(k); };
+  if (!a.code_status || a.code_status === 'unknown') add('code_status');
+  const cutoff24 = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  if (a.admitted_at && a.admitted_at < cutoff24) {
+    const anticoag = dbGet(`SELECT 1 AS x FROM prescriptions WHERE admission_id = ? AND status='active' AND (
+      lower(drug_name) LIKE '%heparin%' OR lower(drug_name) LIKE '%enoxaparin%' OR lower(drug_name) LIKE '%warfarin%' OR
+      lower(drug_name) LIKE '%apixaban%' OR lower(drug_name) LIKE '%rivaroxaban%' OR lower(drug_name) LIKE '%dabigatran%' OR
+      lower(drug_name) LIKE '%dalteparin%' OR lower(drug_name) LIKE '%fondaparinux%')`, [a.admission_id]);
+    if (!anticoag) add('vte');
+  }
+  const cutoff12 = new Date(Date.now() - 12 * 3600 * 1000).toISOString();
+  const lastV = dbGet('SELECT MAX(recorded_at) AS m FROM vitals_log WHERE admission_id = ?', [a.admission_id]);
+  if (!lastV || !lastV.m || lastV.m < cutoff12) add('vitals');
+  if (!dbGet('SELECT 1 AS x FROM patient_allergies WHERE patient_id = ?', [a.patient_id])) add('allergy');
+  if (dbGet('SELECT 1 AS x FROM vaccinations WHERE patient_id = ? AND next_due_date IS NOT NULL AND next_due_date <= ?', [a.patient_id, todayISO()])) add('vaccine');
+  return gaps;
+}
+
+function renderCareGaps(main, lang) {
+  const session = getCurrentSession();
+  const uid = session ? session.user_id : 0;
+  let adms = dbAll(`SELECT a.admission_id, a.patient_id, a.code_status, a.admitted_at, p.mrn, p.full_name_ar, p.full_name_en
+    FROM case_assignments ca JOIN admissions a ON ca.admission_id = a.admission_id JOIN patients p ON a.patient_id = p.patient_id
+    WHERE ca.doctor_id = ? AND a.status='active' ORDER BY a.admission_id DESC`, [uid]);
+  if (!adms.length) adms = dbAll(`SELECT a.admission_id, a.patient_id, a.code_status, a.admitted_at, p.mrn, p.full_name_ar, p.full_name_en
+    FROM admissions a JOIN patients p ON a.patient_id = p.patient_id WHERE a.status='active' ORDER BY a.admission_id DESC LIMIT 100`);
+  let blocks = '';
+  for (const a of adms) {
+    const gaps = computeCareGaps(a);
+    if (!gaps.length) continue;
+    const name = lang === 'ar' ? a.full_name_ar : (a.full_name_en || a.full_name_ar);
+    const chips = gaps.map(k => `<div style="margin:4px 0;">
+      <span class="spb-badge" style="background:#d97706;color:#fff;">&#9889; ${t(CARE_GAP_LABELS[k])}</span>
+      <button class="btn btn-sm btn-secondary" onclick="dismissCareGap(${a.admission_id}, '${k}', ${a.patient_id})">${t('cg_dismiss')}</button>
+    </div>`).join('');
+    blocks += `<div class="card"><strong>${escapeHtml(a.mrn)} — ${escapeHtml(name)}</strong>${chips}</div>`;
+  }
+  main.innerHTML = `
+    <div class="page-header"><h1>${t('care_gaps_title')}</h1></div>
+    ${blocks || `<div class="card"><p class="muted">${t('cg_none')}</p></div>`}`;
+}
+
+async function dismissCareGap(admissionId, gapKey, pid) {
+  const lang = currentLanguage();
+  if (!requireRole(CAREGAP_ROLES, 'dismissing a care gap')) return;
+  const reason = (typeof prompt === 'function') ? prompt(t('cg_dismiss_reason')) : '';
+  if (reason === null) return;   // cancelled
+  const user = getCurrentUser();
+  const patient = pid ? dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]) : null;
+  dbRun('INSERT INTO care_gap_overrides (admission_id, gap_key, reason, dismissed_by, dismissed_at) VALUES (?,?,?,?,?)',
+    [admissionId, gapKey, reason || null, user ? user.user_id : null, nowISO()]);
+  await logAction('CARE_GAP_DISMISSED', `Dismissed care gap '${gapKey}' for admission ${admissionId}${reason ? ': ' + reason : ''}`,
+    `تم تجاهل تذكير الرعاية`, pid || null, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
+  showSuccess(t('cg_dismissed'));
+  saveDBToIndexedDB();
+  renderView('care-gaps');
+}
+
+// ============================================================
+// CHART DOCUMENTS / ATTACHMENTS (LAN-only: bytes live in the one server DB)
+// ============================================================
+const ATTACH_ROLES = ['doctor', 'consultant', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'radiologist'];
+const ATTACH_MAX_BYTES = 600 * 1024;   // keep a single upload under the bridge body cap
+
+function renderDocumentsBody(pid, lang) {
+  const patient = dbGet('SELECT patient_id, mrn, full_name_ar, full_name_en FROM patients WHERE patient_id = ?', [pid]);
+  if (!patient) return emptyState();
+  const rows = dbAll('SELECT attach_id, filename, mime, kind, size_bytes, data, note, uploaded_at FROM patient_attachments WHERE patient_id = ? ORDER BY attach_id DESC', [pid]);
+  const items = rows.length ? rows.map(a => {
+    const kb = a.size_bytes ? Math.max(1, Math.round(a.size_bytes / 1024)) + ' KB' : '';
+    const preview = a.kind === 'image'
+      ? `<img src="${a.data}" alt="${escapeHtml(a.filename || '')}" style="max-width:200px;max-height:200px;border-radius:6px;display:block;margin-bottom:6px;">`
+      : `<div style="font-size:2em;">${a.kind === 'pdf' ? '&#128196;' : '&#128206;'}</div>`;
+    return `<div class="card" style="display:inline-block;vertical-align:top;width:240px;margin:6px;">
+      ${preview}
+      <div><strong>${escapeHtml(a.filename || '(file)')}</strong></div>
+      <div class="muted" style="font-size:.85em;">${escapeHtml(String(a.uploaded_at || '').slice(0, 16).replace('T', ' '))} • ${kb}</div>
+      ${a.note ? `<div style="font-size:.9em;">${escapeHtml(a.note)}</div>` : ''}
+      <div style="margin-top:6px;">
+        <a class="btn btn-sm btn-secondary" href="${a.data}" download="${escapeHtml(a.filename || 'document')}">${t('att_download')}</a>
+        <button class="btn btn-sm btn-danger" onclick="deleteAttachment(${a.attach_id}, ${pid})">${t('att_delete')}</button>
+      </div>
+    </div>`;
+  }).join('') : `<p class="muted">${t('att_none')}</p>`;
+
+  return `
+    <div class="card">
+      <h3>${t('att_upload')}</h3>
+      <p class="muted">${t('att_hint')}</p>
+      <div class="form-row" style="align-items:flex-end;">
+        <div class="form-group" style="flex:2;"><label>${t('att_file')}</label><input type="file" id="att-file" accept="image/*,application/pdf"></div>
+        <div class="form-group" style="flex:2;"><label>${t('att_note')}</label><input type="text" id="att-note" maxlength="120"></div>
+        <div class="form-group"><button class="btn btn-primary" onclick="uploadAttachment(${pid})">${t('att_upload_btn')}</button></div>
+      </div>
+    </div>
+    <div>${items}</div>`;
+}
+
+function renderDocuments(main, lang) {
+  const session = getCurrentSession();
+  const patients = _problemListPatients(session);
+  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('documents_title')}</h1></div>${emptyState()}`; return; }
+  const pid = patients[0].patient_id;
+  const patOptions = patients.map(p =>
+    `<option value="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
+  main.innerHTML = `
+    <div class="page-header"><h1>${t('documents_title')}</h1></div>
+    <div class="card">
+      <div class="form-group"><label>${t('patient_col')}</label>
+        <select id="doc-att-patient" onchange="navigateDocuments(this.value)">${patOptions}</select></div>
+    </div>
+    <div id="doc-att-body">${renderDocumentsBody(pid, lang)}</div>`;
+}
+
+function navigateDocuments(pid) {
+  const body = document.getElementById('doc-att-body');
+  if (body) body.innerHTML = renderDocumentsBody(parseInt(pid, 10), currentLanguage());
+}
+
+function uploadAttachment(pid) {
+  const lang = currentLanguage();
+  if (!requireRole(ATTACH_ROLES, 'uploading a document')) return;
+  const input = document.getElementById('att-file');
+  const note = (document.getElementById('att-note').value || '').trim();
+  const f = input && input.files && input.files[0];
+  if (!f) { showError(lang === 'ar' ? 'اختر ملفًا' : 'Choose a file first'); return; }
+  if (f.size > ATTACH_MAX_BYTES) { showError(lang === 'ar' ? 'الحد الأقصى 600 كيلوبايت على الشبكة المحلية' : 'Max 600 KB over the LAN (compress or photograph at lower resolution)'); return; }
+  if (!/^(image\/(png|jpe?g|gif|webp)|application\/pdf)$/i.test(f.type)) { showError(lang === 'ar' ? 'صور أو PDF فقط' : 'Images or PDF only'); return; }
+  const reader = new FileReader();
+  reader.onerror = () => showError(lang === 'ar' ? 'تعذّرت قراءة الملف' : 'Could not read the file');
+  reader.onload = async () => {
+    const dataURL = String(reader.result || '');
+    const kind = /^image\//i.test(f.type) ? 'image' : (/pdf/i.test(f.type) ? 'pdf' : 'other');
+    const user = getCurrentUser();
+    const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
+    dbRun('INSERT INTO patient_attachments (patient_id, filename, mime, kind, size_bytes, data, note, uploaded_by, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      [pid, f.name, f.type, kind, f.size, dataURL, note || null, user ? user.user_id : null, nowISO()]);
+    await logAction('ATTACHMENT_ADDED', `Uploaded document "${f.name}" (${kind}, ${Math.round(f.size / 1024)}KB)`,
+      `أُرفق مستند "${f.name}"`, pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
+    showSuccess(t('att_uploaded'));
+    saveDBToIndexedDB();
+    navigateDocuments(pid);
+  };
+  reader.readAsDataURL(f);
+}
+
+async function deleteAttachment(id, pid) {
+  const lang = currentLanguage();
+  if (!requireRole(ATTACH_ROLES, 'deleting a document')) return;
+  if (typeof confirm === 'function' && !confirm(lang === 'ar' ? 'حذف هذا المستند؟' : 'Delete this document?')) return;
+  const a = dbGet('SELECT filename FROM patient_attachments WHERE attach_id = ?', [id]);
+  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
+  dbRun('DELETE FROM patient_attachments WHERE attach_id = ?', [id]);
+  await logAction('ATTACHMENT_DELETED', `Deleted document "${a ? a.filename : id}"`, `حُذف مستند`, pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
+  showSuccess(t('att_deleted'));
+  saveDBToIndexedDB();
+  navigateDocuments(pid);
 }
 
 // ============================================================

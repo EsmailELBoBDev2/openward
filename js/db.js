@@ -368,6 +368,9 @@ function applySchemaMigrations() {
     try { db.run('CREATE INDEX IF NOT EXISTS idx_pc_patient_status ON patient_conditions(patient_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_pflags_patient ON patient_flags(patient_id, active)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_incident_status_sev ON incident_reports(status, severity)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_attach_patient ON patient_attachments(patient_id, uploaded_at)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_referrals_status ON referrals(status, to_dept)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_caregap_admission ON care_gap_overrides(admission_id, gap_key)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_lab_admission_status ON lab_orders(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_rx_admission_status ON prescriptions(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_audit_action_ts ON audit_log(action_type, timestamp DESC)'); } catch(e) {}
@@ -745,6 +748,62 @@ function createAllTables() {
       reviewed_by      INTEGER,
       review_notes     TEXT,
       closed_at        TEXT
+    );
+  `);
+
+  // Chart attachments — scanned consent forms, referral letters, wound photos,
+  // an X-ray snapshot. LAN-only: the bytes live in the one server DB (base64),
+  // no cloud, no DICOM server. Size-capped client-side (the bridge body limit
+  // keeps a single upload small) — this is the lightweight stand-in for a PACS
+  // viewer / document-management system, not a replacement for one.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS patient_attachments (
+      attach_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id   INTEGER NOT NULL REFERENCES patients(patient_id),
+      admission_id INTEGER,
+      filename     TEXT,
+      mime         TEXT,
+      kind         TEXT DEFAULT 'other',
+      size_bytes   INTEGER,
+      data         TEXT,
+      note         TEXT,
+      uploaded_by  INTEGER,
+      uploaded_at  TEXT
+    );
+  `);
+
+  // Internal referral / consult request — the LAN-internal adaptation of OSCAR's
+  // secure messaging: a clinician asks another specialty/department to see the
+  // patient; the receiving side accepts/responds/closes. Not a free-form chat.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS referrals (
+      referral_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id    INTEGER NOT NULL REFERENCES patients(patient_id),
+      admission_id  INTEGER,
+      from_user     INTEGER,
+      to_dept       INTEGER,
+      to_specialty  TEXT,
+      reason        TEXT NOT NULL,
+      urgency       TEXT DEFAULT 'routine',
+      status        TEXT DEFAULT 'open',
+      created_at    TEXT,
+      responded_by  INTEGER,
+      response_note TEXT,
+      responded_at  TEXT
+    );
+  `);
+
+  // Care-gap dismissals — a clinician may dismiss a preventive-care nudge WITH A
+  // REASON (the app-wide decline-with-reason pattern); the gap then stops showing
+  // for that admission. Audited via logAction at the call site.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS care_gap_overrides (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      admission_id  INTEGER NOT NULL,
+      gap_key       TEXT NOT NULL,
+      reason        TEXT,
+      dismissed_by  INTEGER,
+      dismissed_at  TEXT
     );
   `);
 
