@@ -1,6 +1,30 @@
 // ============================================================
-// HIS — Utility Functions
+// OpenSmile — Utility Functions
 // ============================================================
+
+// ---- Debug console logging ----------------------------------------------
+// dlog(step, data) prints a labelled, timestamped step with its values;
+// derr(step, error) prints the same for failures (with the error message).
+// On by default for the demo so every action is traceable in DevTools; flip
+// localStorage 'os_debug' to '0' to silence. Never throws.
+let OPENSMILE_DEBUG = true;
+try { OPENSMILE_DEBUG = (typeof localStorage === 'undefined') || localStorage.getItem('os_debug') !== '0'; } catch (e) {}
+function setDebug(on) { OPENSMILE_DEBUG = !!on; try { localStorage.setItem('os_debug', on ? '1' : '0'); } catch (e) {} }
+function dlog(step, data) {
+  if (!OPENSMILE_DEBUG) return;
+  try {
+    const ts = new Date().toISOString().slice(11, 23);
+    if (data === undefined) console.log(`%c[OpenSmile ${ts}]%c ${step}`, 'color:#0ea5e9;font-weight:bold', 'color:inherit');
+    else console.log(`%c[OpenSmile ${ts}]%c ${step}`, 'color:#0ea5e9;font-weight:bold', 'color:inherit', data);
+  } catch (e) {}
+}
+function derr(step, error) {
+  try {
+    const ts = new Date().toISOString().slice(11, 23);
+    const msg = error && error.message ? error.message : String(error);
+    console.error(`%c[OpenSmile ${ts} ✗]%c ${step} — ${msg}`, 'color:#ef4444;font-weight:bold', 'color:inherit', error || '');
+  } catch (e) {}
+}
 
 /**
  * SHA-256 hash — uses Web Crypto API when available (HTTPS/localhost),

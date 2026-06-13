@@ -823,8 +823,32 @@ function renderITDepts(main, lang) {
 function renderITSettings(main, lang) {
   const ar = lang === 'ar';
   const encOn = (typeof encIsActive === 'function') && encIsActive();
+  const labWa = getSetting('lab_whatsapp', '');
+  const ownerWa = getSetting('owner_whatsapp', '');
+  const clinicName = getSetting('clinic_name', ar ? 'عيادة OpenSmile' : 'OpenSmile Dental');
+  const defBranch = getSetting('default_branch', 'tagamo3');
+  const debugOn = (typeof OPENSMILE_DEBUG !== 'undefined') ? OPENSMILE_DEBUG : true;
+  const branchOpts = BRANCHES.map(b => `<option value="${b.key}" ${b.key === defBranch ? 'selected' : ''}>${escapeHtml(ar ? b.ar : b.en)}</option>`).join('');
   main.innerHTML = `
     <div class="page-header"><h1>${t('system_settings')}</h1></div>
+    <div class="card">
+      <div class="form-section">
+        <h3>🦷 ${ar ? 'إعدادات العيادة' : 'Clinic Settings'}</h3>
+        <div class="form-row">
+          <div class="form-group"><label>${ar ? 'اسم العيادة' : 'Clinic name'}</label><input type="text" id="set-clinic-name" value="${escapeHtml(clinicName)}"></div>
+          <div class="form-group"><label>${ar ? 'الفرع الافتراضي' : 'Default branch'}</label><select id="set-branch">${branchOpts}</select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>${ar ? 'واتساب المعمل (للأشعة/الصور)' : 'Lab WhatsApp (for images)'}</label>
+            <input type="tel" id="set-lab-wa" placeholder="+20 1X XXXX XXXX" value="${escapeHtml(labWa ? egDisplay(labWa) : '')}">
+            <small style="color:#6b7280">${ar ? 'رقم مصري — يُحفظ دائماً ببادئة +20' : 'Egyptian number — always stored with the +20 prefix'}</small></div>
+          <div class="form-group"><label>${ar ? 'واتساب المالك (للتأكيد)' : 'Owner WhatsApp (for confirmations)'}</label>
+            <input type="tel" id="set-owner-wa" placeholder="+20 1X XXXX XXXX" value="${escapeHtml(ownerWa ? egDisplay(ownerWa) : '')}"></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;margin:8px 0"><input type="checkbox" id="set-debug" ${debugOn ? 'checked' : ''}> ${ar ? 'تسجيل خطوات التصحيح في الـ Console' : 'Log debug steps to the console'}</label>
+        <button class="btn btn-primary" onclick="saveClinicSettings()">${ar ? 'حفظ الإعدادات' : 'Save settings'}</button>
+      </div>
+    </div>
     <div class="card">
       <div class="form-section">
         <h3>${ar ? 'النسخ الاحتياطي' : 'Database Backup'}</h3>
@@ -868,13 +892,29 @@ async function handleRestore(file) {
   });
 }
 
+function saveClinicSettings() {
+  const lang = currentLanguage();
+  try {
+    setSetting('clinic_name', document.getElementById('set-clinic-name').value.trim());
+    setSetting('default_branch', document.getElementById('set-branch').value);
+    setSetting('lab_whatsapp', normalizeEgPhone(document.getElementById('set-lab-wa').value));
+    setSetting('owner_whatsapp', normalizeEgPhone(document.getElementById('set-owner-wa').value));
+    const dbg = document.getElementById('set-debug').checked;
+    if (typeof setDebug === 'function') setDebug(dbg);
+    saveDBToIndexedDB();
+    dlog('settings.saved', { branch: getSetting('default_branch'), lab: getSetting('lab_whatsapp'), owner: getSetting('owner_whatsapp'), debug: dbg });
+    showSuccess(lang === 'ar' ? 'تم حفظ الإعدادات' : 'Settings saved');
+    navigateTo('it-settings');
+  } catch (e) { derr('settings.save', e); showError(e.message); }
+}
+
 // ============================================================
 // HOSPITAL MANAGER — Blackbox Viewer
 // ============================================================
 
 function renderHMBlackbox(main, lang) {
   // Log that manager opened the blackbox
-  logAction('BLACKBOX_VIEWED', `Hospital Manager ${getCurrentUser().full_name_en} opened Blackbox Audit Log. Filter applied: none`, `مدير المستشفى ${getCurrentUser().full_name_ar} فتح سجل المراجعة`);
+  logAction('BLACKBOX_VIEWED', `Clinic Manager ${getCurrentUser().full_name_en} opened the Audit Log.`, `مدير العيادة ${getCurrentUser().full_name_ar} فتح سجل المراجعة`);
 
   const users = dbAll('SELECT DISTINCT user_id, user_name_en, user_name_ar FROM audit_log ORDER BY user_name_en');
   const depts = dbAll('SELECT * FROM departments ORDER BY dept_id');

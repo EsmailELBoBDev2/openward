@@ -177,7 +177,11 @@ function applySchemaMigrations() {
     try { db.run('ALTER TABLE outpatient_visits ADD COLUMN operatory_id INTEGER'); } catch(e) {}
     try { db.run('ALTER TABLE invoices ADD COLUMN patient_id INTEGER'); } catch(e) {}
     try { db.run('ALTER TABLE invoices ADD COLUMN paid_amount REAL DEFAULT 0'); } catch(e) {}
-    // OpenSmile dental tables (odontogram, perio, procedures, plans, chairs, recalls).
+    try { db.run('ALTER TABLE invoices ADD COLUMN proof_attach_id INTEGER'); } catch(e) {}
+    // Dental: patient gets a clinic branch + a free-text clinical notes field.
+    try { db.run('ALTER TABLE patients ADD COLUMN branch TEXT'); } catch(e) {}
+    try { db.run('ALTER TABLE patients ADD COLUMN notes TEXT'); } catch(e) {}
+    // OpenSmile dental tables (settings, odontogram, perio, procedures, plans, chairs, recalls).
     createDentalTables();
     // MAR + critical ack migrations
     // Fix seed data: set is_critical=1 for any resulted lab with a critical flag
@@ -373,6 +377,13 @@ function applySchemaMigrations() {
 // Tooth numbering is FDI / ISO-3950 two-digit (11–48 permanent, 51–85 primary).
 // ============================================================
 function createDentalTables() {
+  // Clinic settings — key/value (branch default, lab & owner WhatsApp numbers,
+  // debug flag, …). One row per key; values are short strings/JSON.
+  try { db.run(`CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+  )`); } catch(e) {}
+
   // Operatories (treatment chairs / rooms)
   try { db.run(`CREATE TABLE IF NOT EXISTS operatories (
     operatory_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2494,6 +2505,36 @@ function dbLastId() {
   const r = db.exec('SELECT last_insert_rowid() as id');
   return r[0].values[0][0];
 }
+
+// ---- Clinic settings (key/value) ----
+function getSetting(key, dflt) {
+  try { const r = dbGet('SELECT value FROM settings WHERE key = ?', [key]); return (r && r.value != null) ? r.value : (dflt !== undefined ? dflt : null); }
+  catch (e) { return dflt !== undefined ? dflt : null; }
+}
+function setSetting(key, value) {
+  try { dbRun('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [key, value == null ? null : String(value)]); }
+  catch (e) { try { dbRun('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [key, value == null ? null : String(value)]); } catch (e2) {} }
+}
+
+// The clinic's three branches (extensible). value = stable key stored on patients.branch.
+const BRANCHES = [
+  { key: 'tagamo3',  en: '5th Settlement (Tagamo3)', ar: 'التجمع الخامس' },
+  { key: 'roxy',     en: 'Roxy (Heliopolis)',        ar: 'روكسي - مصر الجديدة' },
+  { key: 'qoba',     en: 'Hadayek El-Qobba',         ar: 'حدائق القبة' },
+];
+function branchLabel(key, lang) { const b = BRANCHES.find(x => x.key === key); return b ? (lang === 'ar' ? b.ar : b.en) : (key || ''); }
+
+// Normalize an Egyptian WhatsApp/phone number to E.164 with the +20 prefix
+// (WhatsApp click-to-chat / wa.me wants digits only, country code first, no +).
+function normalizeEgPhone(raw) {
+  let d = String(raw || '').replace(/[^\d]/g, '');
+  if (d.startsWith('0020')) d = d.slice(4);
+  else if (d.startsWith('20')) d = d.slice(2);
+  if (d.startsWith('0')) d = d.slice(1);          // local trunk 0
+  d = d.replace(/^20/, '');                        // guard double-prefix
+  return d ? '20' + d : '';                        // wa.me form: 20XXXXXXXXXX
+}
+function egDisplay(raw) { const d = normalizeEgPhone(raw); return d ? '+' + d : ''; }
 
 // Node test harness only (the browser has no `module`):
 if (typeof module !== 'undefined' && module.exports) {
