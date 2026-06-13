@@ -1121,13 +1121,17 @@ async function seedDentalDemo() {
     ['ليلى السبيعي',   'Layla Al-Subaie',  '1011223344', '1985-10-05', 'female', 'AB-','0560123456', 110, 0],
   ];
   const pid = [];
+  const demoBranches = ['tagamo3', 'roxy', 'qoba'];
   patients.forEach((p, i) => {
     const reg = day(-p[7]);
     const mrn = `OS-${reg.replace(/-/g, '')}-${String(i + 1).padStart(5, '0')}`;
-    db.run(`INSERT INTO patients (mrn, national_id, full_name_ar, full_name_en, date_of_birth, gender, blood_type, phone, registered_by, registered_at, portal_enabled)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [mrn, p[2], p[0], p[1], p[3], p[4], p[5], p[6], recepId, at(reg, '09:00'), p[8]]);
+    db.run(`INSERT INTO patients (mrn, national_id, full_name_ar, full_name_en, date_of_birth, gender, blood_type, phone, branch, registered_by, registered_at, portal_enabled)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [mrn, p[2], p[0], p[1], p[3], p[4], p[5], p[6], demoBranches[i % 3], recepId, at(reg, '09:00'), p[8]]);
     pid.push(dbLastId());
   });
+  // default clinic settings for the demo
+  setSetting('default_branch', 'tagamo3');
+  setSetting('clinic_name', 'OpenSmile Dental');
 
   // helpers ----------------------------------------------------------------
   const cond = (i, code, dispEn, cat) => db.run('INSERT INTO patient_conditions (patient_id, condition_code, category, display, status, added_by, added_at) VALUES (?,?,?,?,?,?,?)', [pid[i], code, cat || 'chronic', dispEn, 'active', omarId, now]);

@@ -39,27 +39,46 @@ function getPatientOr(main, lang, then) {
   return p;
 }
 
-// A simple "pick a patient" screen shown when no patient is selected yet.
+// A "pick a patient" screen (typo-tolerant fuzzy search + branch filter) shown
+// when no patient is selected yet — also the dentist/hygienist Patients list.
 function renderPatientPicker(main, lang, targetView) {
-  const ps = dbAll('SELECT patient_id, mrn, full_name_ar, full_name_en, phone, date_of_birth FROM patients ORDER BY full_name_en');
+  const ps = dbAll('SELECT patient_id, mrn, full_name_ar, full_name_en, phone, national_id, date_of_birth, branch FROM patients ORDER BY patient_id DESC');
+  const branchOpts = '<option value="">' + (lang === 'ar' ? 'كل الفروع' : 'All branches') + '</option>' +
+    (typeof BRANCHES !== 'undefined' ? BRANCHES.map(b => `<option value="${b.key}">${escapeHtml(lang === 'ar' ? b.ar : b.en)}</option>`).join('') : '');
   main.innerHTML = `
-    <div class="page-header"><h1>${lang === 'ar' ? 'اختر مريضاً' : 'Select a patient'}</h1></div>
-    <div class="card"><input type="text" id="pp-filter" class="form-control" placeholder="${lang === 'ar' ? 'بحث بالاسم أو رقم الملف…' : 'Search name or MRN…'}" style="margin-bottom:12px;width:100%">
-    <div class="table-container"><table><thead><tr>
-      <th>${t('mrn')}</th><th>${lang === 'ar' ? 'الاسم' : 'Name'}</th><th>${t('phone')}</th><th></th>
-    </tr></thead><tbody id="pp-rows">
-      ${ps.map(p => `<tr data-s="${escapeHtml(((p.full_name_en||'')+' '+(p.full_name_ar||'')+' '+p.mrn).toLowerCase())}">
-        <td style="font-family:monospace;font-size:.8rem">${escapeHtml(p.mrn)}</td>
-        <td>${escapeHtml(lang==='ar'?p.full_name_ar:(p.full_name_en||p.full_name_ar))}</td>
-        <td>${escapeHtml(p.phone||'—')}</td>
-        <td><button class="btn btn-sm btn-primary" onclick="setActivePatient(${p.patient_id});navigateTo('${targetView}')">${lang==='ar'?'فتح':'Open'}</button></td>
-      </tr>`).join('')}
-    </tbody></table></div></div>`;
-  const f = document.getElementById('pp-filter');
-  if (f) f.addEventListener('input', () => {
-    const q = f.value.toLowerCase();
-    document.querySelectorAll('#pp-rows tr').forEach(tr => { tr.style.display = tr.dataset.s.includes(q) ? '' : 'none'; });
-  });
+    <div class="page-header"><h1>${lang === 'ar' ? 'المرضى' : 'Patients'}</h1></div>
+    <div class="card">
+      <div class="form-row" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        <input type="text" id="pp-filter" class="form-control" placeholder="${lang === 'ar' ? 'بحث بالاسم أو الرقم أو الهاتف… (يتحمّل الأخطاء)' : 'Fuzzy search name / MRN / phone / ID…'}" style="flex:2;min-width:220px">
+        <select id="pp-branch" class="form-control" style="flex:1;min-width:160px">${branchOpts}</select>
+      </div>
+      <div class="table-container"><table><thead><tr>
+        <th>${t('mrn')}</th><th>${lang === 'ar' ? 'الاسم' : 'Name'}</th><th>${t('phone')}</th><th>${lang === 'ar' ? 'الفرع' : 'Branch'}</th><th></th>
+      </tr></thead><tbody id="pp-rows">
+        ${ps.map(p => `<tr data-s="${escapeHtml(((p.full_name_en||'')+' '+(p.full_name_ar||'')+' '+(p.mrn||'')+' '+(p.phone||'')+' '+(p.national_id||'')).toLowerCase())}" data-branch="${escapeHtml(p.branch||'')}">
+          <td style="font-family:monospace;font-size:.8rem">${escapeHtml(p.mrn)}</td>
+          <td>${escapeHtml(lang==='ar'?p.full_name_ar:(p.full_name_en||p.full_name_ar))}</td>
+          <td>${escapeHtml(p.phone||'—')}</td>
+          <td><span style="font-size:.78rem;color:#6b7280">${escapeHtml(typeof branchLabel==='function'?branchLabel(p.branch,lang):(p.branch||'—'))}</span></td>
+          <td><button class="btn btn-sm btn-primary" onclick="setActivePatient(${p.patient_id});navigateTo('${targetView}')">${lang==='ar'?'فتح':'Open'}</button></td>
+        </tr>`).join('')}
+      </tbody></table>
+      <p id="pp-count" style="color:#9ca3af;font-size:.8rem;margin-top:8px"></p>
+      </div>
+    </div>`;
+  const apply = () => {
+    const q = (document.getElementById('pp-filter')||{}).value || '';
+    const br = (document.getElementById('pp-branch')||{}).value || '';
+    let shown = 0;
+    document.querySelectorAll('#pp-rows tr').forEach(tr => {
+      const ok = (typeof fuzzyMatch === 'function' ? fuzzyMatch(tr.dataset.s, q) : tr.dataset.s.includes(q.toLowerCase())) && (!br || tr.dataset.branch === br);
+      tr.style.display = ok ? '' : 'none'; if (ok) shown++;
+    });
+    const c = document.getElementById('pp-count'); if (c) c.textContent = `${shown} / ${ps.length}`;
+  };
+  const f = document.getElementById('pp-filter'); if (f) f.addEventListener('input', apply);
+  const b = document.getElementById('pp-branch'); if (b) b.addEventListener('change', apply);
+  apply();
 }
 
 // Patient header card + a dental safety strip (allergies + flags), reused atop

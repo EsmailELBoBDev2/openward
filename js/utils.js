@@ -26,6 +26,33 @@ function derr(step, error) {
   } catch (e) {}
 }
 
+// ---- Fuzzy search (typo-tolerant) ----------------------------------------
+function _levU(a, b) {
+  if (a === b) return 0;
+  const m = a.length, n = b.length;
+  if (!m) return n; if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+// Matches `q` against `hay` tolerating typos: substring, subsequence, or
+// per-token small edit distance (≤1 for short tokens, ≤2 otherwise).
+function fuzzyMatch(hay, q) {
+  hay = String(hay || '').toLowerCase();
+  q = String(q || '').toLowerCase().trim();
+  if (!q) return true;
+  if (hay.includes(q)) return true;
+  let i = 0; for (const ch of hay) { if (ch === q[i]) i++; if (i === q.length) return true; }
+  const ht = hay.split(/\s+/).filter(Boolean), qt = q.split(/\s+/).filter(Boolean);
+  return qt.every(t => ht.some(h => h.includes(t) || _levU(h, t) <= (t.length <= 4 ? 1 : 2)));
+}
+
 /**
  * SHA-256 hash — uses Web Crypto API when available (HTTPS/localhost),
  * falls back to pure JS implementation (works on any origin).

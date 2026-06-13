@@ -2598,12 +2598,20 @@ function renderRCPRegister(main, lang) {
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label>${lang==='ar'?'القسم المطلوب':'Department'}</label>
+          <label>${lang==='ar'?'التخصص':'Specialty'}</label>
           <select id="rcp-dept">
-            <option value="">${lang==='ar'?'-- اختر القسم --':'-- Select Department --'}</option>
+            <option value="">${lang==='ar'?'-- اختر التخصص --':'-- Select Specialty --'}</option>
             ${deptOpts}
           </select>
         </div>
+        <div class="form-group">
+          <label>🦷 ${lang==='ar'?'الفرع':'Branch'}</label>
+          <select id="rcp-branch">
+            ${(typeof BRANCHES!=='undefined'?BRANCHES:[]).map(b=>`<option value="${b.key}" ${b.key===getSetting('default_branch','tagamo3')?'selected':''}>${escapeHtml(lang==='ar'?b.ar:b.en)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
         <div class="form-group">
           <label>${lang==='ar'?'نوع الزيارة':'Visit Type'}</label>
           <select id="rcp-type">
@@ -2672,13 +2680,15 @@ async function handleRCPRegister(e) {
   // otherwise create one (a clinic registration IS a patient record, with an MRN).
   let patientId = null;
   if (nid) { const ex = dbGet('SELECT patient_id FROM patients WHERE national_id = ?', [nid]); if (ex) patientId = ex.patient_id; }
+  const branch = (document.getElementById('rcp-branch') || {}).value || getSetting('default_branch', 'tagamo3');
   if (!patientId) {
     const today = nowISO().slice(0, 10).replace(/-/g, '');
     const seq = (dbGet('SELECT COUNT(*) c FROM patients').c || 0) + 1;
     const mrn = `OS-${today}-${String(seq).padStart(5, '0')}`;
-    dbRun(`INSERT INTO patients (mrn, national_id, full_name_ar, full_name_en, date_of_birth, gender, phone, registered_by, registered_at, portal_enabled)
-      VALUES (?,?,?,?,?,?,?,?,?,1)`, [mrn, nid || null, nameAr, nameEn, dob || null, gender, phone || null, session.user_id, nowISO()]);
+    dbRun(`INSERT INTO patients (mrn, national_id, full_name_ar, full_name_en, date_of_birth, gender, phone, branch, registered_by, registered_at, portal_enabled)
+      VALUES (?,?,?,?,?,?,?,?,?,?,1)`, [mrn, nid || null, nameAr, nameEn, dob || null, gender, phone || null, branch, session.user_id, nowISO()]);
     patientId = dbLastId();
+    dlog('reception.register', { patientId, mrn, branch });
   }
   dbRun(`INSERT INTO outpatient_visits
     (patient_id, patient_name_ar, patient_name_en, national_id, phone, dob, gender, dept_id, registered_by, registered_at, chief_complaint, visit_type, payment_type, insurance_company, status, notes)
