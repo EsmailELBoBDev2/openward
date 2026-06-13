@@ -176,8 +176,6 @@
        below waits for DOMContentLoaded, which fires after deferred scripts. -->
   <script src="vendor/sql-wasm.js" defer></script>
   <script src="vendor/qrcode.min.js" defer></script>
-  <!-- chart.umd.min.js is NOT loaded here: only the hospital-manager analytics
-       view uses it, so router.js ensureChartJs() fetches it on demand. -->
 
   <!-- App modules (order matters) -->
   <script src="js/lang.js" defer></script>
@@ -188,10 +186,6 @@
   <script src="js/api.js" defer></script>
   <script src="js/blackbox.js" defer></script>
   <script src="js/auth.js" defer></script>
-  <script src="js/suggest.js" defer></script>
-  <script src="js/smart-phrases.js" defer></script>
-  <script src="js/clinical-decision.js" defer></script>
-  <script src="js/calculators.js" defer></script>
   <script src="js/easy-features.js" defer></script>
   <script src="js/router.js" defer></script>
   <script src="js/demo-tour.js" defer></script>
