@@ -367,6 +367,7 @@ function applySchemaMigrations() {
     try { db.run('CREATE INDEX IF NOT EXISTS idx_pc_patient_cat ON patient_conditions(patient_id, category)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_pc_patient_status ON patient_conditions(patient_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_pflags_patient ON patient_flags(patient_id, active)'); } catch(e) {}
+    try { db.run('CREATE INDEX IF NOT EXISTS idx_incident_status_sev ON incident_reports(status, severity)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_lab_admission_status ON lab_orders(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_rx_admission_status ON prescriptions(admission_id, status)'); } catch(e) {}
     try { db.run('CREATE INDEX IF NOT EXISTS idx_audit_action_ts ON audit_log(action_type, timestamp DESC)'); } catch(e) {}
@@ -719,6 +720,31 @@ function createAllTables() {
       created_by  INTEGER,
       created_at  TEXT,
       active      INTEGER DEFAULT 1
+    );
+  `);
+
+  // Patient-safety incident reports (falls, med errors, near-misses, …). A
+  // clinician-facing safety-event channel, distinct from the forensic audit_log:
+  // anyone on staff may file (optionally anonymously — reported_by NULL); a
+  // manager reviews and closes. patient_id/admission_id are nullable (not every
+  // incident involves a specific patient).
+  db.run(`
+    CREATE TABLE IF NOT EXISTS incident_reports (
+      incident_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+      type             TEXT NOT NULL,
+      severity         TEXT NOT NULL,
+      occurred_at      TEXT,
+      location         TEXT,
+      patient_id       INTEGER,
+      admission_id     INTEGER,
+      description      TEXT NOT NULL,
+      immediate_action TEXT,
+      reported_by      INTEGER,
+      reported_at      TEXT NOT NULL,
+      status           TEXT DEFAULT 'open',
+      reviewed_by      INTEGER,
+      review_notes     TEXT,
+      closed_at        TEXT
     );
   `);
 
@@ -1731,6 +1757,12 @@ async function seedHospitalData() {
 
   // Patient 7: Reem — Asthma exacerbation
   db.run("INSERT INTO patient_conditions (patient_id, condition_code, severity, added_by, added_at) VALUES (?,?,?,?,?)", [patientIds[7], 'asthma', 'severe', erDocId, yesterday+'T06:00:00Z']);
+
+  // Demo patient-safety incidents so the manager's review queue isn't empty.
+  db.run("INSERT INTO incident_reports (type, severity, occurred_at, location, patient_id, description, immediate_action, reported_by, reported_at, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ['near_miss', 'no_harm', yesterday+'T22:10:00Z', 'Ward B', patientIds[6], 'Heparin drawn up at 10× the intended dose; caught by the second-nurse check before administration.', 'Dose discarded, correct dose prepared and double-checked.', snurseId, yesterday+'T22:20:00Z', 'open']);
+  db.run("INSERT INTO incident_reports (type, severity, occurred_at, location, patient_id, description, immediate_action, reported_by, reported_at, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ['fall', 'low', twoDaysAgo+'T03:40:00Z', 'Ward B — bathroom', patientIds[5], 'Patient slipped getting up to the bathroom unassisted overnight; no injury, vitals stable.', 'Patient assessed, fall-risk flag added, bed alarm enabled.', nurseId, twoDaysAgo+'T03:55:00Z', 'under_review']);
 
   // ════════════════════════════════════════════════
   // 4. ADMISSIONS

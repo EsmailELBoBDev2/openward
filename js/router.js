@@ -444,6 +444,16 @@ function renderSidebar(role) {
     }
   }
 
+  // Patient-safety incident reporting is cross-role: every staff member can file
+  // one (appended here instead of duplicating into each role's menu); managers
+  // and IT also get the review queue.
+  if (role && role !== 'patient') {
+    items.push({ id: 'incident-report', icon: '&#9888;', label: t('incident_report_nav') });
+    if (role === 'hospital_manager' || role === 'it_admin') {
+      items.push({ id: 'incident-queue', icon: '&#128203;', label: t('incident_queue_nav') });
+    }
+  }
+
   nav.innerHTML = items.map(item => {
     // Labels may contain trusted HTML (e.g. sidebar-badge span) — split on first <
     const labelHtml = item.label.includes('<')
@@ -498,6 +508,11 @@ const VIEW_PREFIX_ROLES = {
   'dt-':  ['dietitian'],
   'sw-':  ['social_worker'],
   'pp-':  ['patient'],
+  // Patient-safety incident reporting is cross-role: any staff member may FILE
+  // one; only oversight reviews/closes. These are full view ids (not shared
+  // stems), so startsWith resolves each to its own role set.
+  'incident-report': ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'pharmacist', 'lab_technician', 'radiologist', 'receptionist', 'dietitian', 'social_worker'],
+  'incident-queue':  ['it_admin', 'hospital_manager'],
 };
 
 function canAccessView(viewId, role) {
@@ -660,6 +675,10 @@ function renderView(viewId) {
     case 'pp-prescriptions': renderPPPrescriptions(main, lang); break;
     case 'pp-appointments':  renderPPAppointments(main, lang); break;
     case 'pp-messages':      renderPPMessages(main, lang); break;
+
+    // ---- Patient-safety incident reporting (file = all staff; queue = manager) ----
+    case 'incident-report': renderIncidentReport(main, lang); break;
+    case 'incident-queue':  renderIncidentQueue(main, lang); break;
 
     default:
       main.innerHTML = `<div class="empty-state"><div class="empty-icon">&#128679;</div><p>${t('loading')}</p></div>`;
@@ -2828,6 +2847,152 @@ async function removeFlag(flagId, pid) {
   showSuccess(t('flag_removed'));
   saveDBToIndexedDB();
   navigateProblemList(pid);
+}
+
+// ============================================================
+// PATIENT-SAFETY INCIDENT REPORTING (file = all staff; queue = manager)
+// ============================================================
+
+const INCIDENT_TYPES = ['fall', 'medication', 'near_miss', 'equipment', 'pressure_injury', 'other'];
+const INCIDENT_SEVERITIES = ['no_harm', 'low', 'moderate', 'severe', 'sentinel'];
+const INCIDENT_SEV_COLOR = { no_harm: '#10b981', low: '#0ea5e9', moderate: '#d97706', severe: '#fd7e14', sentinel: '#dc2626' };
+let _incidentFilter = 'open';
+
+function renderIncidentReport(main, lang) {
+  const typeOpts = INCIDENT_TYPES.map(x => `<option value="${x}">${t('inc_type_' + x)}</option>`).join('');
+  const sevOpts = INCIDENT_SEVERITIES.map(x => `<option value="${x}">${t('inc_sev_' + x)}</option>`).join('');
+  const patients = dbAll(`SELECT DISTINCT p.patient_id, p.mrn, p.full_name_ar, p.full_name_en
+    FROM patients p JOIN admissions a ON a.patient_id = p.patient_id
+    WHERE a.status = 'active' ORDER BY p.patient_id DESC LIMIT 200`);
+  const patientOpts = `<option value="">${t('inc_no_patient')}</option>` + patients.map(p =>
+    `<option value="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
+  main.innerHTML = `
+    <div class="page-header"><h1>${t('incident_report_title')}</h1></div>
+    <div class="card">
+      <p class="muted">${t('incident_report_intro')}</p>
+      <form onsubmit="fileIncident(event)">
+        <div class="form-row">
+          <div class="form-group"><label>${t('inc_type')} *</label><select id="inc-type" required>${typeOpts}</select></div>
+          <div class="form-group"><label>${t('inc_severity')} *</label><select id="inc-severity" required>${sevOpts}</select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>${t('inc_occurred_at')}</label><input type="datetime-local" id="inc-occurred"></div>
+          <div class="form-group"><label>${t('inc_location')}</label><input type="text" id="inc-location" maxlength="80"></div>
+        </div>
+        <div class="form-group"><label>${t('inc_patient')}</label><select id="inc-patient">${patientOpts}</select></div>
+        <div class="form-group"><label>${t('inc_description')} *</label><textarea id="inc-description" rows="3" required></textarea></div>
+        <div class="form-group"><label>${t('inc_immediate_action')}</label><textarea id="inc-action" rows="2"></textarea></div>
+        <div class="form-group"><label><input type="checkbox" id="inc-anon"> ${t('inc_anonymous_opt')}</label></div>
+        <button type="submit" class="btn btn-primary">${t('inc_submit')}</button>
+      </form>
+    </div>`;
+}
+
+function renderIncidentQueueBody(filter, lang) {
+  const where = (filter && filter !== 'all') ? "WHERE ir.status = ?" : "";
+  const rows = dbAll(`SELECT ir.*, p.mrn AS patient_mrn, u.full_name_en AS rep_en, u.full_name_ar AS rep_ar
+    FROM incident_reports ir
+    LEFT JOIN patients p ON p.patient_id = ir.patient_id
+    LEFT JOIN users u ON u.user_id = ir.reported_by
+    ${where} ORDER BY ir.incident_id DESC`, filter && filter !== 'all' ? [filter] : []);
+  if (!rows.length) return emptyState(t('inc_none'));
+  const body = rows.map(r => {
+    const sevColor = INCIDENT_SEV_COLOR[r.severity] || '#64748b';
+    const reporter = r.reported_by ? escapeHtml(lang === 'ar' ? (r.rep_ar || r.rep_en) : (r.rep_en || r.rep_ar)) : `<em>${t('inc_anonymous')}</em>`;
+    const when = r.occurred_at ? escapeHtml(String(r.occurred_at).slice(0, 16).replace('T', ' ')) : '—';
+    let action = '';
+    if (r.status === 'open') {
+      action = `<button class="btn btn-sm btn-secondary" onclick="reviewIncident(${r.incident_id})">${t('inc_start_review')}</button>`;
+    } else if (r.status === 'under_review') {
+      action = `<input type="text" id="inc-note-${r.incident_id}" placeholder="${t('inc_review_notes')}" style="max-width:180px;">
+        <button class="btn btn-sm btn-primary" onclick="closeIncident(${r.incident_id})">${t('inc_close')}</button>`;
+    } else if (r.status === 'closed') {
+      action = `<span class="muted">${r.review_notes ? escapeHtml(r.review_notes) : t('inc_closed')}</span>`;
+    }
+    return `<tr>
+      <td><span class="spb-badge" style="background:${sevColor};color:#fff;">${t('inc_sev_' + r.severity)}</span></td>
+      <td>${t('inc_type_' + r.type) || escapeHtml(r.type)}</td>
+      <td>${when}<br><span class="muted">${escapeHtml(r.location || '')}</span></td>
+      <td>${r.patient_mrn ? escapeHtml(r.patient_mrn) : '—'}</td>
+      <td>${reporter}</td>
+      <td>${escapeHtml(r.description || '')}</td>
+      <td>${t('inc_status_' + r.status) || escapeHtml(r.status)}</td>
+      <td>${action}</td>
+    </tr>`;
+  }).join('');
+  return `<table class="table">
+    <thead><tr><th>${t('inc_severity')}</th><th>${t('inc_type')}</th><th>${t('inc_occurred_at')}</th><th>${t('patient_col')}</th><th>${t('inc_reporter')}</th><th>${t('inc_description')}</th><th>${t('status')}</th><th></th></tr></thead>
+    <tbody>${body}</tbody></table>`;
+}
+
+function renderIncidentQueue(main, lang) {
+  const statuses = ['open', 'under_review', 'closed', 'all'];
+  const filterOpts = statuses.map(s => `<option value="${s}"${s === _incidentFilter ? ' selected' : ''}>${t('inc_status_' + s) || s}</option>`).join('');
+  main.innerHTML = `
+    <div class="page-header"><h1>${t('incident_queue_title')}</h1></div>
+    <div class="card">
+      <div class="form-group"><label>${t('inc_filter_status')}</label>
+        <select id="inc-filter" onchange="navigateIncidentQueue(this.value)">${filterOpts}</select></div>
+    </div>
+    <div class="card"><div id="inc-queue-body">${renderIncidentQueueBody(_incidentFilter, lang)}</div></div>`;
+}
+
+function navigateIncidentQueue(status) {
+  _incidentFilter = status;
+  const body = document.getElementById('inc-queue-body');
+  if (body) body.innerHTML = renderIncidentQueueBody(status, currentLanguage());
+}
+
+async function fileIncident(e) {
+  e.preventDefault();
+  const lang = currentLanguage();
+  const sess = getCurrentSession();
+  if (!sess || sess.role === 'patient') { showError(lang === 'ar' ? 'يلزم تسجيل دخول طاقم' : 'Staff login required'); return; }
+  const user = getCurrentUser();
+  const type = document.getElementById('inc-type').value;
+  const severity = document.getElementById('inc-severity').value;
+  const occurred = document.getElementById('inc-occurred').value || null;
+  const location = document.getElementById('inc-location').value.trim() || null;
+  const pidRaw = document.getElementById('inc-patient').value;
+  const patientId = pidRaw ? parseInt(pidRaw, 10) : null;
+  const description = document.getElementById('inc-description').value.trim();
+  const action = document.getElementById('inc-action').value.trim() || null;
+  const anon = document.getElementById('inc-anon').checked;
+  if (!description) { showError(lang === 'ar' ? 'الوصف مطلوب' : 'Description is required'); return; }
+  // anonymous => reported_by NULL in the report row (de-identified for reviewers),
+  // but the audit log still records who filed it.
+  const reportedBy = anon ? null : (user ? user.user_id : null);
+  dbRun(`INSERT INTO incident_reports (type, severity, occurred_at, location, patient_id, description, immediate_action, reported_by, reported_at, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+    [type, severity, occurred, location, patientId, description, action, reportedBy, nowISO()]);
+  await logAction('INCIDENT_FILED', `Filed a ${severity} ${type} incident report${anon ? ' (anonymous to reviewers)' : ''}`,
+    `تم تسجيل بلاغ حادثة (${type})${anon ? ' (مجهول للمراجعين)' : ''}`, patientId);
+  showSuccess(t('inc_filed'));
+  saveDBToIndexedDB();
+  renderView('incident-report');
+}
+
+async function reviewIncident(id) {
+  if (!requireRole(['hospital_manager', 'it_admin'], 'reviewing an incident')) return;
+  const user = getCurrentUser();
+  dbRun("UPDATE incident_reports SET status = 'under_review', reviewed_by = ? WHERE incident_id = ?", [user ? user.user_id : null, id]);
+  await logAction('INCIDENT_REVIEW_STARTED', `Started review of incident #${id}`, `بدأت مراجعة الحادثة #${id}`);
+  showSuccess(t('inc_review_started'));
+  saveDBToIndexedDB();
+  navigateIncidentQueue(_incidentFilter);
+}
+
+async function closeIncident(id) {
+  if (!requireRole(['hospital_manager', 'it_admin'], 'closing an incident')) return;
+  const user = getCurrentUser();
+  const noteEl = document.getElementById('inc-note-' + id);
+  const notes = noteEl ? noteEl.value.trim() : '';
+  dbRun("UPDATE incident_reports SET status = 'closed', reviewed_by = ?, review_notes = ?, closed_at = ? WHERE incident_id = ?",
+    [user ? user.user_id : null, notes || null, nowISO(), id]);
+  await logAction('INCIDENT_CLOSED', `Closed incident #${id}${notes ? ': ' + notes : ''}`, `أُغلقت الحادثة #${id}`);
+  showSuccess(t('inc_closed_ok'));
+  saveDBToIndexedDB();
+  navigateIncidentQueue(_incidentFilter);
 }
 
 function renderDocLabs(main, lang) {
