@@ -192,10 +192,11 @@ function saveToothStatus(fdi) {
   try {
     db.run('INSERT INTO odontogram (patient_id, tooth_fdi, surfaces, status, note, charted_by, charted_at) VALUES (?,?,?,?,?,?,?)', [pid, fdi, surfaces, status, note, u.user_id, nowISO()]);
     logAction('TOOTH_CHARTED', `${u.full_name_en} charted tooth ${fdi} as ${status}`, null, pid);
+    dlog('chart.tooth', { pid, fdi, status, surfaces });
     saveDBToIndexedDB();
     closeModal();
     navigateTo('dr-chart');
-  } catch (e) { showError(e.message); }
+  } catch (e) { derr('chart.tooth', e); showError(e.message); }
 }
 
 // ---- Treatment plan ----
@@ -270,6 +271,7 @@ function saveAddPlanItem(patientId) {
   db.run(`INSERT INTO treatment_plan_items (plan_id, patient_id, procedure_code, procedure_name_en, procedure_name_ar, tooth_fdi, price, status, dentist_id, created_at)
     VALUES (?,?,?,?,?,?,?, 'planned', ?, ?)`, [planId, patientId, o.value, o.dataset.en, o.dataset.ar, tooth ? parseInt(tooth, 10) : null, price, u.user_id, nowISO()]);
   logAction('PLAN_ITEM_ADDED', `${u.full_name_en} added ${o.dataset.en}${tooth?` on tooth ${tooth}`:''} to treatment plan`, null, patientId);
+  dlog('plan.addItem', { patientId, code: o.value, tooth, price });
   saveDBToIndexedDB(); closeModal(); navigateTo('dr-plans');
 }
 function completePlanItem(itemId) {
@@ -277,6 +279,7 @@ function completePlanItem(itemId) {
   db.run("UPDATE treatment_plan_items SET status='completed', completed_at=? WHERE item_id=?", [nowISO(), itemId]);
   const it = dbGet('SELECT * FROM treatment_plan_items WHERE item_id=?', [itemId]);
   logAction('PROCEDURE_DONE', `${u.full_name_en} completed ${it ? it.procedure_name_en : 'procedure'}`, null, it ? it.patient_id : null);
+  dlog('plan.completeItem', { itemId, procedure: it ? it.procedure_name_en : null });
   saveDBToIndexedDB(); navigateTo('dr-plans');
 }
 
@@ -333,11 +336,13 @@ async function doDentalPrescribe(patientId) {
     db.run(`INSERT INTO prescriptions (patient_id, admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, duration, start_date, status, prescribed_at)
       VALUES (?, NULL, ?, ?, ?, ?, 'PO', ?, ?, ?, 'active', ?)`, [patientId, u.user_id, drugId, drugName, dose, freq, dur, new Date().toISOString().slice(0,10), nowISO()]);
     logAction('RX_PRESCRIBED', `${u.full_name_en} prescribed ${drugName} ${dose} ${freq} to ${p.full_name_en||p.full_name_ar}`, null, patientId, p.full_name_en, p.mrn);
+    dlog('rx.prescribe', { patientId, drugName, dose, freq, allergyHit: !!match });
     saveDBToIndexedDB(); closeModal(); showSuccess(lang==='ar'?'تمت الوصفة':'Prescribed'); navigateTo(currentView);
   };
   if (match) {
     const sev = (match.severity||'').toLowerCase();
     const hard = ['severe','life_threatening','anaphylaxis'].includes(sev) || match._cross;
+    dlog('rx.allergyBlock', { patientId, drugName, allergen: match.allergen, severity: match.severity, hard });
     const msg = lang==='ar'
       ? `تنبيه حساسية! المريض لديه حساسية من ${match.allergen} (${match.severity||'—'}). ${match._cross?'وهذا الدواء قد يتفاعل تصالبياً.':''}`
       : `ALLERGY ALERT! Patient is allergic to ${match.allergen} (${match.severity||'—'}). ${match._cross?'This drug may cross-react.':''}`;
@@ -387,6 +392,7 @@ function saveAllergy(patientId) {
   if (!name) { showError(lang==='ar'?'المادة مطلوبة':'Allergen required'); return; }
   db.run('INSERT INTO patient_allergies (patient_id, allergen, reaction, severity, added_by, added_at) VALUES (?,?,?,?,?,?)', [patientId, name, document.getElementById('al-react').value.trim(), document.getElementById('al-sev').value, u.user_id, nowISO()]);
   logAction('ALLERGY_ADDED', `${u.full_name_en} recorded allergy: ${name}`, null, patientId);
+  dlog('intake.allergy', { patientId, allergen: name, severity: document.getElementById('al-sev').value });
   saveDBToIndexedDB(); closeModal(); navigateTo('asst-intake');
 }
 function openAddCondition(patientId) {
@@ -452,6 +458,8 @@ function renderMgrOverview(main, lang) {
   const recalls = dbAll("SELECT r.*, p.full_name_en, p.full_name_ar, p.phone FROM recalls r JOIN patients p ON p.patient_id=r.patient_id WHERE r.status='due' AND r.due_date <= ? ORDER BY r.due_date LIMIT 10", [today]);
   // production by procedure category (completed plan items)
   const byCat = dbAll("SELECT pr.category, COALESCE(SUM(ti.price),0) total, COUNT(*) n FROM treatment_plan_items ti LEFT JOIN procedures pr ON pr.code=ti.procedure_code WHERE ti.status='completed' GROUP BY pr.category ORDER BY total DESC");
+  // patients per branch
+  const byBranch = dbAll('SELECT branch, COUNT(*) n FROM patients GROUP BY branch ORDER BY n DESC');
   main.innerHTML = `
     <div class="page-header"><h1>${lang==='ar'?'لوحة العيادة':'Clinic Dashboard'}</h1></div>
     <div class="stat-cards">
@@ -475,6 +483,10 @@ function renderMgrOverview(main, lang) {
       <div class="card" style="flex:1;min-width:280px">
         <h3 style="margin-top:0">${lang==='ar'?'استدعاءات مستحقة':'Recalls due'}</h3>
         ${recalls.length ? recalls.map(r => `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f3f4f6"><span>${escapeHtml(lang==='ar'?r.full_name_ar:(r.full_name_en||r.full_name_ar))} <span style="color:#9ca3af;font-size:.8rem">${escapeHtml(r.type)}</span></span><span style="color:#ef4444">${r.due_date}</span></div>`).join('') : `<p style="color:#6b7280">${lang==='ar'?'لا يوجد':'None due'}</p>`}
+      </div>
+      <div class="card" style="flex:1;min-width:240px">
+        <h3 style="margin-top:0">${lang==='ar'?'المرضى حسب الفرع':'Patients by branch'}</h3>
+        ${byBranch.length ? byBranch.map(b => `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f3f4f6"><span>${escapeHtml(typeof branchLabel==='function'?branchLabel(b.branch,lang):(b.branch||'—'))}</span><strong>${b.n}</strong></div>`).join('') : `<p style="color:#6b7280">—</p>`}
       </div>
     </div>`;
 }
