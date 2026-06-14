@@ -1,6 +1,57 @@
 // ============================================================
-// HIS — Utility Functions
+// OpenSmile — Utility Functions
 // ============================================================
+
+// ---- Debug console logging ----------------------------------------------
+// dlog(step, data) prints a labelled, timestamped step with its values;
+// derr(step, error) prints the same for failures (with the error message).
+// On by default for the demo so every action is traceable in DevTools; flip
+// localStorage 'os_debug' to '0' to silence. Never throws.
+let OPENSMILE_DEBUG = true;
+try { OPENSMILE_DEBUG = (typeof localStorage === 'undefined') || localStorage.getItem('os_debug') !== '0'; } catch (e) {}
+function setDebug(on) { OPENSMILE_DEBUG = !!on; try { localStorage.setItem('os_debug', on ? '1' : '0'); } catch (e) {} }
+function dlog(step, data) {
+  if (!OPENSMILE_DEBUG) return;
+  try {
+    const ts = new Date().toISOString().slice(11, 23);
+    if (data === undefined) console.log(`%c[OpenSmile ${ts}]%c ${step}`, 'color:#0ea5e9;font-weight:bold', 'color:inherit');
+    else console.log(`%c[OpenSmile ${ts}]%c ${step}`, 'color:#0ea5e9;font-weight:bold', 'color:inherit', data);
+  } catch (e) {}
+}
+function derr(step, error) {
+  try {
+    const ts = new Date().toISOString().slice(11, 23);
+    const msg = error && error.message ? error.message : String(error);
+    console.error(`%c[OpenSmile ${ts} ✗]%c ${step} — ${msg}`, 'color:#ef4444;font-weight:bold', 'color:inherit', error || '');
+  } catch (e) {}
+}
+
+// ---- Fuzzy search (typo-tolerant) ----------------------------------------
+function _levU(a, b) {
+  if (a === b) return 0;
+  const m = a.length, n = b.length;
+  if (!m) return n; if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+// Matches `q` against `hay` tolerating typos: substring, subsequence, or
+// per-token small edit distance (≤1 for short tokens, ≤2 otherwise).
+function fuzzyMatch(hay, q) {
+  hay = String(hay || '').toLowerCase();
+  q = String(q || '').toLowerCase().trim();
+  if (!q) return true;
+  if (hay.includes(q)) return true;
+  let i = 0; for (const ch of hay) { if (ch === q[i]) i++; if (i === q.length) return true; }
+  const ht = hay.split(/\s+/).filter(Boolean), qt = q.split(/\s+/).filter(Boolean);
+  return qt.every(t => ht.some(h => h.includes(t) || _levU(h, t) <= (t.length <= 4 ? 1 : 2)));
+}
 
 /**
  * SHA-256 hash — uses Web Crypto API when available (HTTPS/localhost),
@@ -797,7 +848,7 @@ function getPatientWarnings(patientId) {
  */
 // Role-based privacy: sensitive communicable conditions hidden from non-clinical roles
 const COMMUNICABLE_PRIVATE = new Set(['hiv', 'hepatitis_b', 'hepatitis_c']);
-const CLINICAL_ROLES_SEE_PRIVATE = new Set(['doctor','consultant','emergency_doctor','nurse','senior_nurse','pharmacist','triage_nurse','lab_technician']);
+const CLINICAL_ROLES_SEE_PRIVATE = new Set(['dentist','specialist','hygienist']);
 
 function renderSafetyBanner(patientId, admissionId, lang) {
   const patient = dbGet('SELECT * FROM patients WHERE patient_id = ?', [patientId]);
@@ -868,6 +919,17 @@ function renderSafetyBanner(patientId, admissionId, lang) {
     ${isolations.map(i => `<span class="spb-badge" style="background:${i.color};color:#fff;font-weight:700;" title="${lang === 'ar' ? 'احتياطات عزل مطلوبة' : 'Isolation precautions required'}">&#9888; ${lang === 'ar' ? i.lbl_ar : i.lbl_en}</span>`).join('')}
     ${haiCount > 0 ? `<span class="spb-badge" style="background:#fd7e14;color:#fff;" title="${lang === 'ar' ? 'عدوى مكتسبة من المستشفى' : 'Hospital-acquired infection'}">&#127861; HAI×${haiCount}</span>` : ''}
     ${critUnack > 0 ? `<span class="spb-badge" style="background:#dc2626;color:#fff;font-weight:700;animation:pulse 1.5s infinite;" title="${lang === 'ar' ? 'نتائج حرجة لم يتم الإشعار بها' : 'Unacknowledged critical labs'}">&#128680; ${critUnack} ${lang === 'ar' ? 'حرج' : 'CRIT'}</span>` : ''}
+    ${(() => {
+      // Patient flags — clinician-pinned high-visibility chips (e.g. fall risk),
+      // managed on the doctor/consultant problem-list screen.
+      const flags = dbAll('SELECT label_en, label_ar, color FROM patient_flags WHERE patient_id = ? AND active = 1 ORDER BY flag_id DESC', [patientId]);
+      const FLAG_COLORS = { info: '#0ea5e9', warn: '#d97706', danger: '#dc2626' };
+      return flags.map(f => {
+        const c = FLAG_COLORS[f.color] || FLAG_COLORS.info;
+        const label = (lang === 'ar' && f.label_ar) ? f.label_ar : f.label_en;
+        return `<span class="spb-badge" style="background:${c};color:#fff;" title="${lang === 'ar' ? 'علامة المريض' : 'Patient flag'}">&#9873; ${escapeHtml(label)}</span>`;
+      }).join('');
+    })()}
     <span class="spb-actions no-print">
       <button class="btn btn-sm btn-secondary" onclick="history.length > 1 ? history.back() : navigateTo('home')">${t('back_btn')}</button>
     </span>

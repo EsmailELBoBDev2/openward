@@ -50,6 +50,7 @@ const initSqlJs = require(path.join(ROOT, 'vendor', 'sql-wasm.js'));
 const dbjs = require(path.join(ROOT, 'js', 'db.js'));     // reuse schema builder (createAllTables + migrations)
 const u = require(path.join(ROOT, 'js', 'utils.js'));     // reuse hashPassword/verifyPassword (PBKDF2)
 const allergyCheck = require(path.join(ROOT, 'js', 'allergy-check.js')); // SAME class-aware allergy matcher as the browser
+const fhir = require(path.join(ROOT, 'js', 'fhir-map.js')); // pure row -> FHIR R4 resource mappers
 
 let db = null;            // the one central sql.js Database
 let auditKey = null;      // HMAC key, loaded from disk (outside the DB)
@@ -100,9 +101,10 @@ function recordIpFail(ip) {
 // first time a session reads each PHI table (auditing every bridge query would
 // write dozens of rows per page render). Keys are `${session_id}:${table}`;
 // bounded by live-sessions × PHI-table-count, reset on server restart.
-const BRIDGE_PHI_TABLES = ['patients', 'admissions', 'vitals', 'prescriptions', 'lab_orders',
-  'med_admin_records', 'patient_allergies', 'patient_conditions', 'appointments',
-  'consultations', 'sw_contacts', 'fluid_balance', 'nursing_assessments'];
+const BRIDGE_PHI_TABLES = ['patients', 'prescriptions', 'patient_allergies', 'patient_conditions',
+  'patient_flags', 'appointments', 'outpatient_visits', 'invoices', 'invoice_items',
+  'odontogram', 'perio_chart', 'treatment_plans', 'treatment_plan_items', 'recalls',
+  'patient_attachments', 'portal_messages'];
 const bridgePhiAudited = new Set();
 
 // ---- tiny DB helpers over sql.js -------------------------------------------
@@ -215,44 +217,145 @@ function auditNow(actor, actionType, detail, req, patient) { audit(actor, action
 // Clinicians who may read clinical charts/meds. NOT it_admin/hospital_manager —
 // they are oversight (demographics/beds/audit), not a care team, so they don't get
 // chart/med access by default.
-const CLINICAL = ['consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
+const CLINICAL = ['dentist', 'specialist', 'hygienist'];
 const CAN = {
-  register_patient: ['emergency_doctor', 'triage_nurse', 'receptionist', 'it_admin'],
+  register_patient: ['receptionist', 'it_admin'],
   // demographics (list + basic detail) — oversight + clinicians + receptionist
-  view_patients:    ['it_admin', 'hospital_manager', ...CLINICAL, 'receptionist'],
-  view_chart:       CLINICAL,                            // vitals/clinical chart (NOT receptionist)
+  view_patients:    ['it_admin', 'clinic_manager', ...CLINICAL, 'receptionist'],
+  view_chart:       CLINICAL,                            // odontogram / clinical chart (NOT receptionist)
   view_meds:        CLINICAL,                            // prescriptions
-  record_vitals:    ['nurse', 'senior_nurse', 'triage_nurse', 'doctor', 'emergency_doctor'],
-  view_beds:        ['it_admin', 'hospital_manager', 'consultant', 'doctor', 'senior_nurse', 'nurse', 'emergency_doctor', 'triage_nurse'],
-  prescribe:        ['doctor', 'consultant', 'emergency_doctor'],
-  order_labs:       ['doctor', 'consultant', 'emergency_doctor'],
-  administer_meds:  ['nurse', 'senior_nurse', 'triage_nurse', 'doctor', 'emergency_doctor'],  // record a dose given/held (MAR) at the bedside
-  dispense_meds:    ['pharmacist'],                      // pharmacy: dispense against an Rx and decrement central stock
-  enter_lab_result: ['lab_technician'],                 // lab: post a result to an order
-  discharge_patient:['doctor', 'consultant', 'emergency_doctor'],  // stop active meds + free the bed
-  view_audit:       ['it_admin', 'hospital_manager'],   // full audit log is oversight-only (a consultant would see every dept's PHI access)
-  manage_users:     ['it_admin'],                       // staff/department administration
+  chart_tooth:      CLINICAL,                            // odontogram + perio charting
+  prescribe:        ['dentist', 'specialist'],
+  manage_plan:      ['dentist', 'specialist'],           // treatment-plan items
+  billing:          ['receptionist', 'it_admin', 'clinic_manager'],
+  view_audit:       ['it_admin', 'clinic_manager'],      // full audit log is oversight-only
+  manage_users:     ['it_admin'],                        // staff/specialty administration
 };
 // Roles a staff account may have (mirrors the client ROLES map; 'patient' is not a staff role).
-const VALID_ROLES = new Set(['it_admin', 'hospital_manager', 'consultant', 'doctor', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse', 'pharmacist', 'lab_technician', 'radiologist', 'receptionist', 'dietitian', 'social_worker']);
+const VALID_ROLES = new Set(['it_admin', 'clinic_manager', 'dentist', 'specialist', 'hygienist', 'receptionist']);
 function can(role, action) { return (CAN[action] || []).includes(role); }
 // usernames are case-insensitive: normalize on store AND lookup (schema UNIQUE is
 // case-sensitive, so 'admin' and 'Admin' would otherwise both be insertable).
 function normUser(s) { return String(s || '').trim().toLowerCase(); }
-// Oversight roles see every patient; everyone else is scoped to their department's
-// active admissions (minimum-necessary access).
-const ALL_PATIENTS_ROLES = ['it_admin', 'hospital_manager'];
-// patient row behind an admission (for attaching patient context to write audits)
-function patientOfAdmission(aid) {
-  return get('SELECT p.* FROM patients p JOIN admissions a ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [aid]) || null;
+// A single-site dental clinic has no inpatient admissions or department scoping:
+// any staff member who can view_patients sees the whole (small) patient list.
+const ALL_PATIENTS_ROLES = ['it_admin', 'clinic_manager', 'dentist', 'specialist', 'hygienist', 'receptionist'];
+// (admissions removed) — kept as a no-op so any lingering caller fails closed.
+function patientOfAdmission(aid) { return null; }
+function canAccessAdmission(actor, role, admissionId) { return false; }
+// Patient-level access gate: every valid staff role may reach any patient record
+// (the clinic is one site; minimum-necessary scoping by admission no longer applies).
+function canAccessPatient(actor, role, patientId) {
+  return !!actor && ALL_PATIENTS_ROLES.includes(role);
 }
-// Central admission-access gate: oversight sees all; everyone else only their
-// department's admissions. Used by every endpoint that reads/writes an admission,
-// so scoping can't be bypassed via beds/vitals/orders.
-function canAccessAdmission(actor, role, admissionId) {
-  if (ALL_PATIENTS_ROLES.includes(role)) return true;
-  const a = get('SELECT dept_id FROM admissions WHERE admission_id = ?', [admissionId]);
-  return !!(a && actor && a.dept_id === actor.department_id);
+
+// ---- FHIR R4 read facade ----------------------------------------------------
+// parse the query string into {key:value} (FHIR search params live in the query)
+function fhirParams(req) {
+  const out = {};
+  for (const kv of (String(req.url || '').split('?')[1] || '').split('&')) {
+    if (!kv) continue;
+    const i = kv.indexOf('=');
+    const k = decodeURIComponent(i < 0 ? kv : kv.slice(0, i));
+    const v = i < 0 ? '' : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, ' '));
+    out[k] = v;
+  }
+  return out;
+}
+// every FHIR read of PHI is audited with patient context (these are coarse,
+// per-request external pulls — unlike the high-volume bridge reads — so we record
+// each one rather than only the first per session).
+function auditFhir(actor, req, resourceType, patientId, mode) {
+  const patient = patientId ? get('SELECT * FROM patients WHERE patient_id = ?', [patientId]) : null;
+  audit(actor, 'FHIR_READ', `FHIR ${resourceType} ${mode}${patientId ? ' for patient ' + patientId : ''}`, req, patient);
+  persist();
+}
+function handleFhirRead(req, res, actor, role, resourceType, idPart) {
+  if (!fhir.SUPPORTED.includes(resourceType)) return sendFhir(res, 404, fhir.operationOutcome('error', 'not-supported', `resource type "${resourceType}" is not supported`));
+  // demographics need view_patients; clinical resources additionally need view_chart
+  const needsChart = resourceType !== 'Patient';
+  if (!can(role, 'view_patients') || (needsChart && !can(role, 'view_chart'))) {
+    return sendFhir(res, 403, fhir.operationOutcome('error', 'forbidden', `insufficient permission to read ${resourceType}`));
+  }
+  const q = fhirParams(req);
+
+  // ---- resolve the target patient ----
+  let patientId = null;
+  if (resourceType === 'Patient') {
+    if (idPart) patientId = parseInt(idPart, 10) || null;
+    else if (q.identifier) {                    // ?identifier=[system|]MRN
+      const mrn = q.identifier.includes('|') ? q.identifier.split('|').pop() : q.identifier;
+      const p = get('SELECT patient_id FROM patients WHERE mrn = ?', [mrn]);
+      if (!p) return sendFhir(res, 200, fhir.searchBundle([]));   // search semantics: no match = empty searchset
+      patientId = p.patient_id;
+    }
+    // else: scoped Patient list (handled below)
+  } else {
+    const pref = q.patient || '';
+    patientId = parseInt(pref.includes('/') ? pref.split('/').pop() : pref, 10) || null;
+    if (!patientId) return sendFhir(res, 400, fhir.operationOutcome('error', 'required', `${resourceType} search requires a "patient" parameter (e.g. ?patient=123)`));
+  }
+
+  // ---- Patient search with no id/identifier: department-scoped list ----
+  if (resourceType === 'Patient' && patientId == null) {
+    const rows = ALL_PATIENTS_ROLES.includes(role)
+      ? all('SELECT * FROM patients ORDER BY patient_id DESC LIMIT 500')
+      : all(`SELECT DISTINCT p.* FROM patients p JOIN admissions a ON a.patient_id = p.patient_id
+             WHERE a.status='active' AND a.dept_id = ? ORDER BY p.patient_id DESC LIMIT 500`, [actor.department_id]);
+    rows.forEach(r => { delete r.portal_password_hash; delete r.portal_salt; });
+    auditFhir(actor, req, 'Patient', null, `search (scope ${ALL_PATIENTS_ROLES.includes(role) ? 'all' : 'dept ' + actor.department_id})`);
+    return sendFhir(res, 200, fhir.searchBundle(rows.map(fhir.patientResource)));
+  }
+
+  // ---- single-patient target: must exist + be accessible ----
+  if (!get('SELECT patient_id FROM patients WHERE patient_id = ?', [patientId])) {
+    if (resourceType === 'Patient' && idPart) return sendFhir(res, 404, fhir.operationOutcome('error', 'not-found', `no Patient with id ${patientId}`));
+    return sendFhir(res, 200, fhir.searchBundle([]));   // a search that matches nothing
+  }
+  if (!canAccessPatient(actor, role, patientId)) {
+    auditNow(actor, 'FHIR_DENIED', `Blocked FHIR ${resourceType} read for out-of-department patient ${patientId}`, req);
+    return sendFhir(res, 403, fhir.operationOutcome('error', 'forbidden', 'patient is not in your department'));
+  }
+
+  let payload;
+  switch (resourceType) {
+    case 'Patient': {
+      const p = get('SELECT * FROM patients WHERE patient_id = ?', [patientId]);
+      delete p.portal_password_hash; delete p.portal_salt;
+      payload = idPart ? fhir.patientResource(p) : fhir.searchBundle([fhir.patientResource(p)]);
+      break;
+    }
+    case 'Condition':
+      payload = fhir.searchBundle(all('SELECT * FROM patient_conditions WHERE patient_id = ? ORDER BY id', [patientId]).map(fhir.conditionResource));
+      break;
+    case 'AllergyIntolerance':
+      payload = fhir.searchBundle(all('SELECT * FROM patient_allergies WHERE patient_id = ? ORDER BY id', [patientId]).map(fhir.allergyResource));
+      break;
+    case 'MedicationRequest':
+      payload = fhir.searchBundle(all(`SELECT rx.* FROM prescriptions rx JOIN admissions a ON a.admission_id = rx.admission_id
+                                       WHERE a.patient_id = ? ORDER BY rx.rx_id DESC`, [patientId]).map(r => fhir.medicationRequestResource(r, patientId)));
+      break;
+    case 'Observation': {
+      const vitals = all(`SELECT v.* FROM vitals_log v JOIN admissions a ON a.admission_id = v.admission_id
+                          WHERE a.patient_id = ? ORDER BY v.vitals_id DESC LIMIT 200`, [patientId]);
+      const labs = all(`SELECT d.*, lo.admission_id AS admission_id, COALESCE(lo.resulted_at, lo.ordered_at) AS effective
+                        FROM lab_result_details d JOIN lab_orders lo ON lo.order_id = d.order_id
+                        JOIN admissions a ON a.admission_id = lo.admission_id
+                        WHERE a.patient_id = ? ORDER BY d.detail_id DESC LIMIT 500`, [patientId]);
+      const obs = [];
+      vitals.forEach(v => { for (const o of fhir.vitalsToObservations(v, patientId)) obs.push(o); });
+      labs.forEach(d => obs.push(fhir.labObservation(d, patientId)));
+      payload = fhir.searchBundle(obs);
+      break;
+    }
+    case 'Encounter':
+      payload = fhir.searchBundle(all('SELECT * FROM admissions WHERE patient_id = ? ORDER BY admission_id DESC', [patientId]).map(fhir.encounterResource));
+      break;
+    default:
+      return sendFhir(res, 404, fhir.operationOutcome('error', 'not-supported', 'unsupported resource'));
+  }
+  auditFhir(actor, req, resourceType, patientId, idPart ? 'read' : 'search');
+  return sendFhir(res, 200, payload);
 }
 
 // ---- sessions ---------------------------------------------------------------
@@ -284,6 +387,9 @@ function send(res, code, obj, headers) {
   res.writeHead(code, Object.assign({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'X-Content-Type-Options': 'nosniff' }, hstsHeaders(), headers || {}));
   res.end(body);
 }
+// FHIR responses carry the fhir+json content type; everything else (no-store,
+// nosniff, HSTS) is inherited from send().
+function sendFhir(res, code, obj) { send(res, code, obj, { 'Content-Type': 'application/fhir+json; charset=utf-8' }); }
 function readBody(req) {
   return new Promise((resolve) => {
     let data = '', tooLarge = false;
@@ -924,6 +1030,23 @@ async function handleApi(req, res, pathname) {
     req.on('close', () => _sseClients.delete(res));
     return;   // intentionally never res.end() — this response IS the stream
   }
+  // ---- FHIR R4 read-only interoperability facade ----
+  // GET /api/fhir/metadata               -> CapabilityStatement
+  // GET /api/fhir/Patient/{id}           -> Patient (read)
+  // GET /api/fhir/Patient?identifier=MRN -> Patient (search)
+  // GET /api/fhir/{Resource}?patient={id}-> clinical resources (search, by patient)
+  // Read-only: auth + RBAC + department scoping + audit, reusing the same gates as
+  // the dedicated endpoints. No writes in this slice.
+  if (pathname === '/api/fhir/metadata' && req.method === 'GET') {
+    if (!can(role, 'view_patients')) return sendFhir(res, 403, fhir.operationOutcome('error', 'forbidden', 'a staff role is required'));
+    return sendFhir(res, 200, fhir.capabilityStatement(new Date().toISOString()));
+  }
+  const fhirMatch = pathname.match(/^\/api\/fhir\/([A-Za-z]+)(?:\/([\w.-]+))?$/);
+  if (fhirMatch) {
+    if (req.method !== 'GET') return sendFhir(res, 405, fhir.operationOutcome('error', 'not-supported', 'the FHIR facade is read-only'));
+    return handleFhirRead(req, res, actor, role, fhirMatch[1], fhirMatch[2] || null);
+  }
+
   if (pathname === '/api/db/query' && req.method === 'POST') {
     if (!actor) return send(res, 403, { error: 'forbidden', message: 'staff session required' });
     const sql = body.sql, params = Array.isArray(body.params) ? body.params : [];
@@ -993,10 +1116,10 @@ async function handleApi(req, res, pathname) {
 // reference data."
 function seedReference() {
   if (!get('SELECT dept_id FROM departments LIMIT 1')) {
-    run("INSERT INTO departments (name_ar, name_en, type) VALUES ('الطوارئ','Emergency','emergency'), ('الباطنة','Internal Medicine','ward'), ('العناية المركزة','ICU','icu')");
+    run("INSERT INTO departments (name_ar, name_en, type) VALUES ('طب الأسنان العام','General Dentistry','specialty'), ('تقويم الأسنان','Orthodontics','specialty'), ('جراحة الفم والوجه والفكين','Oral & Maxillofacial Surgery','specialty'), ('الاستقبال والإدارة','Reception & Administration','admin')");
   }
   if (!get('SELECT drug_id FROM drugs LIMIT 1')) {
-    run("INSERT INTO drugs (name_generic, unit, is_high_alert) VALUES ('Paracetamol','mg',0), ('Ceftriaxone','mg',0), ('Regular Insulin','units',1)");
+    run("INSERT INTO drugs (name_generic, unit, is_high_alert) VALUES ('Amoxicillin 500mg','capsule',0), ('Clindamycin 300mg','capsule',0), ('Ibuprofen 400mg','tablet',0), ('Lidocaine 2% + Epinephrine','cartridge',0)");
   }
 }
 
@@ -1009,10 +1132,11 @@ async function seedDemoAccounts() {
       [username, await u.hashPassword(pw, salt), salt, ar, en, role, dept, new Date().toISOString()]);
   };
   await mk('admin', 'HIS@2024', 'مدير النظام', 'IT Admin', 'it_admin', null);
-  await mk('er.doc', 'doctor123', 'طبيب طوارئ', 'ER Doctor', 'emergency_doctor', 1);
-  await mk('nurse', 'nurse123', 'ممرضة', 'Ward Nurse', 'nurse', 2);
-  await mk('consultant', 'doctor123', 'استشاري', 'Consultant', 'consultant', 2);
-  await mk('reception', 'front123', 'استقبال', 'Reception', 'receptionist', 1);
+  await mk('manager', 'manager123', 'مدير العيادة', 'Clinic Manager', 'clinic_manager', 4);
+  await mk('dr.saeed', 'doctor123', 'طبيب أسنان', 'Dr. Saeed', 'dentist', 1);
+  await mk('dr.sara', 'doctor123', 'أخصائية تقويم', 'Dr. Sara', 'specialist', 2);
+  await mk('hyg.mona', 'nurse123', 'أخصائية صحة أسنان', 'Mona', 'hygienist', 1);
+  await mk('reception', 'recept123', 'استقبال', 'Reception', 'receptionist', 4);
   audit(null, 'SERVER_SEED', 'Seeded DEMO accounts', null);
 }
 
@@ -1045,15 +1169,15 @@ async function init() {
 
 // Tables → the columns we expect to carry FK constraints; report any not constrained.
 const EXPECT_FK = {
-  admissions: ['patient_id', 'dept_id'],
   users: ['department_id'],
-  vitals_log: ['admission_id'],
-  prescriptions: ['admission_id', 'drug_id'],
-  lab_orders: ['admission_id'],
-  med_admin_records: ['prescription_id', 'admission_id'],
-  dispensing_log: ['prescription_id', 'drug_id', 'patient_id'],
+  prescriptions: ['drug_id'],
   patient_conditions: ['patient_id'],
   patient_allergies: ['patient_id'],
+  odontogram: ['patient_id'],
+  perio_chart: ['patient_id'],
+  treatment_plans: ['patient_id'],
+  treatment_plan_items: ['plan_id', 'patient_id'],
+  recalls: ['patient_id'],
 };
 function missingFks() {
   const out = [];

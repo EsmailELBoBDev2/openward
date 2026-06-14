@@ -17,7 +17,7 @@
   -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HIS — Hospital Information System</title>
+  <title>OpenSmile — Dental Clinic System</title>
   <link rel="stylesheet" href="css/main.css">
   <link rel="stylesheet" href="css/rtl.css">
   <style>
@@ -40,8 +40,8 @@
     <div class="login-box">
       <!-- Logo -->
       <div class="login-logo">
-        <h1>HIS</h1>
-        <p id="login-subtitle">Hospital Information System — نظام المعلومات الصحية</p>
+        <h1>🦷 OpenSmile</h1>
+        <p id="login-subtitle">Dental Clinic System — نظام إدارة عيادة الأسنان</p>
       </div>
 
       <!-- Error Message -->
@@ -52,16 +52,24 @@
         <button type="button" class="btn btn-sm btn-secondary" onclick="clearDatabase()" style="font-size: 0.75rem;">🔄 Reset Database</button>
       </div>
 
-      <!-- Local-only data scope notice: this app stores data in THIS browser's
-           IndexedDB. Hosting the files over an IP does NOT share the database
-           between computers — each browser has its own. Warn staff so they don't
-           manage the same patients from two workstations and collide. -->
-      <div style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
+      <!-- Data-scope notice. The static default below is the BROWSER-mode truth
+           (per-device IndexedDB, nothing shared). setupShowcaseLogin() rewrites
+           it at boot for the other modes: server mode = data is central and
+           shared (the warning below would be FALSE there); demo install = demo
+           showcase framing. Browser-mode production installs keep this warning,
+           because for them it is true and important. -->
+      <div id="data-scope-notice" style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
         &#9888; <strong>Local device only</strong> — data is stored in <strong>this browser on this computer</strong> and is <strong>not shared</strong> with other workstations. Do not manage the same patients from multiple devices.<br>
         <span dir="rtl">البيانات مخزّنة في هذا المتصفح على هذا الجهاز فقط، ولا تتم مشاركتها مع الأجهزة الأخرى.</span>
       </div>
 
-      <!-- Login Mode Toggle -->
+      <!-- Demo persona picker + one-click production switch (populated by
+           setupShowcaseLogin() ONLY on demo installs — production and server
+           installs never render credentials or quick-logins). -->
+      <div id="demo-login-picker"></div>
+
+      <!-- Login Mode Toggle (Staff for the LAN clinic; Patient Portal is the
+           "future online" concept shown in the demo) -->
       <div class="login-mode-toggle" id="login-mode-toggle">
         <button type="button" class="login-mode-btn active" id="login-staff-btn" onclick="setLoginMode('staff')">
           <span>👨‍⚕️</span> <span id="lbl-staff-mode">Staff Login</span>
@@ -71,9 +79,7 @@
         </button>
       </div>
 
-      <!-- Login Form -->
       <form id="login-form" onsubmit="handleLogin(event)">
-        <!-- Staff Login Fields -->
         <div id="staff-login-fields">
           <div class="form-group">
             <label id="lbl-username" for="login-username">Username — اسم المستخدم</label>
@@ -88,28 +94,21 @@
           </div>
         </div>
 
-        <!-- Patient Portal Fields -->
+        <!-- Patient Portal Fields (MRN + Date of Birth; demo identity) -->
         <div id="patient-login-fields" style="display:none">
           <div class="form-group">
             <label id="lbl-mrn" for="patient-mrn">MRN — رقم الملف الطبي</label>
-            <input type="text" id="patient-mrn" autocomplete="off" placeholder="HIS-XXXXXXXX-XXXXX" aria-label="Medical Record Number">
-            <small class="form-hint" id="lbl-mrn-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
-              You can find this on your hospital wristband or visit summary.
-            </small>
+            <input type="text" id="patient-mrn" autocomplete="off" placeholder="OS-XXXXXXXX-XXXXX" aria-label="Medical Record Number">
+            <small class="form-hint" id="lbl-mrn-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">You can find this on your appointment card or visit summary.</small>
           </div>
           <div class="form-group">
             <label id="lbl-dob" for="patient-dob">Date of Birth — تاريخ الميلاد</label>
             <input type="date" id="patient-dob" autocomplete="off" aria-label="Date of Birth">
-            <small class="form-hint" id="lbl-dob-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
-              Format: YYYY-MM-DD
-            </small>
           </div>
           <div class="form-group">
             <label id="lbl-pt-pw" for="patient-password">Password — كلمة المرور</label>
             <input type="password" id="patient-password" autocomplete="current-password" aria-label="Patient portal password">
-            <small class="form-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
-              Only if you've set one. MRN + Date of Birth are identity, not a password.
-            </small>
+            <small class="form-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">Only if you've set one. MRN + Date of Birth are identity, not a password.</small>
           </div>
         </div>
 
@@ -126,7 +125,7 @@
     <header class="app-header">
       <div class="header-left">
         <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Toggle navigation menu">&#9776;</button>
-        <h2>HIS</h2>
+        <h2>🦷 OpenSmile</h2>
       </div>
       <div class="header-right">
         <div id="staff-inbox-wrap" style="position:relative;display:none;">
@@ -169,8 +168,6 @@
        below waits for DOMContentLoaded, which fires after deferred scripts. -->
   <script src="vendor/sql-wasm.js" defer></script>
   <script src="vendor/qrcode.min.js" defer></script>
-  <!-- chart.umd.min.js is NOT loaded here: only the hospital-manager analytics
-       view uses it, so router.js ensureChartJs() fetches it on demand. -->
 
   <!-- App modules (order matters) -->
   <script src="js/lang.js" defer></script>
@@ -181,12 +178,11 @@
   <script src="js/api.js" defer></script>
   <script src="js/blackbox.js" defer></script>
   <script src="js/auth.js" defer></script>
-  <script src="js/suggest.js" defer></script>
-  <script src="js/smart-phrases.js" defer></script>
-  <script src="js/clinical-decision.js" defer></script>
-  <script src="js/calculators.js" defer></script>
   <script src="js/easy-features.js" defer></script>
   <script src="js/router.js" defer></script>
+  <script src="js/dental-views.js" defer></script>
+  <script src="js/dental-extras.js" defer></script>
+  <script src="js/demo-tour.js" defer></script>
 
   <script>
     // ============================================================
@@ -234,6 +230,16 @@
         if (typeof DB_NEEDS_FIRST_RUN !== 'undefined' && DB_NEEDS_FIRST_RUN) {
           showFirstRunChooser();
         }
+
+        // Showcase polish: truthful per-mode storage notice + demo persona
+        // picker (demo installs only — production/server never get quick-logins).
+        setupShowcaseLogin();
+
+        // Resume a guided demo tour in progress (it spans role logins, so its
+        // state lives in localStorage; no-op outside demo installs) — and on a
+        // demo install that never saw the offer, pop it once at the login screen.
+        if (typeof demoTourMaybeResume === 'function') demoTourMaybeResume();
+        if (typeof demoTourOffer === 'function') demoTourOffer();
 
         // Check if there's an active session. In server mode, restore it from
         // the HttpOnly cookie (survives reload) rather than localStorage.
@@ -331,21 +337,6 @@
       document.getElementById('login-btn').textContent = t('login_btn');
       document.getElementById('pw-toggle').textContent = lang === 'ar' ? 'إظهار' : 'Show';
       document.getElementById('logout-btn').textContent = t('logout_btn');
-      // Patient portal labels
-      const lblStaff = document.getElementById('lbl-staff-mode');
-      const lblPatient = document.getElementById('lbl-patient-mode');
-      const lblMrn = document.getElementById('lbl-mrn');
-      const lblDob = document.getElementById('lbl-dob');
-      const lblMrnHint = document.getElementById('lbl-mrn-hint');
-      const lblDobHint = document.getElementById('lbl-dob-hint');
-      if (lblStaff)   lblStaff.textContent = lang === 'ar' ? 'دخول الموظفين' : 'Staff Login';
-      if (lblPatient) lblPatient.textContent = lang === 'ar' ? 'بوابة المرضى' : 'Patient Portal';
-      if (lblMrn)     lblMrn.textContent = lang === 'ar' ? 'رقم الملف الطبي' : 'Medical Record Number';
-      if (lblDob)     lblDob.textContent = lang === 'ar' ? 'تاريخ الميلاد' : 'Date of Birth';
-      if (lblMrnHint) lblMrnHint.textContent = lang === 'ar'
-        ? 'تجده على سوار المستشفى أو ملخص الزيارة'
-        : 'You can find this on your hospital wristband or visit summary.';
-      if (lblDobHint) lblDobHint.textContent = lang === 'ar' ? 'الصيغة: السنة-الشهر-اليوم' : 'Format: YYYY-MM-DD';
     }
 
     function updateLangButtons() {
@@ -358,31 +349,17 @@
     // Login Handler
     // ============================================================
 
-    // Track current login mode
-    window.loginMode = 'staff'; // or 'patient'
-
+    // Login mode: Staff (LAN clinic) or Patient (the "future online" portal concept).
+    window.loginMode = 'staff';
     function setLoginMode(mode) {
       window.loginMode = mode;
       const isPatient = mode === 'patient';
-
-      // Toggle button active states
-      document.getElementById('login-staff-btn').classList.toggle('active', !isPatient);
-      document.getElementById('login-patient-btn').classList.toggle('active', isPatient);
-
-      // Toggle field visibility
-      document.getElementById('staff-login-fields').style.display = isPatient ? 'none' : '';
-      document.getElementById('patient-login-fields').style.display = isPatient ? '' : 'none';
-
-      // Focus first input
-      setTimeout(() => {
-        const firstInput = isPatient
-          ? document.getElementById('patient-mrn')
-          : document.getElementById('login-username');
-        firstInput?.focus();
-      }, 50);
-
-      // Clear errors
-      document.getElementById('login-error').classList.remove('show');
+      const sb = document.getElementById('login-staff-btn'); if (sb) sb.classList.toggle('active', !isPatient);
+      const pb = document.getElementById('login-patient-btn'); if (pb) pb.classList.toggle('active', isPatient);
+      const sf = document.getElementById('staff-login-fields'); if (sf) sf.style.display = isPatient ? 'none' : '';
+      const pf = document.getElementById('patient-login-fields'); if (pf) pf.style.display = isPatient ? '' : 'none';
+      setTimeout(() => { const el = document.getElementById(isPatient ? 'patient-mrn' : 'login-username'); if (el) el.focus(); }, 50);
+      const e = document.getElementById('login-error'); if (e) e.classList.remove('show');
     }
 
     async function handleLogin(e) {
@@ -397,79 +374,62 @@
 
       try {
         if (window.loginMode === 'patient') {
-          // Patient portal login
+          // Patient portal login (MRN + Date of Birth)
           const mrn = document.getElementById('patient-mrn').value.trim();
           const dob = document.getElementById('patient-dob').value;
           const ptPassword = (document.getElementById('patient-password') || {}).value || '';
-
-          if (!mrn || !dob) {
-            errorEl.textContent = t('error_required');
-            errorEl.classList.add('show');
-            btn.disabled = false;
-            btn.textContent = t('login_btn');
-            return;
-          }
-
-          const result = await loginPatient(mrn, dob, ptPassword);
-          if (result.success) {
-            showSuccess(t('success_login'));
-            routeToDashboard();
+          if (!mrn || !dob) { errorEl.textContent = t('error_required'); errorEl.classList.add('show'); btn.disabled = false; btn.textContent = t('login_btn'); return; }
+          const pr = await loginPatient(mrn, dob, ptPassword);
+          if (pr.success) {
+            showSuccess(t('success_login')); routeToDashboard();
             if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
-            if (result.mustSetPassword && typeof showSetPatientPasswordModal === 'function') {
-              setTimeout(() => showSetPatientPasswordModal(false), 800);
-            }
+            if (pr.mustSetPassword && typeof showSetPatientPasswordModal === 'function') setTimeout(() => showSetPatientPasswordModal(false), 800);
           } else {
-            let msg = t(result.errorKey || 'patient_login_error');
-            if (result.errorKey === 'login_locked' && result.lockedSec) {
-              const mins = Math.ceil(result.lockedSec / 60);
-              msg += ' (' + mins + (lang === 'ar' ? ' دقيقة' : ' min') + ')';
-            }
-            if (result.errorKey === 'patient_password_required') {
-              msg = lang === 'ar' ? 'هذا الحساب محمي بكلمة مرور. أدخل كلمة المرور.' : 'This account is password-protected — enter your password.';
-              const pf = document.getElementById('patient-password'); if (pf) pf.focus();
-            }
-            errorEl.textContent = msg;
-            errorEl.classList.add('show');
+            let m = t(pr.errorKey || 'patient_login_error');
+            if (pr.errorKey === 'patient_password_required') { m = lang === 'ar' ? 'هذا الحساب محمي بكلمة مرور. أدخل كلمة المرور.' : 'This account is password-protected — enter your password.'; const pf = document.getElementById('patient-password'); if (pf) pf.focus(); }
+            errorEl.textContent = m; errorEl.classList.add('show');
           }
+          btn.disabled = false; btn.textContent = t('login_btn');
+          return;
+        }
+
+        // Staff login
+        const username = document.getElementById('login-username').value.trim();
+        const password = document.getElementById('login-password').value;
+
+        if (!username || !password) {
+          errorEl.textContent = t('error_required');
+          errorEl.classList.add('show');
+          btn.disabled = false;
+          btn.textContent = t('login_btn');
+          return;
+        }
+
+        const result = await login(username, password);
+        if (result.success) {
+          showSuccess(t('success_login'));
+          // G7 fix: warn if other concurrent sessions exist
+          if (result.concurrentSessions && result.concurrentSessions > 0) {
+            setTimeout(() => {
+              const langNow = currentLanguage();
+              showYellowAlert(
+                langNow === 'ar'
+                  ? `&#9888; لديك ${result.concurrentSessions} جلسة أخرى نشطة في مكان آخر. إذا لم تكن أنت، غيّر كلمة المرور الآن.`
+                  : `&#9888; You have ${result.concurrentSessions} other active session(s) elsewhere. If this isn't you, change your password immediately.`,
+                () => {}
+              );
+            }, 1200);
+          }
+          routeToDashboard();
+          if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
         } else {
-          // Staff login
-          const username = document.getElementById('login-username').value.trim();
-          const password = document.getElementById('login-password').value;
-
-          if (!username || !password) {
-            errorEl.textContent = t('error_required');
-            errorEl.classList.add('show');
-            btn.disabled = false;
-            btn.textContent = t('login_btn');
-            return;
+          let msg = t(result.errorKey || 'login_error_cred');
+          if (result.errorKey === 'login_locked' && result.lockedSec) {
+            const mins = Math.ceil(result.lockedSec / 60);
+            msg += ' (' + mins + (lang==='ar'?' دقيقة':' min') + ')';
           }
-
-          const result = await login(username, password);
-          if (result.success) {
-            showSuccess(t('success_login'));
-            // G7 fix: warn if other concurrent sessions exist
-            if (result.concurrentSessions && result.concurrentSessions > 0) {
-              setTimeout(() => {
-                const langNow = currentLanguage();
-                showYellowAlert(
-                  langNow === 'ar'
-                    ? `&#9888; لديك ${result.concurrentSessions} جلسة أخرى نشطة في مكان آخر. إذا لم تكن أنت، غيّر كلمة المرور الآن.`
-                    : `&#9888; You have ${result.concurrentSessions} other active session(s) elsewhere. If this isn't you, change your password immediately.`,
-                  () => {}
-                );
-              }, 1200);
-            }
-            routeToDashboard();
-            if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
-          } else {
-            let msg = t(result.errorKey || 'login_error_cred');
-            if (result.errorKey === 'login_locked' && result.lockedSec) {
-              const mins = Math.ceil(result.lockedSec / 60);
-              msg += ' (' + mins + (lang==='ar'?' دقيقة':' min') + ')';
-            }
-            errorEl.textContent = msg;
-            errorEl.classList.add('show');
-          }
+          errorEl.textContent = msg;
+          errorEl.classList.add('show');
         }
       } catch (err) {
         console.error('[HIS] Login error:', err);
@@ -492,13 +452,7 @@
         // Clear all forms
         document.getElementById('login-username').value = '';
         document.getElementById('login-password').value = '';
-        const mrnInput = document.getElementById('patient-mrn');
-        const dobInput = document.getElementById('patient-dob');
-        if (mrnInput) mrnInput.value = '';
-        if (dobInput) dobInput.value = '';
         document.getElementById('login-error').classList.remove('show');
-        // Reset to staff mode
-        if (typeof setLoginMode === 'function') setLoginMode('staff');
       });
     }
 
@@ -679,6 +633,107 @@
     })();
 
     // ============================================================
+    // Showcase login (demo installs only): truthful storage notice,
+    // one-click persona login, one-click switch to production
+    // ============================================================
+
+    // Demo seed credentials (constants from seedHospitalData — a demo install
+    // ships these on purpose; production installs never render this list).
+    const DEMO_PERSONAS = [
+      ['🛠️', 'IT Admin', 'مدير النظام', 'admin', 'HIS@2024'],
+      ['📊', 'Clinic Manager', 'مدير العيادة', 'manager', 'manager123'],
+      ['🦷', 'Dentist', 'طبيب أسنان', 'dr.saeed', 'doctor123'],
+      ['🦷', 'Specialist (Ortho)', 'أخصائي تقويم', 'dr.sara', 'doctor123'],
+      ['🦷', 'Specialist (Oral Surgery)', 'أخصائي جراحة', 'dr.khalid', 'doctor123'],
+      ['🪥', 'Hygienist', 'أخصائي صحة الأسنان', 'hyg.mona', 'nurse123'],
+      ['🛎️', 'Receptionist', 'موظف استقبال', 'reception', 'recept123'],
+    ];
+
+    function setupShowcaseLogin() {
+      const notice = document.getElementById('data-scope-notice');
+      const isServer = typeof SERVER_MODE !== 'undefined' && SERVER_MODE;
+      if (isServer) {
+        // The local-only warning is FALSE in server mode — data is central.
+        if (notice) notice.outerHTML = `
+          <div style="background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
+            🟢 <strong>Connected to the central clinic server</strong> — data is shared across all workstations in real time and stored on the server, not in this browser.<br>
+            <span dir="rtl">متصل بخادم العيادة المركزي — البيانات مشتركة بين جميع الأجهزة فورياً ومخزّنة على الخادم.</span>
+          </div>`;
+        return;
+      }
+      let demo = false;
+      try { demo = typeof dbGet === 'function' && !!dbGet("SELECT user_id FROM users WHERE username = 'dr.saeed'"); } catch (e) {}
+      if (!demo) return;   // production browser install: keep the local-only warning, no quick-logins
+
+      if (notice) notice.outerHTML = `
+        <div style="background:#eff6ff;border:1px solid #93c5fd;color:#1e40af;border-radius:8px;padding:8px 12px;margin-bottom:16px;font-size:0.78rem;line-height:1.5;text-align:center;">
+          🧪 <strong>Demo showcase</strong> — a full fictional dental clinic, stored locally in this browser. Pick a role below and look around; nothing here is real.<br>
+          <span dir="rtl">عرض تجريبي — عيادة أسنان وهمية كاملة مخزّنة محلياً في هذا المتصفح. اختر دوراً وجرّب؛ لا شيء هنا حقيقي.</span>
+        </div>`;
+
+      // Patient-portal demo identity comes from the DB (a portal-enabled patient).
+      let portalOpt = '';
+      try {
+        const pp = dbGet('SELECT mrn, date_of_birth FROM patients WHERE portal_enabled = 1 LIMIT 1');
+        if (pp) portalOpt = `<option value="patient|${pp.mrn}|${pp.date_of_birth}">👤 Patient Portal — بوابة المريض</option>`;
+      } catch (e) {}
+
+      const picker = document.getElementById('demo-login-picker');
+      if (!picker) return;
+      picker.innerHTML = `
+        <div class="form-group" style="margin-bottom:10px">
+          <label for="demo-persona" style="font-size:0.85rem">🎭 Quick demo login — دخول تجريبي سريع</label>
+          <select id="demo-persona" aria-label="Quick demo login">
+            <option value="">— ${currentLanguage() === 'ar' ? 'اختر دوراً' : 'pick a role'} —</option>
+            ${DEMO_PERSONAS.map((p, i) => `<option value="${i}">${p[0]} ${p[1]} — ${p[2]}</option>`).join('')}
+            ${portalOpt}
+          </select>
+        </div>
+        <div style="text-align:center;margin-bottom:6px">
+          <button type="button" class="btn btn-primary" id="tour-start-btn" style="width:100%" onclick="demoTourOffer(true)">🎬 ${currentLanguage() === 'ar' ? 'جولة إرشادية: تابع مريضاً عبر العيادة' : 'Guided tour: follow a patient through the clinic'}</button>
+        </div>
+        <div style="text-align:center;margin-bottom:14px">
+          <button type="button" class="btn btn-sm btn-secondary" id="prod-setup-btn" style="font-size:0.72rem" onclick="switchToProduction()">🚀 Set up for production — wipes ALL demo data</button>
+        </div>`;
+      document.getElementById('demo-persona').addEventListener('change', function () {
+        if (this.value === '') return;
+        if (this.value.startsWith('patient|')) {
+          const [, mrn, dob] = this.value.split('|');
+          setLoginMode('patient');
+          document.getElementById('patient-mrn').value = mrn;
+          document.getElementById('patient-dob').value = dob || '';
+          const pf = document.getElementById('patient-password'); if (pf) pf.value = '';
+          document.getElementById('login-form').requestSubmit();
+          return;
+        }
+        const p = DEMO_PERSONAS[parseInt(this.value, 10)];
+        setLoginMode('staff');
+        document.getElementById('login-username').value = p[3];
+        document.getElementById('login-password').value = p[4];
+        // Showcase smoothness: picking a persona just logs you in.
+        document.getElementById('login-form').requestSubmit();
+      });
+    }
+
+    // One click from showcase to real: wipe ALL local demo data and reopen
+    // straight into the production setup form (no chooser detour).
+    async function switchToProduction() {
+      const ar = currentLanguage() === 'ar';
+      if (!confirm(ar
+        ? 'سيتم مسح كل البيانات التجريبية نهائياً وإنشاء قاعدة بيانات فارغة بدون أي حسابات افتراضية — ستنشئ حساب مدير النظام بنفسك. متابعة؟'
+        : 'This permanently wipes ALL demo data and creates an empty database with NO default accounts — you will create the IT-admin account yourself. Continue?')) return;
+      try {
+        localStorage.clear();
+        const dbs = (indexedDB.databases ? await indexedDB.databases() : [{ name: 'HIS_Storage' }]);
+        for (const d of dbs) {
+          await new Promise((res) => { const r = indexedDB.deleteDatabase(d.name); r.onsuccess = r.onerror = r.onblocked = () => res(); });
+        }
+      } catch (e) {}
+      localStorage.setItem('ow_first_run', 'production');   // boot opens the prod form directly
+      location.reload();
+    }
+
+    // ============================================================
     // First-run chooser (browser mode): Demo vs Production
     // ============================================================
 
@@ -697,8 +752,8 @@
             <button type="button" class="btn btn-secondary" id="fr-demo" style="padding:14px;text-align:start;white-space:normal">
               <strong>${ar ? 'وضع التجربة' : 'Demo'}</strong><br>
               <span style="font-size:0.8rem;opacity:.85">${ar
-                ? 'مستشفى تجريبي كامل: حسابات وموظفون ومرضى وهميون. لا تُدخل بيانات مرضى حقيقية هنا أبداً.'
-                : 'Full sample hospital: demo logins, staff and fake patients. Never enter real patient data here.'}</span>
+                ? 'عيادة أسنان تجريبية كاملة: حسابات وموظفون ومرضى وهميون. لا تُدخل بيانات مرضى حقيقية هنا أبداً.'
+                : 'Full sample dental clinic: demo logins, staff and fake patients. Never enter real patient data here.'}</span>
             </button>
             <button type="button" class="btn btn-primary" id="fr-prod" style="padding:14px;text-align:start;white-space:normal">
               <strong>${ar ? 'وضع التشغيل الفعلي' : 'Production'}</strong><br>
@@ -732,7 +787,12 @@
       const finish = () => { overlay.remove(); document.getElementById('login-btn').disabled = false; };
       document.getElementById('fr-demo').onclick = async () => {
         setBusy(true);
-        try { await completeFirstRun('demo'); finish(); }
+        try {
+          await completeFirstRun('demo');
+          finish();
+          setupShowcaseLogin();   // picker + demo notice appear without a reload
+          if (typeof demoTourOffer === 'function') demoTourOffer();   // "want the tour?"
+        }
         catch (e) { setBusy(false); alert((ar ? 'فشل الإعداد: ' : 'Setup failed: ') + e.message); }
       };
       document.getElementById('fr-prod').onclick = () => {
@@ -749,6 +809,12 @@
         try { await completeFirstRun('production', { username: u, password: p }); finish(); }
         catch (e) { setBusy(false); err.textContent = e.message; }
       };
+      // One-click "Set up for production" (from the demo login screen) lands
+      // here after the wipe — skip straight to the admin-creation form.
+      if (localStorage.getItem('ow_first_run') === 'production') {
+        localStorage.removeItem('ow_first_run');
+        document.getElementById('fr-prod').click();
+      }
     }
 
     // ============================================================
@@ -764,19 +830,18 @@
       try {
         demoInstall = !(typeof SERVER_MODE !== 'undefined' && SERVER_MODE)
           && typeof dbGet === 'function'
-          && !!dbGet("SELECT user_id FROM users WHERE username = 'dr.omar'");
+          && !!dbGet("SELECT user_id FROM users WHERE username = 'dr.saeed'");
       } catch (e) { demoInstall = false; }
       const accountsSection = demoInstall ? `
           <h3 style="margin:16px 0 8px;font-size:0.9rem">${lang==='ar'?'حسابات تجريبية':'Demo Accounts'}</h3>
           <table class="shortcuts-table" style="font-size:0.8rem">
             <tr><td><strong>admin</strong></td><td>HIS@2024</td><td>${lang==='ar'?'مدير النظام':'IT Admin'}</td></tr>
-            <tr><td><strong>manager</strong></td><td>manager123</td><td>${lang==='ar'?'مدير المستشفى':'Hospital Manager'}</td></tr>
-            <tr><td><strong>dr.ahmed</strong></td><td>doctor123</td><td>${lang==='ar'?'استشاري باطنية':'Consultant'}</td></tr>
-            <tr><td><strong>nurse.fatima</strong></td><td>nurse123</td><td>${lang==='ar'?'ممرضة':'Nurse'}</td></tr>
-            <tr><td><strong>pharm.ali</strong></td><td>pharm123</td><td>${lang==='ar'?'صيدلاني':'Pharmacist'}</td></tr>
-            <tr><td><strong>lab.nasser</strong></td><td>lab123</td><td>${lang==='ar'?'تقني مختبر':'Lab Tech'}</td></tr>
-            <tr><td><strong>diet.amira</strong></td><td>diet123</td><td>${lang==='ar'?'أخصائية تغذية':'Dietitian'}</td></tr>
-            <tr><td><strong>sw.hessa</strong></td><td>social123</td><td>${lang==='ar'?'أخصائية اجتماعية':'Social Worker'}</td></tr>
+            <tr><td><strong>manager</strong></td><td>manager123</td><td>${lang==='ar'?'مدير العيادة':'Clinic Manager'}</td></tr>
+            <tr><td><strong>dr.saeed</strong></td><td>doctor123</td><td>${lang==='ar'?'طبيب أسنان':'Dentist'}</td></tr>
+            <tr><td><strong>dr.sara</strong></td><td>doctor123</td><td>${lang==='ar'?'أخصائية تقويم':'Specialist (Ortho)'}</td></tr>
+            <tr><td><strong>dr.khalid</strong></td><td>doctor123</td><td>${lang==='ar'?'أخصائي جراحة فم':'Specialist (Oral Surgery)'}</td></tr>
+            <tr><td><strong>hyg.mona</strong></td><td>nurse123</td><td>${lang==='ar'?'أخصائية صحة أسنان':'Hygienist'}</td></tr>
+            <tr><td><strong>reception</strong></td><td>recept123</td><td>${lang==='ar'?'موظف استقبال':'Receptionist'}</td></tr>
           </table>` : `
           <p class="text-muted" style="margin:16px 0 0;font-size:0.8rem">${lang==='ar'
             ? 'تُدار الحسابات من قبل مدير النظام لديك.'
@@ -786,7 +851,7 @@
       overlay.innerHTML = `
         <div class="alert-modal" style="max-width:520px">
           <h2 style="margin-bottom:4px">&#9875; ${lang==='ar'?'دليل المستخدم السريع':'Quick Reference'}</h2>
-          <p class="text-muted" style="margin-bottom:16px;font-size:0.85rem">HIS — Hospital Information System v2.0</p>
+          <p class="text-muted" style="margin-bottom:16px;font-size:0.85rem">OpenSmile — Dental Clinic System v2.0</p>
 
           <h3 style="margin-bottom:8px;font-size:0.9rem">${lang==='ar'?'اختصارات لوحة المفاتيح':'Keyboard Shortcuts'}</h3>
           <table class="shortcuts-table">
@@ -798,7 +863,7 @@
           ${accountsSection}
 
           <p class="text-muted" style="margin-top:16px;font-size:0.75rem;text-align:center">
-            ${lang==='ar'?'تلميح: انقر على شعار HIS خمس مرات لمفاجأة!':'Tip: Click the HIS logo 5 times for a surprise!'}
+            ${lang==='ar'?'تلميح: انقر على شعار OpenSmile خمس مرات لمفاجأة!':'Tip: Click the OpenSmile logo 5 times for a surprise!'}
           </p>
 
           <div class="alert-buttons">
@@ -822,8 +887,8 @@
       document.addEventListener('click', function(e) {
         const isLogo = e.target.closest('.login-logo h1') ||
                        e.target.closest('.app-header h2') ||
-                       (e.target.tagName === 'H1' && e.target.textContent.trim() === 'HIS') ||
-                       (e.target.tagName === 'H2' && e.target.textContent.trim() === 'HIS');
+                       (e.target.tagName === 'H1' && e.target.textContent.includes('OpenSmile')) ||
+                       (e.target.tagName === 'H2' && e.target.textContent.includes('OpenSmile'));
         if (!isLogo) return;
 
         clickCount++;
@@ -880,14 +945,14 @@
             <strong>9 triggers + 8 indexes + audit-logged overrides (15/15 runtime tests pass)</strong>
           </div>
           <div class="easter-egg-stat">
-            <span>&#127973; ${lang==='ar'?'تكلفة HIS التجارية':'Real HIS cost'}</span>
+            <span>&#127973; ${lang==='ar'?'تكلفة نظام تجاري':'Real clinic-software cost'}</span>
             <strong>$500k – $3M</strong>
           </div>
 
           <p style="margin-top:16px;font-size:0.8rem;opacity:0.7">
             ${lang==='ar'
-              ? 'بُني هذا النظام بـ Claude AI — نظام معلومات مستشفى كامل بأقل من ثمن غداء فاخر!'
-              : 'Built with Claude AI — a full hospital information system for less than a fancy dinner!'}
+              ? 'بُني هذا النظام بـ Claude AI — نظام إدارة عيادة أسنان كامل بأقل من ثمن غداء فاخر!'
+              : 'Built with Claude AI — a full dental clinic system for less than a fancy dinner!'}
           </p>
           <p style="font-size:0.75rem;opacity:0.6;margin-top:4px">
             ${lang==='ar'?'كود Konami للحصول على مكافأة أخرى ↑↑↓↓←→←→BA':'Try the Konami code for another surprise ↑↑↓↓←→←→BA'}

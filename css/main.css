@@ -2006,3 +2006,77 @@ body[dir="rtl"] .calc-fab {
   .btn-secondary:hover:not(:disabled) { background: #34373f; }
   tbody tr:hover { background: #26282e; }
 }
+
+/* ============================================================
+   Guided Demo Tour (demo installs only)
+   ============================================================ */
+#tour-panel {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  width: 340px;
+  max-width: calc(100vw - 36px);
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-top: 4px solid #7c3aed;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.28);
+  padding: 14px 16px;
+  z-index: 10002;
+  font-size: 0.875rem;
+}
+[dir="rtl"] #tour-panel { right: auto; left: 18px; }
+#tour-panel h3 { margin: 4px 0 6px; font-size: 1rem; }
+#tour-panel p { margin: 0 0 10px; line-height: 1.55; color: var(--text); }
+.tour-panel-role {
+  display: inline-block;
+  background: #f3e8ff;
+  color: #6d28d9;
+  border-radius: 12px;
+  padding: 2px 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.tour-panel-dots { margin-bottom: 10px; }
+.tour-panel-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.tour-spot {
+  outline: 3px solid #7c3aed !important;
+  outline-offset: 3px;
+  border-radius: 8px;
+  animation: tourSpotPulse 1.2s ease-in-out infinite;
+  position: relative;
+  z-index: 10001;
+}
+@keyframes tourSpotPulse {
+  0%, 100% { outline-color: #7c3aed; }
+  50% { outline-color: #f59e0b; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-spot { animation: none; }
+}
+
+/* Autoplay simulated cursor */
+#tour-cursor {
+  position: fixed;
+  z-index: 10003;
+  font-size: 26px;
+  pointer-events: none;
+  transform: translate(-40%, -10%);
+  transition: left 0.65s cubic-bezier(0.25, 0.8, 0.4, 1), top 0.65s cubic-bezier(0.25, 0.8, 0.4, 1);
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.35));
+}
+#tour-cursor.tour-cursor-click { animation: tourCursorClick 0.28s ease-out; }
+@keyframes tourCursorClick {
+  0% { transform: translate(-40%, -10%) scale(1); }
+  50% { transform: translate(-40%, -10%) scale(0.72); }
+  100% { transform: translate(-40%, -10%) scale(1); }
+}
+
+/* The guide window glides to its anchored position near the spotlit target */
+#tour-panel.tour-anchored {
+  transition: left 0.45s cubic-bezier(0.3, 0.8, 0.35, 1), top 0.45s cubic-bezier(0.3, 0.8, 0.35, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  #tour-panel.tour-anchored { transition: none; }
+  #tour-cursor { transition: none; }
+}
