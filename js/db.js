@@ -475,6 +475,19 @@ function createDentalTables() {
     notes       TEXT
   )`); } catch(e) {}
 
+  // Clinical records — what was actually DONE at a visit (interventions checklist
+  // + free-text notes). This is the patient history the portal mirrors.
+  try { db.run(`CREATE TABLE IF NOT EXISTS clinical_records (
+    record_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id    INTEGER NOT NULL REFERENCES patients(patient_id),
+    visit_date    TEXT NOT NULL,
+    interventions TEXT,
+    tooth_refs    TEXT,
+    other_notes   TEXT,
+    dentist_id    INTEGER,
+    created_at    TEXT NOT NULL
+  )`); } catch(e) {}
+
   // Indexes
   try { db.run('CREATE INDEX IF NOT EXISTS idx_odontogram_patient ON odontogram(patient_id, tooth_fdi)'); } catch(e) {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_perio_patient ON perio_chart(patient_id, tooth_fdi)'); } catch(e) {}
@@ -483,6 +496,7 @@ function createDentalTables() {
   try { db.run('CREATE INDEX IF NOT EXISTS idx_tpitems_patient ON treatment_plan_items(patient_id, status)'); } catch(e) {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_recalls_due ON recalls(status, due_date)'); } catch(e) {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_procedures_cat ON procedures(category)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_clinical_records_patient ON clinical_records(patient_id, visit_date)'); } catch(e) {}
 
   // Defense-in-depth: only clinical staff may author chart/perio entries.
   try { db.run('DROP TRIGGER IF EXISTS trg_chart_author'); } catch(e) {}
@@ -493,6 +507,10 @@ function createDentalTables() {
   try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_plan_author BEFORE INSERT ON treatment_plans FOR EACH ROW
     WHEN NEW.dentist_id IS NOT NULL AND COALESCE((SELECT role FROM users WHERE user_id = NEW.dentist_id), '') NOT IN ('dentist','specialist')
     BEGIN SELECT RAISE(ABORT, 'treatment_plans.dentist_id must be a dentist'); END`); } catch(e) {}
+  try { db.run('DROP TRIGGER IF EXISTS trg_record_author'); } catch(e) {}
+  try { db.run(`CREATE TRIGGER IF NOT EXISTS trg_record_author BEFORE INSERT ON clinical_records FOR EACH ROW
+    WHEN NEW.dentist_id IS NOT NULL AND COALESCE((SELECT role FROM users WHERE user_id = NEW.dentist_id), '') NOT IN ('dentist','specialist','hygienist')
+    BEGIN SELECT RAISE(ABORT, 'clinical_records.dentist_id must be clinical staff'); END`); } catch(e) {}
 }
 
 // ============================================================
@@ -1129,9 +1147,11 @@ async function seedDentalDemo() {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [mrn, p[2], p[0], p[1], p[3], p[4], p[5], p[6], demoBranches[i % 3], recepId, at(reg, '09:00'), p[8]]);
     pid.push(dbLastId());
   });
-  // default clinic settings for the demo
+  // default clinic settings for the demo (number defaults to the owner's for testing)
   setSetting('default_branch', 'tagamo3');
   setSetting('clinic_name', 'OpenSmile Dental');
+  setSetting('lab_whatsapp', '201141477793');
+  setSetting('owner_whatsapp', '201141477793');
 
   // helpers ----------------------------------------------------------------
   const cond = (i, code, dispEn, cat) => db.run('INSERT INTO patient_conditions (patient_id, condition_code, category, display, status, added_by, added_at) VALUES (?,?,?,?,?,?,?)', [pid[i], code, cat || 'chronic', dispEn, 'active', omarId, now]);
@@ -1139,6 +1159,7 @@ async function seedDentalDemo() {
   const flag = (i, en, ar, color) => db.run('INSERT INTO patient_flags (patient_id, label_en, label_ar, color, created_by, created_at, active) VALUES (?,?,?,?,?,?,1)', [pid[i], en, ar, color, omarId, now]);
   const chart = (i, tooth, status, surfaces, note, by) => db.run('INSERT INTO odontogram (patient_id, tooth_fdi, surfaces, status, note, charted_by, charted_at) VALUES (?,?,?,?,?,?,?)', [pid[i], tooth, surfaces || null, status, note || null, by || omarId, now]);
   const recall = (i, type, dueDays, status) => db.run('INSERT INTO recalls (patient_id, type, due_date, status, created_at) VALUES (?,?,?,?,?)', [pid[i], type, day(dueDays), status || 'due', now]);
+  const crec = (i, interventions, teeth, notes, daysAgo, by) => db.run('INSERT INTO clinical_records (patient_id, visit_date, interventions, tooth_refs, other_notes, dentist_id, created_at) VALUES (?,?,?,?,?,?,?)', [pid[i], day(-(daysAgo || 0)), interventions.join(','), teeth || null, notes || null, by || omarId, at(day(-(daysAgo || 0)), '10:00')]);
   const rx = (i, drugName, dose, route, freq, dur, by) => {
     const d = dbGet('SELECT drug_id FROM drugs WHERE name_generic = ?', [drugName]);
     db.run(`INSERT INTO prescriptions (patient_id, admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, duration, start_date, status, prescribed_at)
@@ -1287,6 +1308,11 @@ async function seedDentalDemo() {
   appt(9, 1, omarId, 0, '08:30', 'D0120', 'completed', 1); // TODAY completed
   invoice(9, -1, ['D0120', 'D1110', 'D0274'], 'card', 'paid');
   recall(9, 'checkup', 180, 'scheduled');
+
+  // Clinical history (what was done) — so the portal/history screens have data.
+  crec(0, ['exam', 'radiograph', 'cleaning', 'ohi'], '', 'Comprehensive exam + scaling. Reviewed warfarin before any extraction.', 7, monaId);
+  crec(3, ['exam', 'srp', 'ohi'], '16,26', 'Periodontal maintenance, both upper molars.', 3, monaId);
+  crec(9, ['exam', 'cleaning', 'fluoride'], '', 'Routine checkup, all clear.', 1, omarId);
 
   console.log('[DB] OpenSmile dental demo seeded — ' + pid.length + ' patients, ' + PROC.length + ' procedures');
 }

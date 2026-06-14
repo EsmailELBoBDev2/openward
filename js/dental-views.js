@@ -109,7 +109,8 @@ function dentalPatientHeader(p, lang, activeTab) {
           <div style="color:#6b7280;font-size:.85rem">${escapeHtml(p.mrn)} · ${age} ${lang==='ar'?'سنة':'yrs'} · ${escapeHtml(p.gender||'')} · ${escapeHtml(p.phone||'')}</div>
           <div style="color:#6b7280;font-size:.8rem;margin-top:2px">${lang==='ar'?'التاريخ الطبي':'Medical Hx'}: ${condTxt}</div>
         </div>
-        <div style="display:flex;gap:6px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-sm btn-success" onclick="openRecordVisit(${p.patient_id})">📝 ${lang==='ar'?'تسجيل زيارة':'Record visit'}</button>
           <button class="btn btn-sm btn-primary" onclick="dentalPrescribe(${p.patient_id})">💊 ${lang==='ar'?'وصفة':'Prescribe'}</button>
           <button class="btn btn-sm btn-secondary" onclick="setActivePatient(null);navigateTo('${activeTab}')">${lang==='ar'?'مريض آخر':'Change patient'}</button>
         </div>
@@ -166,6 +167,10 @@ function renderOdontogram(main, lang) {
       ${charted.length ? `<div class="table-container"><table><thead><tr><th>${lang==='ar'?'السن':'Tooth'}</th><th>${lang==='ar'?'الحالة':'Status'}</th><th>${lang==='ar'?'الأسطح':'Surfaces'}</th><th>${lang==='ar'?'ملاحظة':'Note'}</th><th>${lang==='ar'?'بواسطة':'By'}</th></tr></thead><tbody>
         ${charted.map(c => `<tr><td>${c.tooth_fdi}</td><td>${escapeHtml(lang==='ar'?(TOOTH_STATUS[c.status]?.ar||c.status):(TOOTH_STATUS[c.status]?.en||c.status))}</td><td>${escapeHtml(c.surfaces||'—')}</td><td>${escapeHtml(c.note||'—')}</td><td>${escapeHtml(lang==='ar'?(c.full_name_ar||'—'):(c.full_name_en||'—'))}</td></tr>`).join('')}
       </tbody></table></div>` : emptyState(lang==='ar'?'لا يوجد':'Nothing charted yet')}
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">📋 ${lang==='ar'?'السجل العلاجي (ما تمّ في الزيارات)':'Clinical history (what was done)'}</h3>
+      ${clinicalHistoryHtml(p.patient_id, lang)}
     </div>`;
 }
 function openToothEditor(fdi) {
@@ -519,4 +524,81 @@ function renderRecalls(main, lang) {
 function markRecallDone(id) {
   try { dbRun("UPDATE recalls SET status='done' WHERE recall_id=?", [id]); dlog('recall.done', { id }); saveDBToIndexedDB(); navigateTo('recalls'); }
   catch (e) { derr('recall.done', e); }
+}
+
+// ============================================================
+// Clinical visit record — "what was done" (the patient history the portal
+// mirrors). Common dental interventions researched from general-dentistry
+// procedure guides; AI-compiled — a dentist should review for local practice.
+// ============================================================
+const DENTAL_INTERVENTIONS = [
+  { k: 'exam',                en: 'Oral examination',            ar: 'فحص الفم' },
+  { k: 'perio_screen',        en: 'Periodontal screening',       ar: 'فحص اللثة' },
+  { k: 'radiograph',          en: 'Radiograph taken',            ar: 'تصوير بالأشعة' },
+  { k: 'cleaning',            en: 'Scaling & polishing (cleaning)', ar: 'تنظيف وتلميع' },
+  { k: 'fluoride',            en: 'Fluoride application',         ar: 'تطبيق الفلورايد' },
+  { k: 'anesthesia',          en: 'Local anaesthesia',            ar: 'تخدير موضعي' },
+  { k: 'filling',             en: 'Filling placed',               ar: 'حشوة' },
+  { k: 'crown_prep',          en: 'Crown preparation',            ar: 'تحضير تاج' },
+  { k: 'crown_fit',           en: 'Crown / bridge fitted',        ar: 'تركيب تاج / جسر' },
+  { k: 'rct',                 en: 'Root canal therapy',           ar: 'علاج عصب' },
+  { k: 'extraction_simple',   en: 'Simple extraction',            ar: 'خلع بسيط' },
+  { k: 'extraction_surgical', en: 'Surgical extraction',          ar: 'خلع جراحي' },
+  { k: 'suturing',            en: 'Suturing',                     ar: 'خياطة' },
+  { k: 'srp',                 en: 'Scaling & root planing (deep clean)', ar: 'تنظيف عميق' },
+  { k: 'impression',          en: 'Impression taken',             ar: 'أخذ طبعة' },
+  { k: 'sealant',             en: 'Sealant placed',               ar: 'حشوة وقائية' },
+  { k: 'whitening',           en: 'Whitening / bleaching',        ar: 'تبييض' },
+  { k: 'ohi',                 en: 'Oral-hygiene instructions',    ar: 'تعليمات العناية بالفم' },
+  { k: 'prescription',        en: 'Prescription issued',          ar: 'صرف وصفة' },
+  { k: 'postop',              en: 'Post-op instructions',         ar: 'تعليمات ما بعد العلاج' },
+  { k: 'referral',            en: 'Referral made',                ar: 'إحالة' },
+];
+function interventionLabel(k, lang) { const x = DENTAL_INTERVENTIONS.find(i => i.k === k); return x ? (lang === 'ar' ? x.ar : x.en) : k; }
+
+function openRecordVisit(pid) {
+  const lang = currentLanguage(); const ar = lang === 'ar';
+  if (!['dentist', 'specialist', 'hygienist'].includes((getCurrentUser() || {}).role)) { showError(ar ? 'للطاقم العلاجي فقط' : 'Clinical staff only'); return; }
+  const checks = DENTAL_INTERVENTIONS.map(i => `<label style="display:flex;align-items:center;gap:6px;font-size:.85rem;padding:3px 0"><input type="checkbox" class="rv-iv" value="${i.k}"> ${escapeHtml(ar ? i.ar : i.en)}</label>`).join('');
+  showModal(`
+    <h2 style="margin-top:0">📝 ${ar ? 'تسجيل زيارة — ماذا تم اليوم؟' : 'Record visit — what was done today?'}</h2>
+    <p style="color:#6b7280;font-size:.82rem;margin-top:0">${ar ? 'حدّد الإجراءات التي تمّت، وأضف أي شيء آخر في الملاحظات. يظهر هذا في سجل المريض وفي بوابته.' : 'Tick what was done, and add anything else under notes. This shows in the patient record and their portal.'}</p>
+    <div style="columns:2;column-gap:18px;margin-bottom:10px">${checks}</div>
+    <div class="form-group"><label>${ar ? 'الأسنان المعنية (اختياري)' : 'Teeth involved (optional)'}</label><input id="rv-teeth" placeholder="e.g. 36, 46"></div>
+    <div class="form-group"><label>${ar ? 'ملاحظات / أشياء أخرى لم تُذكر بالأعلى' : 'Notes / other things not listed above'}</label><textarea id="rv-notes" rows="2"></textarea></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+      <button class="btn btn-secondary" onclick="closeModal()">${t('cancel') || 'Cancel'}</button>
+      <button class="btn btn-primary" onclick="saveVisitRecord(${pid})">${ar ? 'حفظ الزيارة' : 'Save visit'}</button>
+    </div>`, { maxWidth: 620 });
+}
+function saveVisitRecord(pid) {
+  const lang = currentLanguage(); const u = getCurrentUser();
+  const ivs = [...document.querySelectorAll('.rv-iv:checked')].map(c => c.value);
+  const teeth = (document.getElementById('rv-teeth').value || '').trim();
+  const notes = (document.getElementById('rv-notes').value || '').trim();
+  if (!ivs.length && !notes) { showError(lang === 'ar' ? 'حدّد إجراءً واحداً على الأقل أو اكتب ملاحظة' : 'Tick at least one item or add a note'); return; }
+  try {
+    const p = dbGet('SELECT full_name_en, full_name_ar, mrn FROM patients WHERE patient_id=?', [pid]);
+    db.run('INSERT INTO clinical_records (patient_id, visit_date, interventions, tooth_refs, other_notes, dentist_id, created_at) VALUES (?,?,?,?,?,?,?)',
+      [pid, new Date().toISOString().slice(0, 10), ivs.join(','), teeth || null, notes || null, u.user_id, nowISO()]);
+    logAction('VISIT_RECORDED', `${u.full_name_en} recorded a visit for ${p.full_name_en || p.full_name_ar}: ${ivs.join(', ')}${notes ? ' | ' + notes : ''}`, null, pid, p.full_name_en, p.mrn);
+    dlog('visit.recorded', { pid, interventions: ivs, teeth, hasNotes: !!notes });
+    saveDBToIndexedDB(); closeModal();
+    showSuccess(lang === 'ar' ? 'تم تسجيل الزيارة' : 'Visit recorded');
+    navigateTo(currentView);
+  } catch (e) { derr('visit.record', e); showError(e.message); }
+}
+// Reusable clinical-history block (dentist view + the portal both render this).
+function clinicalHistoryHtml(pid, lang) {
+  const ar = lang === 'ar';
+  const recs = dbAll('SELECT r.*, u.full_name_en, u.full_name_ar FROM clinical_records r LEFT JOIN users u ON u.user_id=r.dentist_id WHERE r.patient_id=? ORDER BY r.visit_date DESC, r.record_id DESC', [pid]);
+  if (!recs.length) return `<p class="muted">${ar ? 'لا يوجد سجل علاجي بعد' : 'No clinical history yet'}</p>`;
+  return recs.map(r => {
+    const ivs = (r.interventions || '').split(',').filter(Boolean).map(k => `<span class="badge badge-info" style="margin:2px">${escapeHtml(interventionLabel(k, lang))}</span>`).join(' ');
+    return `<div style="border-inline-start:3px solid var(--primary);padding:6px 10px;margin-bottom:8px;background:var(--bg-soft,#f9fafb);border-radius:4px">
+      <div style="font-weight:600;font-size:.85rem">${r.visit_date}${r.full_name_en ? ` · ${escapeHtml(ar ? (r.full_name_ar || r.full_name_en) : r.full_name_en)}` : ''}${r.tooth_refs ? ` · ${ar ? 'الأسنان' : 'teeth'} ${escapeHtml(r.tooth_refs)}` : ''}</div>
+      <div style="margin:4px 0">${ivs || ''}</div>
+      ${r.other_notes ? `<div style="font-size:.85rem;color:#374151">${escapeHtml(r.other_notes)}</div>` : ''}
+    </div>`;
+  }).join('');
 }

@@ -106,11 +106,11 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   assert(/demoTourContinue/.test(tour) && /tour-continue-btn/.test(tour) && /s\.armed/.test(tour), "default pace: the tour acts, the visitor just reads + presses Continue (armed/fire loop)");
   assert(/_tourReadMs/.test(tour) && /tour-cursor/.test(tour), 'autoplay paces by text length and drives a simulated cursor');
   assert(/demoTourToggleAuto/.test(tour) && /pointerdown/.test(tour) && /isTrusted/.test(tour) && /visibilitychange/.test(tour), 'autoplay is pausable, yields to real user clicks, and pauses in hidden tabs');
-  // ALL-ROLES story: every staff dental persona appears (no patient portal — LAN-only)
+  // ALL-ROLES story: every dental persona appears, from the login page to the portal
   for (const u of ['reception', 'hyg.mona', 'dr.saeed', 'manager']) {
     assert(tour.includes(u), `tour includes persona ${u}`);
   }
-  assert(/mgr-audit/.test(tour) && /'final'/.test(tour), 'tour closes on the manager audit + wrap-up (no patient portal)');
+  assert(/loginPatient\(s\.mrn/.test(tour) && /role === 'patient'/.test(tour), 'tour closes with the patient logging into the (future-online) portal');
   assert(/role: null, view: null, mode: 'info'/.test(tour) && /_tourPositionPanel/.test(tour), 'tour starts ON the login page and the guide window anchors itself near its targets');
   assert(/demoTourOffer/.test(tour) && /ow_tour_offered/.test(tour) && (idx.match(/demoTourOffer/g) || []).length >= 2, 'tour auto-OFFERS itself once: right after Demo first-run AND at the login screen of an un-toured demo install');
   assert(/setupShowcaseLogin\(\);\s*\/\/ picker \+ demo notice appear without a reload/.test(idx), 'persona picker appears immediately after choosing Demo (no reload needed)');

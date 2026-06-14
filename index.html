@@ -68,7 +68,17 @@
            installs never render credentials or quick-logins). -->
       <div id="demo-login-picker"></div>
 
-      <!-- Login Form (staff only — OpenSmile is LAN/clinic-only, no patient portal) -->
+      <!-- Login Mode Toggle (Staff for the LAN clinic; Patient Portal is the
+           "future online" concept shown in the demo) -->
+      <div class="login-mode-toggle" id="login-mode-toggle">
+        <button type="button" class="login-mode-btn active" id="login-staff-btn" onclick="setLoginMode('staff')">
+          <span>👨‍⚕️</span> <span id="lbl-staff-mode">Staff Login</span>
+        </button>
+        <button type="button" class="login-mode-btn" id="login-patient-btn" onclick="setLoginMode('patient')">
+          <span>👤</span> <span id="lbl-patient-mode">Patient Portal</span>
+        </button>
+      </div>
+
       <form id="login-form" onsubmit="handleLogin(event)">
         <div id="staff-login-fields">
           <div class="form-group">
@@ -81,6 +91,24 @@
               <input type="password" id="login-password" autocomplete="current-password" aria-label="Password">
               <button type="button" class="password-toggle" id="pw-toggle" onclick="togglePassword()">Show</button>
             </div>
+          </div>
+        </div>
+
+        <!-- Patient Portal Fields (MRN + Date of Birth; demo identity) -->
+        <div id="patient-login-fields" style="display:none">
+          <div class="form-group">
+            <label id="lbl-mrn" for="patient-mrn">MRN — رقم الملف الطبي</label>
+            <input type="text" id="patient-mrn" autocomplete="off" placeholder="OS-XXXXXXXX-XXXXX" aria-label="Medical Record Number">
+            <small class="form-hint" id="lbl-mrn-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">You can find this on your appointment card or visit summary.</small>
+          </div>
+          <div class="form-group">
+            <label id="lbl-dob" for="patient-dob">Date of Birth — تاريخ الميلاد</label>
+            <input type="date" id="patient-dob" autocomplete="off" aria-label="Date of Birth">
+          </div>
+          <div class="form-group">
+            <label id="lbl-pt-pw" for="patient-password">Password — كلمة المرور</label>
+            <input type="password" id="patient-password" autocomplete="current-password" aria-label="Patient portal password">
+            <small class="form-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">Only if you've set one. MRN + Date of Birth are identity, not a password.</small>
           </div>
         </div>
 
@@ -320,11 +348,16 @@
     // Login Handler
     // ============================================================
 
-    // Staff-only login (the patient portal was removed — OpenSmile is LAN/clinic-only).
+    // Login mode: Staff (LAN clinic) or Patient (the "future online" portal concept).
     window.loginMode = 'staff';
-    function setLoginMode() {
-      const f = document.getElementById('staff-login-fields'); if (f) f.style.display = '';
-      const u = document.getElementById('login-username'); if (u) setTimeout(() => u.focus(), 50);
+    function setLoginMode(mode) {
+      window.loginMode = mode;
+      const isPatient = mode === 'patient';
+      const sb = document.getElementById('login-staff-btn'); if (sb) sb.classList.toggle('active', !isPatient);
+      const pb = document.getElementById('login-patient-btn'); if (pb) pb.classList.toggle('active', isPatient);
+      const sf = document.getElementById('staff-login-fields'); if (sf) sf.style.display = isPatient ? 'none' : '';
+      const pf = document.getElementById('patient-login-fields'); if (pf) pf.style.display = isPatient ? '' : 'none';
+      setTimeout(() => { const el = document.getElementById(isPatient ? 'patient-mrn' : 'login-username'); if (el) el.focus(); }, 50);
       const e = document.getElementById('login-error'); if (e) e.classList.remove('show');
     }
 
@@ -339,7 +372,27 @@
       btn.textContent = t('logging_in');
 
       try {
-        // Staff login (the patient portal was removed — OpenSmile is LAN/clinic-only)
+        if (window.loginMode === 'patient') {
+          // Patient portal login (MRN + Date of Birth)
+          const mrn = document.getElementById('patient-mrn').value.trim();
+          const dob = document.getElementById('patient-dob').value;
+          const ptPassword = (document.getElementById('patient-password') || {}).value || '';
+          if (!mrn || !dob) { errorEl.textContent = t('error_required'); errorEl.classList.add('show'); btn.disabled = false; btn.textContent = t('login_btn'); return; }
+          const pr = await loginPatient(mrn, dob, ptPassword);
+          if (pr.success) {
+            showSuccess(t('success_login')); routeToDashboard();
+            if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
+            if (pr.mustSetPassword && typeof showSetPatientPasswordModal === 'function') setTimeout(() => showSetPatientPasswordModal(false), 800);
+          } else {
+            let m = t(pr.errorKey || 'patient_login_error');
+            if (pr.errorKey === 'patient_password_required') { m = lang === 'ar' ? 'هذا الحساب محمي بكلمة مرور. أدخل كلمة المرور.' : 'This account is password-protected — enter your password.'; const pf = document.getElementById('patient-password'); if (pf) pf.focus(); }
+            errorEl.textContent = m; errorEl.classList.add('show');
+          }
+          btn.disabled = false; btn.textContent = t('login_btn');
+          return;
+        }
+
+        // Staff login
         const username = document.getElementById('login-username').value.trim();
         const password = document.getElementById('login-password').value;
 
@@ -617,6 +670,13 @@
           <span dir="rtl">عرض تجريبي — عيادة أسنان وهمية كاملة مخزّنة محلياً في هذا المتصفح. اختر دوراً وجرّب؛ لا شيء هنا حقيقي.</span>
         </div>`;
 
+      // Patient-portal demo identity comes from the DB (a portal-enabled patient).
+      let portalOpt = '';
+      try {
+        const pp = dbGet('SELECT mrn, date_of_birth FROM patients WHERE portal_enabled = 1 LIMIT 1');
+        if (pp) portalOpt = `<option value="patient|${pp.mrn}|${pp.date_of_birth}">👤 Patient Portal — بوابة المريض</option>`;
+      } catch (e) {}
+
       const picker = document.getElementById('demo-login-picker');
       if (!picker) return;
       picker.innerHTML = `
@@ -625,6 +685,7 @@
           <select id="demo-persona" aria-label="Quick demo login">
             <option value="">— ${currentLanguage() === 'ar' ? 'اختر دوراً' : 'pick a role'} —</option>
             ${DEMO_PERSONAS.map((p, i) => `<option value="${i}">${p[0]} ${p[1]} — ${p[2]}</option>`).join('')}
+            ${portalOpt}
           </select>
         </div>
         <div style="text-align:center;margin-bottom:6px">
@@ -635,7 +696,17 @@
         </div>`;
       document.getElementById('demo-persona').addEventListener('change', function () {
         if (this.value === '') return;
+        if (this.value.startsWith('patient|')) {
+          const [, mrn, dob] = this.value.split('|');
+          setLoginMode('patient');
+          document.getElementById('patient-mrn').value = mrn;
+          document.getElementById('patient-dob').value = dob || '';
+          const pf = document.getElementById('patient-password'); if (pf) pf.value = '';
+          document.getElementById('login-form').requestSubmit();
+          return;
+        }
         const p = DEMO_PERSONAS[parseInt(this.value, 10)];
+        setLoginMode('staff');
         document.getElementById('login-username').value = p[3];
         document.getElementById('login-password').value = p[4];
         // Showcase smoothness: picking a persona just logs you in.

@@ -65,10 +65,10 @@ const TOUR_STEPS = [
     ch: { en: '🚪 The door', ar: '🚪 الباب' },
     title: { en: 'Every visit starts at this door', ar: 'كل زيارة تبدأ من هذا الباب' },
     body: {
-      en: 'This is the only way in. In demo mode the spotlight shows two things: the <strong>role picker</strong> (jump into any of the clinic’s staff roles, no passwords) and the <strong>production switch</strong> — one click wipes the demo and builds a real, zero-default-credential clinic.<br><br>Press <strong>Next</strong> and we’ll follow one patient — a toothache — through the whole clinic.',
-      ar: 'هذا هو المدخل الوحيد. في الوضع التجريبي تُظهر الإضاءة شيئين: <strong>قائمة الأدوار</strong> (ادخل بأي دور بلا كلمات مرور)، و<strong>مفتاح التشغيل الفعلي</strong> — ضغطة تمسح التجربة وتبني عيادة حقيقية بلا حسابات افتراضية.<br><br>اضغط <strong>التالي</strong> لنتابع مريضاً واحداً بألم أسنان عبر العيادة كلها.',
+      en: 'This is the only way in. In demo mode the spotlight shows three things: the <strong>role picker</strong> (jump into any of the clinic’s staff roles, no passwords), the <strong>Patient Portal</strong> toggle (the future online concept — patients log in with their MRN), and the <strong>production switch</strong> — one click wipes the demo and builds a real, zero-default-credential clinic.<br><br>Press <strong>Next</strong> and we’ll follow one patient — a toothache — through the whole clinic.',
+      ar: 'هذا هو المدخل الوحيد. في الوضع التجريبي تُظهر الإضاءة ثلاثة أشياء: <strong>قائمة الأدوار</strong> (ادخل بأي دور بلا كلمات مرور)، وزر <strong>بوابة المريض</strong> (فكرة الإتاحة الإلكترونية مستقبلاً — يدخل المريض برقمه الطبي)، و<strong>مفتاح التشغيل الفعلي</strong> — ضغطة تمسح التجربة وتبني عيادة حقيقية بلا حسابات افتراضية.<br><br>اضغط <strong>التالي</strong> لنتابع مريضاً واحداً بألم أسنان عبر العيادة كلها.',
     },
-    targets: ['#demo-persona', '#prod-setup-btn'],
+    targets: ['#demo-persona', '#login-patient-btn', '#prod-setup-btn'],
     target() { return null; }, done() { return false; },
   },
   { // reception registers Salem
@@ -187,6 +187,20 @@ const TOUR_STEPS = [
     target() { return '#main-content .btn-success'; },
     done(s) { const it = dbGet('SELECT status FROM treatment_plan_items WHERE item_id=?', [s.fillingItemId]); return !!(it && it.status === 'completed'); },
   },
+  { // dentist records the visit (what was done) — mirrored to the portal later
+    role: ['dr.saeed', 'doctor123', 'Dentist', 'طبيب الأسنان'],
+    view: 'dr-chart', mode: 'click',
+    ch: { en: '📝 The record', ar: '📝 السجل' },
+    title: { en: 'Logging what was actually done', ar: 'تسجيل ما تمّ فعلاً' },
+    body: {
+      en: 'Before Salem leaves, Dr. Saeed ticks off <strong>what was done this visit</strong> — exam, local anaesthesia, the composite filling on 36, oral-hygiene advice — from a common-interventions checklist, with a free-text box for anything else. This becomes Salem’s <strong>clinical history</strong>, and (in a moment) he’ll see the exact same thing in his portal.<br><br>👉 <strong>Click “Save visit”.</strong>',
+      ar: 'قبل أن يغادر سالم، يحدّد الدكتور سعيد <strong>ما تمّ في هذه الزيارة</strong> — فحص، تخدير موضعي، حشوة كمبوزيت للسن 36، نصائح العناية بالفم — من قائمة الإجراءات الشائعة، مع خانة لكتابة أي شيء آخر. يصبح هذا <strong>السجل العلاجي</strong> لسالم، وسيراه هو نفسه بعد قليل في بوابته.<br><br>👉 <strong>اضغط «حفظ الزيارة».</strong>',
+    },
+    enter(s) { tourClearOverlays(); tourOpenForPatient('dr-chart', s.patientId); setTimeout(() => { if (typeof openRecordVisit === 'function') openRecordVisit(s.patientId); setTimeout(() => { ['exam', 'anesthesia', 'filling', 'ohi'].forEach(k => { const cb = document.querySelector(`.rv-iv[value="${k}"]`); if (cb) cb.checked = true; }); tourSet('rv-teeth', '36'); tourSet('rv-notes', 'Composite filling on 36; tolerated well.'); }, 320); }, 480); },
+    auto(s) { if (typeof saveVisitRecord === 'function') saveVisitRecord(s.patientId); },
+    target() { return '.generic-modal .btn-primary'; },
+    done(s) { return !!dbGet('SELECT record_id FROM clinical_records WHERE patient_id=?', [s.patientId]); },
+  },
   { // reception bills + recall
     role: ['reception', 'recept123', 'Receptionist', 'موظف الاستقبال'],
     view: 'rcp-billing', mode: 'info',
@@ -233,13 +247,35 @@ const TOUR_STEPS = [
     },
     target() { return '#main-content table'; }, done() { return false; },
   },
+  { // patient portal login (the "future online" concept)
+    role: null, view: null, mode: 'auto',
+    ch: { en: '🧍 The patient', ar: '🧍 المريض' },
+    title: { en: 'Salem checks his own record', ar: 'سالم يطالع ملفه بنفسه' },
+    body: {
+      en: 'The last login is Salem’s — a preview of the <strong>future online portal</strong>. From home, with nothing but the <strong>MRN and date of birth on his appointment card</strong>, he opens the Patient Portal. No app store, no setup.',
+      ar: 'آخر تسجيل دخول لسالم نفسه — لمحة عن <strong>البوابة الإلكترونية المستقبلية</strong>. من منزله، بلا شيء سوى <strong>الرقم الطبي وتاريخ الميلاد المطبوعَين على بطاقة موعده</strong>، يفتح بوابة المريض. لا متجر تطبيقات ولا إعداد.',
+    },
+    enter(s) { (async () => { try { const sess = (typeof getCurrentSession === 'function') ? getCurrentSession() : null; if (sess && sess.role === 'patient') return; try { await logout(); } catch (e) {} const r = await loginPatient(s.mrn, TOUR_PATIENT.dob, ''); if (r && r.success) routeToDashboard(); } catch (e) { console.warn('[tour] portal login failed', e); } })(); },
+    auto(s) { const st = tourState(); const sp = st && TOUR_STEPS[st.i]; if (sp && sp.enter) sp.enter(s); },
+    target() { return null; }, done() { const sess = (typeof getCurrentSession === 'function') ? getCurrentSession() : null; return !!(sess && sess.role === 'patient'); },
+  },
+  { // what the patient sees — everything mirrored
+    role: null, view: 'pp-visits', mode: 'info',
+    ch: { en: '🧍 The patient', ar: '🧍 المريض' },
+    title: { en: 'His whole visit, mirrored', ar: 'زيارته كاملة، مرآةً' },
+    body: {
+      en: 'Salem sees his <strong>clinical history</strong> — exactly what the dentist did this visit (exam, the filling on 36, the prescription) — plus his <strong>treatment plan</strong>, <strong>medications</strong>, the paid invoice and his upcoming <strong>recall</strong>. Every step the clinic took, mirrored on his own phone, in plain language.<br><br>Press <strong>Next</strong> for the wrap-up.',
+      ar: 'يرى سالم <strong>سجلّه العلاجي</strong> — تماماً ما فعله الطبيب في هذه الزيارة (الفحص، حشوة السن 36، الوصفة) — إضافةً إلى <strong>خطته العلاجية</strong> و<strong>أدويته</strong> والفاتورة المدفوعة وموعد <strong>المراجعة</strong> القادم. كل خطوة قامت بها العيادة، تنعكس على هاتفه بلغة بسيطة.<br><br>اضغط <strong>التالي</strong> للختام.',
+    },
+    target() { return '#main-content .card'; }, done() { return false; },
+  },
   { // finale
     role: null, view: null, mode: 'final',
     ch: { en: '🎉 Wrap-up', ar: '🎉 الختام' },
     title: { en: '🎉 One toothache. Every role. Zero paper.', ar: '🎉 ألم أسنان واحد. كل الأدوار. بلا ورق.' },
     body: {
-      en: 'Walk-in → registration with a new MRN → a recorded penicillin allergy → an odontogram finding on tooth 36 → a costed treatment plan → a <strong>blocked amoxicillin</strong> → the safe clindamycin → a completed filling → checkout + a 6-month recall → the manager’s production view and <strong>tamper-evident audit</strong> of every step.<br><br><strong>The whole clinical team. The safety guard live. Zero paper.</strong><br><br>Explore freely with the role picker — or switch it to production:',
-      ar: 'دخول مباشر → تسجيل برقم طبي جديد → تسجيل حساسية البنسلين → اكتشاف على مخطط الأسنان في السن 36 → خطة علاجية بسعرها → <strong>منع الأموكسيسيلين</strong> → كليندامايسين الآمن → حشوة مكتملة → دفع وموعد مراجعة بعد ٦ أشهر → لوحة الإنتاج وسجل التدقيق المحصَّن لكل خطوة لدى المدير.<br><br><strong>فريق العيادة كاملاً. حاجز الأمان حيّ. بلا ورق.</strong><br><br>استكشف بحرية من قائمة الأدوار — أو حوّله للتشغيل الفعلي:',
+      en: 'Walk-in → registration with a new MRN → a recorded penicillin allergy → an odontogram finding on tooth 36 → a costed treatment plan → a <strong>blocked amoxicillin</strong> → the safe clindamycin → a completed filling logged to the clinical history → checkout + a 6-month recall → the manager’s production view and <strong>tamper-evident audit</strong> → and Salem reading it all in the portal.<br><br><strong>The whole clinical team. The safety guard live. Zero paper.</strong><br><br>Explore freely with the role picker — or switch it to production:',
+      ar: 'دخول مباشر → تسجيل برقم طبي جديد → تسجيل حساسية البنسلين → اكتشاف على مخطط الأسنان في السن 36 → خطة علاجية بسعرها → <strong>منع الأموكسيسيلين</strong> → كليندامايسين الآمن → حشوة مكتملة مسجّلة في السجل العلاجي → دفع وموعد مراجعة بعد ٦ أشهر → لوحة الإنتاج وسجل التدقيق المحصَّن لدى المدير → وسالم يقرأ كل ذلك في البوابة.<br><br><strong>فريق العيادة كاملاً. حاجز الأمان حيّ. بلا ورق.</strong><br><br>استكشف بحرية من قائمة الأدوار — أو حوّله للتشغيل الفعلي:',
     },
     target() { return null; }, done() { return false; },
   },
