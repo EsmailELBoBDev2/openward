@@ -797,6 +797,19 @@ function renderITSettings(main, lang) {
     </div>
     <div class="card">
       <div class="form-section">
+        <h3>💬 ${ar ? 'ربط واتساب' : 'WhatsApp Integration'}</h3>
+        <p class="mb-2" style="font-size:.85rem;color:#6b7280">${ar
+          ? 'احفظ أرقام الواتساب أعلاه (المعمل والمالك). امسح رمز QR التالي لفتح محادثة واتساب مع العيادة مباشرة (للمرضى أو المعمل). الإرسال التلقائي للصور يتم تفعيله على خادم العيادة المحلي (LAN) لاحقاً عبر ربط الجهاز.'
+          : 'Save the WhatsApp numbers above (lab + owner). Scan the QR below to open a WhatsApp chat with the clinic directly (for patients or the lab). Fully automatic image sending is enabled later on the LAN server by linking a device.'}</p>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+          <div id="wa-qr" style="background:#fff;padding:8px;border-radius:8px;display:inline-block"></div>
+          <button class="btn btn-secondary" onclick="renderWhatsAppQR()">${ar ? 'إنشاء / تحديث رمز QR' : 'Generate / refresh QR'}</button>
+        </div>
+        <p id="wa-qr-note" style="font-size:.78rem;color:#9ca3af;margin-top:8px"></p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="form-section">
         <h3>${ar ? 'النسخ الاحتياطي' : 'Database Backup'}</h3>
         <p class="mb-2">${ar ? 'تحميل نسخة احتياطية من قاعدة البيانات أو استعادة واحدة سابقة.' : 'Download a backup of the database or restore a previous one.'}</p>
         <div class="flex gap-1 flex-wrap">
@@ -852,6 +865,26 @@ function saveClinicSettings() {
     showSuccess(lang === 'ar' ? 'تم حفظ الإعدادات' : 'Settings saved');
     navigateTo('it-settings');
   } catch (e) { derr('settings.save', e); showError(e.message); }
+}
+
+// Render a scannable QR of the clinic's WhatsApp (wa.me/<owner>) so patients or
+// the lab can open a chat by scanning. Uses the bundled qrcode.js. Browser-only:
+// this is "open a chat", not auto-send — true device-linking/auto-send lives on
+// the LAN server (WhatsApp Cloud API) later.
+function renderWhatsAppQR() {
+  const lang = currentLanguage(); const ar = lang === 'ar';
+  const box = document.getElementById('wa-qr'); const note = document.getElementById('wa-qr-note');
+  if (!box) return;
+  box.innerHTML = '';
+  const num = getSetting('owner_whatsapp', '') || getSetting('lab_whatsapp', '');
+  if (!num) { if (note) note.textContent = ar ? 'احفظ رقم واتساب المالك أولاً ثم أنشئ الرمز.' : 'Save the owner WhatsApp number first, then generate the QR.'; return; }
+  const url = `https://wa.me/${num}`;
+  try {
+    if (typeof QRCode === 'undefined') { if (note) note.textContent = 'QR library not loaded.'; return; }
+    new QRCode(box, { text: url, width: 168, height: 168, correctLevel: QRCode.CorrectLevel.M });
+    if (note) note.textContent = (ar ? 'يفتح محادثة مع: ' : 'Opens a chat with: ') + egDisplay(num);
+    dlog('whatsapp.qr', { url });
+  } catch (e) { derr('whatsapp.qr', e); if (note) note.textContent = e.message; }
 }
 
 // ============================================================
