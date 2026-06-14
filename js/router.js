@@ -321,17 +321,12 @@ function renderSidebar(role) {
     }
   }
 
-  // Cross-role clinical tools (patient-centric; appended here to avoid duplicating
-  // into each role menu). Documents = X-rays & consent attachments; Recalls =
-  // recare/preventive nudges; Referrals = specialist consult requests.
+  // Cross-role clinical tools: the Patient File (X-rays/scans/notes) and the
+  // Recalls list (who is due + one-tap WhatsApp reminder).
   const CLINICAL_NAV = ['dentist', 'specialist', 'hygienist'];
   if (CLINICAL_NAV.includes(role)) {
-    items.push({ id: 'documents', icon: '&#128206;', label: t('documents_nav') });
-    items.push({ id: 'care-gaps', icon: '&#9889;', label: t('care_gaps_nav') });
-    items.push({ id: 'patient-summary', icon: '&#128203;', label: t('summary_nav') });
-  }
-  if (['dentist', 'specialist'].includes(role)) {
-    items.push({ id: 'referrals', icon: '&#128228;', label: t('referrals_nav') });
+    items.push({ id: 'documents', icon: '&#128193;', label: t('documents_nav') });
+    items.push({ id: 'recalls', icon: '&#9200;', label: t('recalls_nav') });
   }
 
   nav.innerHTML = items.map(item => {
@@ -376,9 +371,7 @@ const VIEW_PREFIX_ROLES = {
   'incident-queue':  ['it_admin', 'clinic_manager'],
   // Cross-role clinical tools (full view ids used as their own prefix keys).
   'documents': ['dentist', 'specialist', 'hygienist'],
-  'care-gaps': ['dentist', 'specialist', 'hygienist'],
-  'patient-summary': ['dentist', 'specialist', 'hygienist'],
-  'referrals': ['dentist', 'specialist'],
+  'recalls':   ['dentist', 'specialist', 'hygienist'],
 };
 
 function canAccessView(viewId, role) {
@@ -490,11 +483,9 @@ function renderView(viewId) {
     case 'incident-report': renderIncidentReport(main, lang); break;
     case 'incident-queue':  renderIncidentQueue(main, lang); break;
 
-    // ---- Cross-role clinical tools (adapted peer features) ----
-    case 'documents': renderDocuments(main, lang); break;
-    case 'care-gaps': renderCareGaps(main, lang); break;
-    case 'referrals': renderReferrals(main, lang); break;
-    case 'patient-summary': renderPatientSummary(main, lang); break;
+    // ---- Cross-role clinical tools (dental) ----
+    case 'documents': renderDocuments(main, lang); break;   // Patient File (X-rays/scans/notes)
+    case 'recalls':   renderRecalls(main, lang); break;     // recare list + WhatsApp reminders
 
     default:
       main.innerHTML = `<div class="empty-state"><div class="empty-icon">&#128679;</div><p>${t('loading')}</p></div>`;
@@ -802,7 +793,7 @@ function renderITSettings(main, lang) {
           ? 'احفظ أرقام الواتساب أعلاه (المعمل والمالك). امسح رمز QR التالي لفتح محادثة واتساب مع العيادة مباشرة (للمرضى أو المعمل). الإرسال التلقائي للصور يتم تفعيله على خادم العيادة المحلي (LAN) لاحقاً عبر ربط الجهاز.'
           : 'Save the WhatsApp numbers above (lab + owner). Scan the QR below to open a WhatsApp chat with the clinic directly (for patients or the lab). Fully automatic image sending is enabled later on the LAN server by linking a device.'}</p>
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
-          <div id="wa-qr" style="background:#fff;padding:8px;border-radius:8px;display:inline-block"></div>
+          <div id="wa-qr" style="background:var(--white);padding:8px;border-radius:8px;display:inline-block"></div>
           <button class="btn btn-secondary" onclick="renderWhatsAppQR()">${ar ? 'إنشاء / تحديث رمز QR' : 'Generate / refresh QR'}</button>
         </div>
         <p id="wa-qr-note" style="font-size:.78rem;color:#9ca3af;margin-top:8px"></p>

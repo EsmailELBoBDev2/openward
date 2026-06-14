@@ -4,12 +4,6 @@
 
 const LANG = {
   // ---- Patient Portal ----
-  pp_overview:           { ar: 'الرئيسية',              en: 'Home' },
-  pp_visits:             { ar: 'زياراتي',                en: 'My Visits' },
-  pp_labs:               { ar: 'خطتي العلاجية',          en: 'Treatment Plan' },
-  pp_prescriptions:      { ar: 'أدويتي',                en: 'My Medications' },
-  pp_appointments:       { ar: 'مواعيدي',               en: 'My Appointments' },
-  pp_messages:           { ar: 'رسائلي',                en: 'Messages' },
   patient_login_required:{ ar: 'يتطلب تسجيل دخول المريض', en: 'Patient login required' },
   patient_login_error:   { ar: 'الرقم الطبي أو تاريخ الميلاد غير صحيح', en: 'Invalid Medical Record Number or Date of Birth' },
   login_locked:          { ar: 'الحساب مقفل بسبب محاولات فاشلة متعددة. أعد المحاولة بعد قليل.', en: 'Account temporarily locked due to repeated failed attempts. Try again shortly.' },
@@ -290,6 +284,7 @@ const LANG = {
 
   // ---- Care-gap / preventive reminders ----
   care_gaps_nav:    { ar: 'فجوات الرعاية', en: 'Care Gaps' },
+  recalls_nav:      { ar: 'الاستدعاءات', en: 'Recalls' },
   care_gaps_title:  { ar: 'تذكيرات الرعاية الوقائية', en: 'Preventive Care Reminders' },
   cg_none:          { ar: 'لا توجد فجوات رعاية مفتوحة 🎉', en: 'No open care gaps 🎉' },
   cg_dismiss:       { ar: 'تجاهل', en: 'Dismiss' },

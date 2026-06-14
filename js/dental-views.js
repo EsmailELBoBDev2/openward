@@ -490,3 +490,33 @@ function renderMgrOverview(main, lang) {
       </div>
     </div>`;
 }
+
+// ---- Recalls / recare (clinical staff): who is due + one-tap WhatsApp reminder ----
+function renderRecalls(main, lang) {
+  const ar = lang === 'ar';
+  const today = new Date().toISOString().slice(0, 10);
+  const due = dbAll(`SELECT r.*, p.full_name_en, p.full_name_ar, p.mrn, p.phone, p.branch
+    FROM recalls r JOIN patients p ON p.patient_id = r.patient_id
+    WHERE r.status IN ('due','scheduled') ORDER BY (r.status='due') DESC, r.due_date`);
+  const typeLabel = (tp) => ({ checkup: ar ? 'فحص دوري' : 'Checkup', perio_maintenance: ar ? 'صيانة لثة' : 'Perio maintenance', ortho_review: ar ? 'مراجعة تقويم' : 'Ortho review' })[tp] || tp;
+  const remindText = encodeURIComponent(ar ? 'تذكير من عيادة الأسنان: حان موعد مراجعتك الدورية. للحجز يُرجى التواصل معنا.' : 'Dental clinic reminder: your recall checkup is due. Please contact us to book.');
+  main.innerHTML = `
+    <div class="page-header"><h1>&#9200; ${ar ? 'الاستدعاءات' : 'Recalls'}</h1></div>
+    <div class="card">${due.length ? `<div class="table-container"><table><thead><tr>
+      <th>${ar ? 'المريض' : 'Patient'}</th><th>${ar ? 'النوع' : 'Type'}</th><th>${ar ? 'الاستحقاق' : 'Due'}</th><th>${ar ? 'الهاتف' : 'Phone'}</th><th>${ar ? 'الفرع' : 'Branch'}</th><th></th></tr></thead><tbody>
+      ${due.map(r => `<tr ${r.due_date <= today && r.status === 'due' ? 'style="background:#fef2f2"' : ''}>
+        <td>${escapeHtml(ar ? r.full_name_ar : (r.full_name_en || r.full_name_ar))}<br><small style="color:#9ca3af">${escapeHtml(r.mrn)}</small></td>
+        <td>${escapeHtml(typeLabel(r.type))}</td>
+        <td>${r.due_date}${r.due_date <= today ? ` <span class="badge badge-danger">${ar ? 'مستحق' : 'due'}</span>` : ''}</td>
+        <td>${escapeHtml(r.phone || '—')}</td>
+        <td><small>${escapeHtml(typeof branchLabel === 'function' ? branchLabel(r.branch, lang) : '')}</small></td>
+        <td>
+          ${r.phone ? `<a class="btn btn-sm btn-success" target="_blank" rel="noopener" href="https://wa.me/${normalizeEgPhone(r.phone)}?text=${remindText}">&#128241; ${ar ? 'تذكير' : 'Remind'}</a>` : ''}
+          <button class="btn btn-sm btn-secondary" onclick="markRecallDone(${r.recall_id})">${ar ? 'تم' : 'Done'}</button>
+        </td></tr>`).join('')}
+    </tbody></table></div>` : emptyState(ar ? 'لا استدعاءات مستحقة' : 'No recalls due')}</div>`;
+}
+function markRecallDone(id) {
+  try { dbRun("UPDATE recalls SET status='done' WHERE recall_id=?", [id]); dlog('recall.done', { id }); saveDBToIndexedDB(); navigateTo('recalls'); }
+  catch (e) { derr('recall.done', e); }
+}
