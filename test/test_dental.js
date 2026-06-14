@@ -70,6 +70,24 @@ function noThrow(label, fn) { try { fn(); pass++; console.log('  ok  - ' + label
   assert(cols('patients').includes('branch') && cols('patients').includes('notes'), 'patients has branch + notes columns');
   assert(cols('invoices').includes('proof_attach_id'), 'invoices has proof_attach_id (payment proof link)');
 
+  // ---- #4c practice-management extras: tables + columns (round-3 features) ----
+  for (const t of ['waitlist', 'lab_cases', 'inventory', 'installments'])
+    assert(exists(t), `practice-mgmt table ${t} exists`);
+  assert(cols('patients').includes('guarantor_id'), 'patients has guarantor_id (family ledger)');
+  assert(cols('treatment_plans').includes('accepted_at') && cols('treatment_plans').includes('signature_attach_id'), 'treatment_plans has acceptance + signature columns');
+  assert(cols('referrals').includes('due_back_date'), 'referrals has due_back_date');
+  d.run("INSERT INTO inventory (name_en, qty, reorder_level, updated_at) VALUES ('Gloves', 3, 8, '2026-06-14')");
+  assert(Number(one("SELECT COUNT(*) FROM inventory WHERE qty <= reorder_level")) === 1, 'inventory flags an item at/below its reorder level');
+  d.run("INSERT INTO invoices (invoice_id, patient_name_ar, patient_name_en, visit_date, total, paid_amount, created_by, created_at) VALUES (900,'x','x','2026-06-14',3000,0,1,'2026-06-14')");
+  d.run("INSERT INTO installments (invoice_id, patient_id, seq, due_date, amount, status, created_at) VALUES (900,1,1,'2026-07-14',1000,'due','2026-06-14')");
+  assert(Number(one("SELECT amount FROM installments WHERE invoice_id=900")) === 1000, 'installment row round-trips against an invoice');
+
+  // ---- #4d the drug-vs-condition checker the dental Rx now consults ----
+  const utilsSrc2 = require('fs').readFileSync(path.resolve('js/utils.js'), 'utf8');
+  const sl = utilsSrc2.slice(utilsSrc2.indexOf('function checkDrugConditionInteractions'));
+  const cdc = new Function('return ' + sl.slice(0, sl.indexOf('\n}') + 2))();
+  assert(cdc('Ibuprofen 400mg', ['cardiac']).some(w => w.severity === 'yellow'), 'NSAID + cardiac patient -> caution (consumed by dental Rx)');
+
   // ---- #5 the allergy guard (the showcase safety moment) ----
   const pen = [{ allergen: 'Penicillin', severity: 'severe' }];
   const amoxHit = checkDrugAllergy('Amoxicillin 500mg', pen);

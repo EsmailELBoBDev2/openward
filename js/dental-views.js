@@ -112,6 +112,10 @@ function dentalPatientHeader(p, lang, activeTab) {
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-sm btn-success" onclick="openRecordVisit(${p.patient_id})">📝 ${lang==='ar'?'تسجيل زيارة':'Record visit'}</button>
           <button class="btn btn-sm btn-primary" onclick="dentalPrescribe(${p.patient_id})">💊 ${lang==='ar'?'وصفة':'Prescribe'}</button>
+          <button class="btn btn-sm btn-secondary" onclick="presentTreatmentPlan(${p.patient_id})">🪥 ${lang==='ar'?'عرض الخطة':'Present plan'}</button>
+          <button class="btn btn-sm btn-secondary" onclick="openLaCalc(${p.patient_id})" title="${lang==='ar'?'حاسبة جرعة المخدر':'Anaesthetic dose'}">💉 ${lang==='ar'?'جرعة':'LA dose'}</button>
+          <button class="btn btn-sm btn-secondary" onclick="openReferSpecialist(${p.patient_id})">↪️ ${lang==='ar'?'إحالة':'Refer'}</button>
+          <button class="btn btn-sm btn-secondary" onclick="openLinkFamily(${p.patient_id})" title="${lang==='ar'?'الحساب العائلي':'Family ledger'}">👪</button>
           <button class="btn btn-sm btn-secondary" onclick="setActivePatient(null);navigateTo('${activeTab}')">${lang==='ar'?'مريض آخر':'Change patient'}</button>
         </div>
       </div>
@@ -307,6 +311,34 @@ function renderDrAppointments(main, lang) {
     </tbody></table></div>` : emptyState(lang==='ar'?'لا مواعيد':'No upcoming appointments')}</div>`;
 }
 
+// Map a patient's recorded conditions + flags to the coarse tokens that
+// checkDrugConditionInteractions() understands (renal/cardiac/liver/asthma), so
+// the dental prescribe can refuse/warn on drug-vs-condition contraindications
+// the same way the allergy guard does. Driven off ICD-10 codes and free text.
+function patientConditionTokens(patientId) {
+  const conds = dbAll("SELECT condition_code, display FROM patient_conditions WHERE patient_id=? AND status='active'", [patientId]);
+  const flags = dbAll('SELECT label_en FROM patient_flags WHERE patient_id=? AND active=1', [patientId]);
+  const text = (conds.map(c => (c.display || '') + ' ' + (c.condition_code || '')).join(' ') + ' ' + flags.map(f => f.label_en || '').join(' ')).toLowerCase();
+  const tokens = [];
+  if (/renal|kidney|ckd|nephro|\bn18/.test(text)) tokens.push('renal_failure');
+  if (/asthma|copd|\bj4[45]/.test(text)) tokens.push('asthma');
+  if (/liver|hepat|cirrho|\bk7[04]/.test(text)) tokens.push('liver_disease');
+  if (/cardiac|heart|angina|infarct|atrial|fibrillation|hypertension|\bi10|\bi2[0-5]|\bi4[89]|\bi50/.test(text)) tokens.push('cardiac');
+  return tokens;
+}
+// Drug–drug interactions: the new drug vs the patient's ACTIVE prescriptions,
+// using the seeded drug_interactions table (both id orders).
+function patientDrugInteractions(patientId, drugId) {
+  if (!drugId) return [];
+  const actives = dbAll("SELECT DISTINCT drug_id FROM prescriptions WHERE patient_id=? AND status='active' AND drug_id IS NOT NULL", [patientId]);
+  const out = [];
+  actives.forEach(a => {
+    const ix = dbGet('SELECT severity, description, description_ar FROM drug_interactions WHERE (drug_a_id=? AND drug_b_id=?) OR (drug_a_id=? AND drug_b_id=?)', [drugId, a.drug_id, a.drug_id, drugId]);
+    if (ix) out.push({ severity: ix.severity === 'red' ? 'red' : (ix.severity === 'yellow' ? 'yellow' : 'yellow'), message_en: ix.description, message_ar: ix.description_ar || ix.description });
+  });
+  return out;
+}
+
 // ---- Patient-centric prescribe (reuses checkDrugAllergy + drug_interactions) ----
 function dentalPrescribe(patientId) {
   const lang = currentLanguage();
@@ -337,6 +369,11 @@ async function doDentalPrescribe(patientId) {
   const p = dbGet('SELECT * FROM patients WHERE patient_id=?', [patientId]);
   const allergies = dbAll('SELECT * FROM patient_allergies WHERE patient_id = ?', [patientId]);
   const match = (typeof checkDrugAllergy === 'function') ? checkDrugAllergy(drugName, allergies) : null;
+  // Drug-vs-condition contraindications + drug-drug interactions vs active meds.
+  const condTokens = patientConditionTokens(patientId);
+  const condWarnings = (typeof checkDrugConditionInteractions === 'function') ? checkDrugConditionInteractions(drugName, condTokens) : [];
+  const ddiWarnings = patientDrugInteractions(patientId, parseInt(drugId, 10));
+  const safetyWarnings = [...condWarnings, ...ddiWarnings];
   const commit = async () => {
     db.run(`INSERT INTO prescriptions (patient_id, admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, duration, start_date, status, prescribed_at)
       VALUES (?, NULL, ?, ?, ?, ?, 'PO', ?, ?, ?, 'active', ?)`, [patientId, u.user_id, drugId, drugName, dose, freq, dur, new Date().toISOString().slice(0,10), nowISO()]);
@@ -356,6 +393,19 @@ async function doDentalPrescribe(patientId) {
       return;
     } else if (typeof showYellowAlert === 'function') {
       showYellowAlert(msg, async () => { await logAction('ALLERGY_WARN', `${u.full_name_en} acknowledged allergy warning (${match.allergen} → ${drugName})`, null, patientId, p.full_name_en, p.mrn); await commit(); });
+      return;
+    }
+  }
+  // No allergy block: surface any drug-vs-condition / drug-drug contraindication.
+  if (safetyWarnings.length) {
+    const red = safetyWarnings.find(w => (w.severity || '').toLowerCase() === 'red');
+    const cmsg = (lang === 'ar' ? safetyWarnings.map(w => w.message_ar || w.message_en) : safetyWarnings.map(w => w.message_en)).filter(Boolean).join(' • ');
+    dlog('rx.contraindication', { patientId, drugName, severity: red ? 'red' : 'yellow', n: safetyWarnings.length });
+    if (red && typeof showRedAlert === 'function') {
+      showRedAlert(cmsg, async (reason) => { await logAction('RX_CONTRA_OVERRIDE', `${u.full_name_en} overrode a contraindication (${drugName}). Reason: ${reason}`, null, patientId, p.full_name_en, p.mrn); await commit(); });
+      return;
+    } else if (typeof showYellowAlert === 'function') {
+      showYellowAlert(cmsg, async () => { await logAction('RX_CONTRA_WARN', `${u.full_name_en} acknowledged a prescribing caution (${drugName})`, null, patientId, p.full_name_en, p.mrn); await commit(); });
       return;
     }
   }

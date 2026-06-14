@@ -73,11 +73,13 @@ assert(checkDrugAllergy('Amoxicillin', [{ allergen: '' }]) === null, 'blank alle
   const w3 = checkDrugConditionInteractions('Bisoprolol 5mg', ['asthma']);
   assert(w3.length === 1 && w3[0].severity === 'red' && !!w3[0].message_ar, 'beta-blocker + asthma -> RED, bilingual message');
   assert(checkDrugConditionInteractions('Paracetamol 500mg', ['renal_failure', 'cardiac', 'asthma']).length === 0, 'paracetamol -> no false positives');
-  // wiring guards: both prescribe paths must consult the checker
-  const routerSrc = fs.readFileSync(require('path').resolve(__dirname, '../js/router.js'), 'utf8');
-  const inPrescribe = routerSrc.slice(routerSrc.indexOf('function checkInteractionsAndPrescribe'), routerSrc.indexOf('function doInsertPrescription'));
-  assert(/checkDrugConditionInteractions\(/.test(inPrescribe), 'checkInteractionsAndPrescribe consults drug-vs-condition contraindications');
-  // (order-set batch prescribing was removed in the dental pivot)
+  // wiring guard: the live dental prescribe path must consult the checker. (The
+  // hospital checkInteractionsAndPrescribe/order-set paths were removed in the
+  // dental pivot; doDentalPrescribe in dental-views.js is the live prescribe.)
+  const dvSrc = fs.readFileSync(require('path').resolve(__dirname, '../js/dental-views.js'), 'utf8');
+  const after = dvSrc.slice(dvSrc.indexOf('async function doDentalPrescribe'));
+  const fnBody = after.slice(0, after.indexOf('\nfunction ') >= 0 ? after.indexOf('\nfunction ') : after.length);
+  assert(/checkDrugConditionInteractions\(/.test(fnBody), 'doDentalPrescribe consults drug-vs-condition contraindications');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

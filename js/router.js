@@ -292,8 +292,10 @@ function renderSidebar(role) {
       break;
     case 'clinic_manager':
       items = [
-        { id: 'mgr-overview', icon: '&#128202;', label: t('overview') },
-        { id: 'mgr-audit',    icon: '&#128274;', label: t('blackbox_viewer') },
+        { id: 'mgr-overview',  icon: '&#128202;', label: t('overview') },
+        { id: 'mgr-reports',   icon: '&#128200;', label: t('reports_nav') },
+        { id: 'mgr-inventory', icon: '&#128230;', label: t('inventory_nav') },
+        { id: 'mgr-audit',     icon: '&#128274;', label: t('blackbox_viewer') },
       ];
       break;
     // Dentist and Specialist share the clinical chair: odontogram, plans, Rx, schedule.
@@ -318,6 +320,7 @@ function renderSidebar(role) {
         { id: 'rcp-queue',        icon: '&#128101;', label: t('rcp_queue') },
         { id: 'rcp-register',     icon: '&#10133;',  label: t('rcp_register') },
         { id: 'rcp-appointments', icon: '&#128197;', label: t('rcp_appointments') },
+        { id: 'rcp-waitlist',     icon: '&#9203;',   label: t('waitlist_nav') },
         { id: 'rcp-billing',      icon: '&#128181;', label: t('rcp_billing') },
       ];
       break;
@@ -358,6 +361,11 @@ function renderSidebar(role) {
   if (CLINICAL_NAV.includes(role)) {
     items.push({ id: 'documents', icon: '&#128193;', label: t('documents_nav') });
     items.push({ id: 'recalls', icon: '&#9200;', label: t('recalls_nav') });
+  }
+  // Lab-case tracking (crowns/dentures/aligners) — clinical staff send & fit,
+  // the front desk follows the round-trip.
+  if (['dentist', 'specialist', 'receptionist'].includes(role)) {
+    items.push({ id: 'lab-cases', icon: '&#129463;', label: t('lab_cases_nav') });
   }
 
   nav.innerHTML = items.map(item => {
@@ -405,6 +413,7 @@ const VIEW_PREFIX_ROLES = {
   // Cross-role clinical tools (full view ids used as their own prefix keys).
   'documents': ['dentist', 'specialist', 'hygienist'],
   'recalls':   ['dentist', 'specialist', 'hygienist'],
+  'lab-cases': ['dentist', 'specialist', 'receptionist', 'clinic_manager'],
 };
 
 function canAccessView(viewId, role) {
@@ -492,6 +501,8 @@ function renderView(viewId) {
     // ============================================================
     case 'it-specialties': renderITDepts(main, lang); break;   // departments table → dental specialties
     case 'mgr-overview':   renderMgrOverview(main, lang); break;
+    case 'mgr-reports':    renderMgrReports(main, lang); break;   // day-sheet, A/R aging, per-dentist, referrals
+    case 'mgr-inventory':  renderInventory(main, lang); break;    // chairside supply stock
     case 'mgr-audit':      renderHMBlackbox(main, lang); break; // the "manager who sees the logs"
     case 'dr-patients':    renderDrPatients(main, lang); break;
     case 'dr-chart':       renderOdontogram(main, lang); break;
@@ -510,6 +521,7 @@ function renderView(viewId) {
     case 'rcp-queue':        renderRCPQueue(main, lang); break;
     case 'rcp-register':     renderRCPRegister(main, lang); break;
     case 'rcp-appointments': renderRCPAppointments(main, lang); break;
+    case 'rcp-waitlist':     renderWaitlist(main, lang); break;     // fill cancellations
     case 'rcp-billing':      renderRCPBilling(main, lang); break;
 
     // ---- Patient-safety incident reporting (file = all staff; queue = manager) ----
@@ -519,6 +531,7 @@ function renderView(viewId) {
     // ---- Cross-role clinical tools (dental) ----
     case 'documents': renderDocuments(main, lang); break;   // Patient File (X-rays/scans/notes)
     case 'recalls':   renderRecalls(main, lang); break;     // recare list + WhatsApp reminders
+    case 'lab-cases': renderLabCases(main, lang); break;    // crown/denture/aligner round-trip
 
     // ---- Patient Portal (re-added as a "future online" concept; mirrors the record) ----
     case 'pp-overview':      renderPPOverview(main, lang); break;
@@ -1091,636 +1104,6 @@ function verifyReceiptPrompt() {
   });
 }
 
-function renderHMReports(main, lang) {
-  const totalPatients = dbGet('SELECT COUNT(*) as c FROM patients').c;
-  const activeAdmissions = dbGet('SELECT COUNT(*) as c FROM admissions WHERE status = ?', ['active']).c;
-  const dischargedToday = dbGet("SELECT COUNT(*) as c FROM admissions WHERE status = 'discharged' AND discharged_at >= ?", [todayISO()]).c;
-  const admittedToday = dbGet("SELECT COUNT(*) as c FROM admissions WHERE admitted_at >= ?", [todayISO()]).c;
-  const pendingLabs = dbGet("SELECT COUNT(*) as c FROM lab_orders WHERE status IN ('ordered','collected','received')").c;
-  const completedLabs = dbGet("SELECT COUNT(*) as c FROM lab_orders WHERE status = 'resulted'").c;
-  const pendingRx = dbGet("SELECT COUNT(*) as c FROM prescriptions WHERE status = 'active'").c;
-  const unpaidInvoices = dbGet("SELECT COUNT(*) as c FROM invoices WHERE status = 'unpaid'") || {c:0};
-  const totalRevenue = dbGet("SELECT COALESCE(SUM(total),0) as s FROM invoices WHERE status = 'paid'") || {s:0};
-
-  // Department census
-  const deptCensus = dbAll(`SELECT d.name_en, d.name_ar, COUNT(a.admission_id) as cnt
-    FROM departments d LEFT JOIN admissions a ON d.dept_id = a.dept_id AND a.status = 'active'
-    WHERE d.type NOT IN ('admin','support') GROUP BY d.dept_id HAVING cnt > 0 ORDER BY cnt DESC`);
-
-  // LOS analytics
-  const avgLOSRow = dbGet(`SELECT AVG(CAST((julianday(discharged_at) - julianday(admitted_at)) AS REAL)) as avg_los
-    FROM admissions WHERE status = 'discharged' AND discharged_at IS NOT NULL`);
-  const avgLOS = (avgLOSRow && avgLOSRow.avg_los) ? avgLOSRow.avg_los.toFixed(1) : '—';
-
-  const longStays = dbAll(`SELECT a.bed_number, a.admitted_at, d.name_en as dept_en, d.name_ar as dept_ar,
-    p.full_name_ar, p.full_name_en,
-    CAST((julianday('now') - julianday(a.admitted_at)) AS INTEGER) as los_days
-    FROM admissions a JOIN patients p ON a.patient_id = p.patient_id
-    JOIN departments d ON a.dept_id = d.dept_id
-    WHERE a.status = 'active' ORDER BY los_days DESC LIMIT 5`);
-
-  main.innerHTML = `
-    <div class="page-header"><h1>${t('reports')}</h1></div>
-    <div class="stat-cards">
-      <div class="stat-card"><div class="stat-value">${totalPatients}</div><div class="stat-label">${lang==='ar'?'إجمالي المرضى المسجلين':'Total Registered Patients'}</div></div>
-      <div class="stat-card"><div class="stat-value">${activeAdmissions}</div><div class="stat-label">${lang==='ar'?'مرضى منومون حالياً':'Currently Admitted'}</div></div>
-      <div class="stat-card"><div class="stat-value">${admittedToday}</div><div class="stat-label">${lang==='ar'?'تنويمات اليوم':'Admitted Today'}</div></div>
-      <div class="stat-card"><div class="stat-value">${dischargedToday}</div><div class="stat-label">${lang==='ar'?'تخريجات اليوم':'Discharged Today'}</div></div>
-    </div>
-    <div class="stat-cards">
-      <div class="stat-card"><div class="stat-value">${pendingLabs}</div><div class="stat-label">${lang==='ar'?'تحاليل قيد الانتظار':'Pending Lab Orders'}</div></div>
-      <div class="stat-card"><div class="stat-value">${completedLabs}</div><div class="stat-label">${lang==='ar'?'تحاليل مكتملة':'Completed Labs'}</div></div>
-      <div class="stat-card"><div class="stat-value">${pendingRx}</div><div class="stat-label">${lang==='ar'?'وصفات نشطة':'Active Prescriptions'}</div></div>
-      <div class="stat-card"><div class="stat-value">${(totalRevenue.s || 0).toFixed(0)} ${lang==='ar'?'ر.س':'SAR'}</div><div class="stat-label">${lang==='ar'?'إيرادات محصلة':'Collected Revenue'}</div></div>
-    </div>
-
-    <h2 style="margin-top:1.5rem">${lang==='ar'?'التعداد حسب القسم':'Census by Department'}</h2>
-    ${deptCensus.length === 0 ? `<p>${t('no_data')}</p>` : `
-    <div class="table-container"><table>
-      <thead><tr><th>${lang==='ar'?'القسم':'Department'}</th><th>${lang==='ar'?'عدد المرضى':'Patients'}</th><th>${lang==='ar'?'الإشغال':'Occupancy'}</th></tr></thead>
-      <tbody>${deptCensus.map(d => `<tr>
-        <td>${lang==='ar'?escapeHtml(d.name_ar):escapeHtml(d.name_en)}</td>
-        <td><strong>${d.cnt}</strong></td>
-        <td><div style="background:#e5e7eb;border-radius:4px;height:8px;width:100px;display:inline-block;vertical-align:middle">
-          <div style="width:${Math.min(100, d.cnt*10)}%;background:#3b82f6;height:8px;border-radius:4px"></div>
-        </div></td>
-      </tr>`).join('')}</tbody>
-    </table></div>`}
-
-    <h2 style="margin-top:2rem">${lang==='ar'?'تحليل مدة الإقامة (LOS)':'Length of Stay (LOS) Analytics'}</h2>
-    <div class="stat-cards" style="margin-bottom:1rem">
-      <div class="stat-card">
-        <div class="stat-value">${avgLOS}</div>
-        <div class="stat-label">${lang==='ar'?'متوسط مدة الإقامة (أيام)':'Average LOS (days)'}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">${longStays.length > 0 ? longStays[0].los_days : '—'}</div>
-        <div class="stat-label">${lang==='ar'?'أطول إقامة حالية (أيام)':'Longest Current Stay (days)'}</div>
-      </div>
-    </div>
-    ${longStays.length === 0 ? `<p class="text-muted">${t('no_data')}</p>` : `
-    <div class="table-container"><table>
-      <thead><tr>
-        <th>${lang==='ar'?'المريض':'Patient'}</th>
-        <th>${lang==='ar'?'القسم':'Department'}</th>
-        <th>${lang==='ar'?'السرير':'Bed'}</th>
-        <th>${lang==='ar'?'تاريخ التنويم':'Admitted'}</th>
-        <th>${lang==='ar'?'مدة الإقامة (أيام)':'LOS (days)'}</th>
-      </tr></thead>
-      <tbody>${longStays.map(s => `<tr>
-        <td>${lang==='ar'?escapeHtml(s.full_name_ar):escapeHtml(s.full_name_en||s.full_name_ar)}</td>
-        <td>${lang==='ar'?escapeHtml(s.dept_ar):escapeHtml(s.dept_en)}</td>
-        <td>${escapeHtml(s.bed_number||'—')}</td>
-        <td>${s.admitted_at ? s.admitted_at.substring(0,10) : '—'}</td>
-        <td><strong style="color:${s.los_days > 14 ? 'var(--danger)' : s.los_days > 7 ? 'var(--warning)' : 'inherit'}">${s.los_days}</strong></td>
-      </tr>`).join('')}</tbody>
-    </table></div>`}
-  `;
-}
-
-// ============================================================
-// DOCTOR — Write Prescription
-// ============================================================
-
-function renderDocRx(main, lang) {
-  const session = getCurrentSession();
-  const patients = dbAll(`SELECT a.*, p.full_name_ar, p.full_name_en, p.mrn, p.patient_id
-    FROM case_assignments ca JOIN admissions a ON ca.admission_id = a.admission_id
-    JOIN patients p ON a.patient_id = p.patient_id
-    WHERE ca.doctor_id = ? AND a.status = 'active'`, [session.user_id]);
-
-  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('write_prescription')}</h1></div>${emptyState()}`; return; }
-
-  const drugs = dbAll('SELECT * FROM drugs ORDER BY name_generic');
-  const drugOptions = drugs.map(d => `<option value="${d.drug_id}" data-name="${escapeHtml(d.name_generic)}">${d.name_generic}${d.name_brand ? ' (' + d.name_brand + ')' : ''} — ${d.name_ar || ''}</option>`).join('');
-  const patientOptions = patients.map(p => `<option value="${p.admission_id}" data-pid="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
-  const routeOptions = ['oral','iv','im','sc','sublingual','topical','inhaled','pr','ng_tube'].map(r => `<option value="${r}">${LANG['route_' + r] ? LANG['route_' + r][lang] : r}</option>`).join('');
-  const freqOptions = ['once_daily','twice_daily','three_times_daily','four_times_daily','every_6h','every_8h','every_12h','as_needed','stat','once'].map(f => `<option value="${f}">${LANG['freq_' + f] ? LANG['freq_' + f][lang] : f}</option>`).join('');
-  const durOptions = ['3_days','5_days','7_days','14_days','until_review','ongoing','custom'].map(d => `<option value="${d}">${LANG['dur_' + d] ? LANG['dur_' + d][lang] : d}</option>`).join('');
-
-  main.innerHTML = `
-    <div class="page-header"><h1>${t('write_prescription')}</h1></div>
-    <div class="card">
-      <form onsubmit="handlePrescribe(event)">
-        <div class="form-row">
-          <div class="form-group"><label>${t('patient_col')} *</label><select id="rx-patient" required>${patientOptions}</select></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>${t('drug_name')} *</label><select id="rx-drug" required><option value="">—</option>${drugOptions}</select></div>
-          <div class="form-group"><label>${t('dose')} *</label><input type="text" id="rx-dose" required placeholder="${lang === 'ar' ? 'مثال: 500mg' : 'e.g. 500mg'}"></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>${t('route')} *</label><select id="rx-route" required>${routeOptions}</select></div>
-          <div class="form-group"><label>${t('frequency')} *</label><select id="rx-freq" required>${freqOptions}</select></div>
-          <div class="form-group"><label>${t('duration')}</label><select id="rx-dur">${durOptions}</select></div>
-        </div>
-        <div class="form-group"><label>${t('notes')}</label><textarea id="rx-notes" rows="2"></textarea></div>
-        <button type="submit" class="btn btn-primary">${t('prescribe_btn')}</button>
-      </form>
-    </div>
-  `;
-}
-
-// Drug-class allergen matcher: checkDrugAllergy() now lives in
-// js/allergy-check.js (loaded before this file) so the LAN server can require()
-// the SAME curated table — previously the server's "authoritative" check was
-// substring-only and let Amoxicillin past a documented Penicillin allergy. The
-// shared version also adds cross-reactivity hits (penicillin → cephalosporin /
-// carbapenem, aspirin ↔ NSAIDs) returned with _cross:true.
-
-async function handlePrescribe(e) {
-  e.preventDefault();
-  const lang = currentLanguage();
-  const user = getCurrentUser();
-  if (!user) { showError(lang === 'ar' ? 'انتهت الجلسة' : 'Session expired'); return; }
-  if (!requireRole(DOCTOR_ROLES, 'prescribing')) return;
-
-  const admissionId = document.getElementById('rx-patient').value;
-  const drugId = document.getElementById('rx-drug').value;
-  const drugOption = document.getElementById('rx-drug').selectedOptions[0];
-  if (!drugOption) { showError(lang === 'ar' ? 'يرجى اختيار دواء' : 'Please select a drug'); return; }
-  const drugName = drugOption.dataset.name;
-  const dose = document.getElementById('rx-dose').value.trim();
-  const route = document.getElementById('rx-route').value;
-  const freq = document.getElementById('rx-freq').value;
-  const dur = document.getElementById('rx-dur').value;
-  const notes = document.getElementById('rx-notes').value.trim();
-
-  if (!dose) { showError(lang === 'ar' ? 'الجرعة مطلوبة' : 'Dose is required'); return; }
-
-  const admission = dbGet('SELECT a.*, p.* FROM admissions a JOIN patients p ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [admissionId]);
-  if (!admission) { showError(lang === 'ar' ? 'الإدخال غير موجود' : 'Admission not found'); return; }
-
-  // ALLERGY CHECK — patient safety guard rail
-  const patientAllergies = dbAll('SELECT * FROM patient_allergies WHERE patient_id = ?', [admission.patient_id]);
-  const allergyMatch = checkDrugAllergy(drugName, patientAllergies);
-  if (allergyMatch) {
-    const sev = (allergyMatch.severity || '').toLowerCase();
-    const isLifeThreatening = sev === 'life_threatening' || sev === 'severe' || sev === 'anaphylaxis';
-    // RAW text only: showRedAlert/showYellowAlert escapeHtml() the whole message
-    // themselves (and render their own ⚠ icon). Pre-escaping here double-escaped
-    // the highest-severity bedside alert — the &#9888; entity displayed as
-    // literal text and an allergen like "Penicillin & Sulfa" rendered as
-    // "Penicillin &amp; Sulfa".
-    const msg = allergyMatch._cross
-      ? (lang === 'ar'
-        ? `تحسس تصالبي محتمل! المريض لديه حساسية موثقة من: ${allergyMatch.allergen} (${allergyMatch.severity || '—'}) وهذا الدواء من فئة قد تتفاعل معها (${allergyMatch._cross_note}).`
-        : `POSSIBLE CROSS-REACTIVITY! Patient has a documented allergy to ${allergyMatch.allergen} (${allergyMatch.severity || '—'}) and this drug is in a potentially cross-reactive class (${allergyMatch._cross_note}).`)
-      : (lang === 'ar'
-        ? `تنبيه حساسية! المريض لديه حساسية من: ${allergyMatch.allergen} (${allergyMatch.severity || '—'}). التفاعل: ${allergyMatch.reaction || '—'}`
-        : `ALLERGY ALERT! Patient has documented allergy to: ${allergyMatch.allergen} (${allergyMatch.severity || '—'}). Reaction: ${allergyMatch.reaction || '—'}`);
-    if (isLifeThreatening) {
-      // Hard stop with override-with-reason
-      showRedAlert(msg, async (reason) => {
-        await logAction('ALLERGY_OVERRIDE',
-          `${user.full_name_en} overrode ALLERGY ALERT for ${admission.full_name_en || admission.full_name_ar} (${allergyMatch.allergen} → ${drugName}). Reason: ${reason}`,
-          null, admission.patient_id, admission.full_name_en || admission.full_name_ar, admission.mrn);
-        await checkInteractionsAndPrescribe(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user);
-      });
-      return;
-    } else {
-      // Soft warning with confirm
-      showYellowAlert(msg, async () => {
-        await logAction('ALLERGY_WARN',
-          `${user.full_name_en} acknowledged allergy warning for ${admission.full_name_en || admission.full_name_ar} (${allergyMatch.allergen} → ${drugName})`,
-          null, admission.patient_id, admission.full_name_en || admission.full_name_ar, admission.mrn);
-        await checkInteractionsAndPrescribe(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user);
-      });
-      return;
-    }
-  }
-
-  await checkInteractionsAndPrescribe(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user);
-}
-
-async function checkInteractionsAndPrescribe(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user) {
-  // Collect interactions against ALL current prescriptions BEFORE alerting.
-  // Returning on the first hit let a RED interaction later in the rx list slip
-  // through unacknowledged once a milder one was confirmed.
-  const currentRxs = dbAll("SELECT drug_id FROM prescriptions WHERE admission_id = ? AND status = 'active'", [admissionId]);
-  const seen = new Set();
-  const interactions = [];
-  for (const rx of currentRxs) {
-    const interaction = dbGet('SELECT * FROM drug_interactions WHERE (drug_a_id = ? AND drug_b_id = ?) OR (drug_a_id = ? AND drug_b_id = ?)',
-      [drugId, rx.drug_id, rx.drug_id, drugId]);
-    if (interaction && !seen.has(interaction.id)) {
-      seen.add(interaction.id);
-      interactions.push(interaction);
-    }
-  }
-
-  // Drug-vs-CONDITION contraindications (metformin/renal failure, NSAID/renal,
-  // beta-blocker/asthma, opioid/liver, warfarin/liver …) ride the same alert
-  // pipeline as drug-drug hits: worst severity wins, red requires an
-  // override-with-reason. The checker (utils.js) keys off the same
-  // patient_conditions.condition_code values the registration form writes.
-  const condCodes = dbAll('SELECT condition_code FROM patient_conditions WHERE patient_id = ?', [admission.patient_id]).map(r => r.condition_code);
-  checkDrugConditionInteractions(drugName, condCodes).forEach((w, i) => {
-    interactions.push({ id: 'cond-' + i, severity: w.severity, description: w.message_en, description_ar: w.message_ar });
-  });
-
-  if (interactions.length) {
-    const lang = currentLanguage();
-    const rank = s => s === 'red' ? 2 : s === 'yellow' ? 1 : 0;
-    interactions.sort((a, b) => rank(b.severity) - rank(a.severity));
-    const worst = interactions[0];
-    const msg = interactions.map(i => lang === 'ar' ? (i.description_ar || i.description) : i.description).join(' • ');
-    const logList = interactions.map(i => i.description).join('; ');
-    if (worst.severity === 'red') {
-      showRedAlert(msg, async (reason) => {
-        await logAction('ALERT_OVERRIDDEN',
-          `${user.full_name_en} overrode RED ALERT for patient ${admission.full_name_en || admission.full_name_ar}: ${logList}. Override reason: ${reason}`,
-          null, admission.patient_id, admission.full_name_en || admission.full_name_ar, admission.mrn);
-        await doInsertPrescription(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user);
-      });
-      return;
-    } else if (worst.severity === 'yellow') {
-      showYellowAlert(msg, async () => {
-        await doInsertPrescription(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user);
-      });
-      return;
-    } else {
-      showBlueAlert(msg);
-    }
-  }
-
-  await doInsertPrescription(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user);
-}
-
-async function doInsertPrescription(admissionId, drugId, drugName, dose, route, freq, dur, notes, admission, user) {
-  const now = nowISO();
-  dbRun(`INSERT INTO prescriptions (admission_id, doctor_id, drug_id, drug_name, dose, route, frequency, duration, start_date, status, prescribed_at, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-    [admissionId, user.user_id, drugId, drugName, dose, route, freq, dur, now.slice(0, 10), now, notes || null]);
-
-  await logAction('PRESCRIPTION_ISSUED',
-    `Doctor ${user.full_name_en} prescribed ${drugName} ${dose} ${route} ${freq} for patient ${admission.full_name_en || admission.full_name_ar}`,
-    `الدكتور ${user.full_name_ar} وصف ${drugName} ${dose} للمريض ${admission.full_name_ar}`,
-    admission.patient_id, admission.full_name_en || admission.full_name_ar, admission.mrn);
-
-  showSuccess(t('rx_issued'));
-  saveDBToIndexedDB();
-  navigateTo('doc-rx');
-}
-
-// ============================================================
-// DOCTOR / CONSULTANT — Problem List (ICD-10 coded) + Patient Flags
-// ============================================================
-
-// Patients this clinician can chart against: case-assigned active patients first
-// (same source as the Rx/labs screens); if none are assigned, fall back to all
-// active admissions so a consultant covering the department still has a worklist.
-function _problemListPatients(session) {
-  const uid = session ? session.user_id : 0;
-  let rows = dbAll(`SELECT DISTINCT p.patient_id, p.mrn, p.full_name_ar, p.full_name_en
-    FROM case_assignments ca JOIN admissions a ON ca.admission_id = a.admission_id
-    JOIN patients p ON a.patient_id = p.patient_id
-    WHERE ca.doctor_id = ? AND a.status = 'active' ORDER BY p.patient_id DESC`, [uid]);
-  if (!rows.length) rows = dbAll(`SELECT DISTINCT p.patient_id, p.mrn, p.full_name_ar, p.full_name_en
-    FROM patients p JOIN admissions a ON a.patient_id = p.patient_id
-    WHERE a.status = 'active' ORDER BY p.patient_id DESC LIMIT 200`);
-  return rows;
-}
-
-// Human label for a condition row: explicit display, else the ICD-10 dataset's
-// localized name, else the humanized legacy token.
-function _conditionLabel(c, lang) {
-  if (c.display) return c.display;
-  if (typeof ICD10 !== 'undefined') {
-    const hit = ICD10.find(e => e.code === c.condition_code);
-    if (hit) return lang === 'ar' ? hit.ar : hit.en;
-  }
-  return String(c.condition_code || '').replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
-}
-
-const FLAG_COLOR_HEX = { info: '#0ea5e9', warn: '#d97706', danger: '#dc2626' };
-
-function renderProblemListBody(pid, lang) {
-  const patient = dbGet('SELECT patient_id, mrn, full_name_ar, full_name_en FROM patients WHERE patient_id = ?', [pid]);
-  if (!patient) return emptyState();
-  const active = dbAll("SELECT * FROM patient_conditions WHERE patient_id = ? AND COALESCE(status,'active') <> 'resolved' ORDER BY id DESC", [pid]);
-  const resolved = dbAll("SELECT * FROM patient_conditions WHERE patient_id = ? AND status = 'resolved' ORDER BY resolved_date DESC, id DESC", [pid]);
-  const flags = dbAll('SELECT * FROM patient_flags WHERE patient_id = ? AND active = 1 ORDER BY flag_id DESC', [pid]);
-  const icdOptions = (typeof ICD10 !== 'undefined' ? ICD10 : []).map(e =>
-    `<option value="${escapeHtml(e.code)}">${escapeHtml(e.code)} — ${lang === 'ar' ? escapeHtml(e.ar) : escapeHtml(e.en)}</option>`).join('');
-  const sevOptions = ['mild', 'moderate', 'severe'].map(s => `<option value="${s}">${t('sev_' + s)}</option>`).join('');
-
-  const activeRows = active.length ? active.map(c => {
-    const coded = /^[A-Za-z]\d/.test(c.condition_code || '');
-    return `<tr>
-      <td>${coded ? `<code>${escapeHtml(c.condition_code)}</code> ` : ''}${escapeHtml(_conditionLabel(c, lang))}</td>
-      <td>${c.severity ? escapeHtml(t('sev_' + c.severity)) : '—'}</td>
-      <td>${c.onset_date ? escapeHtml(String(c.onset_date).slice(0, 10)) : '—'}</td>
-      <td><button class="btn btn-sm btn-secondary" onclick="resolveProblem(${c.id}, ${pid})">${t('pl_resolve')}</button></td>
-    </tr>`;
-  }).join('') : `<tr><td colspan="4" class="muted">${t('pl_no_problems')}</td></tr>`;
-
-  const resolvedRows = resolved.map(c => {
-    const coded = /^[A-Za-z]\d/.test(c.condition_code || '');
-    return `<tr class="muted">
-      <td>${coded ? `<code>${escapeHtml(c.condition_code)}</code> ` : ''}${escapeHtml(_conditionLabel(c, lang))}</td>
-      <td>${c.resolved_date ? escapeHtml(String(c.resolved_date).slice(0, 10)) : '—'}</td>
-    </tr>`;
-  }).join('');
-
-  const flagChips = flags.length ? flags.map(f =>
-    `<span class="spb-badge" style="background:${FLAG_COLOR_HEX[f.color] || FLAG_COLOR_HEX.info};color:#fff;">&#9873; ${escapeHtml(lang === 'ar' && f.label_ar ? f.label_ar : f.label_en)}<button onclick="removeFlag(${f.flag_id}, ${pid})" title="${t('pl_flag_remove')}" style="background:none;border:none;color:#fff;cursor:pointer;font-size:1.1em;margin-${lang === 'ar' ? 'right' : 'left'}:4px;">&times;</button></span>`).join(' ')
-    : `<span class="muted">${t('pl_no_flags')}</span>`;
-
-  return `
-    <div class="card">
-      <h3>${t('pl_active_problems')}</h3>
-      <table class="table">
-        <thead><tr><th>${t('pl_problem')}</th><th>${t('pl_severity')}</th><th>${t('pl_onset')}</th><th></th></tr></thead>
-        <tbody>${activeRows}</tbody>
-      </table>
-      <form onsubmit="addProblem(event, ${pid})" class="form-row" style="margin-top:12px;align-items:flex-end;">
-        <div class="form-group" style="flex:2;">
-          <label>${t('pl_add_problem')}</label>
-          <input type="text" id="pl-code" list="pl-icd-list" autocomplete="off" placeholder="${t('pl_search_icd')}">
-          <datalist id="pl-icd-list">${icdOptions}</datalist>
-        </div>
-        <div class="form-group"><label>${t('pl_severity')}</label><select id="pl-severity"><option value="">—</option>${sevOptions}</select></div>
-        <div class="form-group"><label>${t('pl_onset')}</label><input type="date" id="pl-onset"></div>
-        <div class="form-group"><button type="submit" class="btn btn-primary">${t('pl_add_btn')}</button></div>
-      </form>
-    </div>
-    ${resolved.length ? `<div class="card"><h3>${t('pl_resolved')}</h3>
-      <table class="table"><thead><tr><th>${t('pl_problem')}</th><th>${t('pl_resolved_on')}</th></tr></thead><tbody>${resolvedRows}</tbody></table></div>` : ''}
-    <div class="card">
-      <h3>${t('pl_flags')}</h3>
-      <div style="margin-bottom:10px;">${flagChips}</div>
-      <form onsubmit="addFlag(event, ${pid})" class="form-row" style="align-items:flex-end;">
-        <div class="form-group" style="flex:2;"><label>${t('pl_flag_label')}</label><input type="text" id="pl-flag-label" maxlength="40" placeholder="${lang === 'ar' ? 'مثال: خطر السقوط' : 'e.g. Fall risk'}"></div>
-        <div class="form-group"><label>${t('pl_flag_label_ar')}</label><input type="text" id="pl-flag-label-ar" maxlength="40"></div>
-        <div class="form-group"><label>${t('pl_flag_color')}</label><select id="pl-flag-color">
-          <option value="info">${t('pl_color_info')}</option>
-          <option value="warn">${t('pl_color_warn')}</option>
-          <option value="danger">${t('pl_color_danger')}</option>
-        </select></div>
-        <div class="form-group"><button type="submit" class="btn btn-primary">${t('pl_add_flag')}</button></div>
-      </form>
-    </div>`;
-}
-
-function renderProblemList(main, lang) {
-  const session = getCurrentSession();
-  const patients = _problemListPatients(session);
-  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('problem_list')}</h1></div>${emptyState()}`; return; }
-  const pid = patients[0].patient_id;
-  const patOptions = patients.map(p =>
-    `<option value="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
-  main.innerHTML = `
-    <div class="page-header"><h1>${t('problem_list')}</h1></div>
-    <div class="card">
-      <div class="form-group"><label>${t('patient_col')}</label>
-        <select id="pl-patient" onchange="navigateProblemList(this.value)">${patOptions}</select></div>
-    </div>
-    <div id="pl-body">${renderProblemListBody(pid, lang)}</div>`;
-}
-
-function navigateProblemList(pid) {
-  const body = document.getElementById('pl-body');
-  if (body) body.innerHTML = renderProblemListBody(parseInt(pid, 10), currentLanguage());
-}
-
-async function addProblem(e, pid) {
-  e.preventDefault();
-  const lang = currentLanguage();
-  if (!requireRole(DOCTOR_ROLES, 'editing the problem list')) return;
-  const user = getCurrentUser();
-  const raw = (document.getElementById('pl-code').value || '').trim();
-  const severity = document.getElementById('pl-severity').value || null;
-  const onset = document.getElementById('pl-onset').value || null;
-  if (!raw) { showError(lang === 'ar' ? 'أدخل رمز ICD-10 أو تشخيصًا' : 'Enter an ICD-10 code or diagnosis'); return; }
-  // Match against the curated ICD-10 set (by code or localized name); otherwise
-  // record it as a free-text problem so nothing is lost.
-  let code = raw, display = raw, codeSystem = 'text';
-  if (typeof ICD10 !== 'undefined') {
-    const hit = ICD10.find(en => en.code.toLowerCase() === raw.toLowerCase()
-      || en.en.toLowerCase() === raw.toLowerCase() || en.ar === raw);
-    if (hit) { code = hit.code; display = lang === 'ar' ? hit.ar : hit.en; codeSystem = 'icd10'; }
-  }
-  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
-  dbRun(`INSERT INTO patient_conditions (patient_id, condition_code, code_system, display, severity, onset_date, status, added_by, added_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-    [pid, code, codeSystem, display, severity, onset, user ? user.user_id : null, nowISO()]);
-  await logAction('PROBLEM_ADDED', `Added problem ${display} (${code}) to the problem list`,
-    `أضيف تشخيص ${display} (${code}) لقائمة المشاكل`, pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
-  showSuccess(t('problem_added'));
-  saveDBToIndexedDB();
-  navigateProblemList(pid);
-}
-
-async function resolveProblem(id, pid) {
-  if (!requireRole(DOCTOR_ROLES, 'resolving a problem')) return;
-  const cond = dbGet('SELECT * FROM patient_conditions WHERE id = ?', [id]);
-  if (!cond) return;
-  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
-  dbRun("UPDATE patient_conditions SET status = 'resolved', resolved_date = ? WHERE id = ?", [nowISO().slice(0, 10), id]);
-  await logAction('PROBLEM_RESOLVED', `Resolved problem ${cond.display || cond.condition_code}`,
-    `تم حل تشخيص ${cond.display || cond.condition_code}`, pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
-  showSuccess(t('problem_resolved'));
-  saveDBToIndexedDB();
-  navigateProblemList(pid);
-}
-
-async function addFlag(e, pid) {
-  e.preventDefault();
-  const lang = currentLanguage();
-  if (!requireRole(DOCTOR_ROLES, 'adding a patient flag')) return;
-  const user = getCurrentUser();
-  const labelEn = (document.getElementById('pl-flag-label').value || '').trim();
-  const labelAr = (document.getElementById('pl-flag-label-ar').value || '').trim();
-  const color = document.getElementById('pl-flag-color').value || 'info';
-  if (!labelEn && !labelAr) { showError(lang === 'ar' ? 'أدخل نص العلامة' : 'Enter a flag label'); return; }
-  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
-  dbRun('INSERT INTO patient_flags (patient_id, label_en, label_ar, color, created_by, created_at, active) VALUES (?, ?, ?, ?, ?, ?, 1)',
-    [pid, labelEn || labelAr, labelAr || null, color, user ? user.user_id : null, nowISO()]);
-  await logAction('FLAG_ADDED', `Added patient flag "${labelEn || labelAr}"`, `أضيفت علامة المريض "${labelAr || labelEn}"`,
-    pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
-  showSuccess(t('flag_added'));
-  saveDBToIndexedDB();
-  navigateProblemList(pid);
-}
-
-async function removeFlag(flagId, pid) {
-  if (!requireRole(DOCTOR_ROLES, 'removing a patient flag')) return;
-  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
-  dbRun('UPDATE patient_flags SET active = 0 WHERE flag_id = ?', [flagId]);
-  await logAction('FLAG_REMOVED', `Removed patient flag #${flagId}`, `أزيلت علامة المريض #${flagId}`,
-    pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
-  showSuccess(t('flag_removed'));
-  saveDBToIndexedDB();
-  navigateProblemList(pid);
-}
-
-// ============================================================
-// INTERNAL REFERRAL / CONSULT REQUEST (LAN adaptation of OSCAR messaging)
-// ============================================================
-const REFERRAL_ROLES = ['dentist', 'specialist'];
-
-function renderReferrals(main, lang) {
-  const session = getCurrentSession();
-  const user = getCurrentUser();
-  const myDept = user ? user.department_id : null;
-  const patients = _problemListPatients(session);
-  const depts = dbAll('SELECT dept_id, name_ar, name_en FROM departments ORDER BY dept_id');
-  const patOptions = patients.map(p => `<option value="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
-  const deptOptions = depts.map(d => `<option value="${d.dept_id}">${lang === 'ar' ? escapeHtml(d.name_ar) : escapeHtml(d.name_en)}</option>`).join('');
-  const nameOf = (en, ar) => escapeHtml(lang === 'ar' ? (ar || en || '') : (en || ar || ''));
-
-  const inbox = myDept ? dbAll(`SELECT r.*, p.mrn, p.full_name_ar, p.full_name_en, uf.full_name_en AS fe, uf.full_name_ar AS fa
-    FROM referrals r JOIN patients p ON r.patient_id = p.patient_id LEFT JOIN users uf ON uf.user_id = r.from_user
-    WHERE r.to_dept = ? AND r.status IN ('open','accepted') ORDER BY r.referral_id DESC`, [myDept]) : [];
-  const sent = user ? dbAll(`SELECT r.*, p.mrn, p.full_name_ar, p.full_name_en, d.name_en AS dne, d.name_ar AS dna
-    FROM referrals r JOIN patients p ON r.patient_id = p.patient_id LEFT JOIN departments d ON d.dept_id = r.to_dept
-    WHERE r.from_user = ? ORDER BY r.referral_id DESC LIMIT 50`, [user.user_id]) : [];
-
-  const inboxRows = inbox.length ? inbox.map(r => `<tr>
-      <td>${escapeHtml(r.mrn)} — ${nameOf(r.full_name_en, r.full_name_ar)}</td>
-      <td>${nameOf(r.fe, r.fa)}</td>
-      <td>${r.urgency === 'urgent' ? `<span class="spb-badge" style="background:#dc2626;color:#fff;">${t('ref_urgent')}</span>` : t('ref_routine')}</td>
-      <td>${escapeHtml(r.reason || '')}</td>
-      <td>${t('ref_status_' + r.status)}</td>
-      <td><input type="text" id="ref-note-${r.referral_id}" placeholder="${t('ref_response')}" style="max-width:150px;">
-        ${r.status === 'open' ? `<button class="btn btn-sm btn-secondary" onclick="respondReferral(${r.referral_id},'accept')">${t('ref_accept')}</button>` : ''}
-        <button class="btn btn-sm btn-primary" onclick="respondReferral(${r.referral_id},'complete')">${t('ref_complete')}</button>
-        <button class="btn btn-sm btn-danger" onclick="respondReferral(${r.referral_id},'decline')">${t('ref_decline')}</button></td>
-    </tr>`).join('') : `<tr><td colspan="6" class="muted">${t('ref_none')}</td></tr>`;
-
-  const sentRows = sent.length ? sent.map(r => `<tr>
-      <td>${escapeHtml(r.mrn)} — ${nameOf(r.full_name_en, r.full_name_ar)}</td>
-      <td>${nameOf(r.dne, r.dna)}</td>
-      <td>${t('ref_status_' + r.status)}</td>
-      <td>${escapeHtml(r.reason || '')}</td>
-      <td>${r.response_note ? escapeHtml(r.response_note) : '—'}</td>
-    </tr>`).join('') : `<tr><td colspan="5" class="muted">${t('ref_none')}</td></tr>`;
-
-  main.innerHTML = `
-    <div class="page-header"><h1>${t('referrals_title')}</h1></div>
-    <div class="card">
-      <h3>${t('ref_new')}</h3>
-      <form onsubmit="createReferral(event)">
-        <div class="form-row">
-          <div class="form-group" style="flex:2;"><label>${t('ref_patient')} *</label><select id="ref-patient" required>${patOptions}</select></div>
-          <div class="form-group"><label>${t('ref_to_dept')} *</label><select id="ref-dept" required>${deptOptions}</select></div>
-          <div class="form-group"><label>${t('ref_urgency')}</label><select id="ref-urgency"><option value="routine">${t('ref_routine')}</option><option value="urgent">${t('ref_urgent')}</option></select></div>
-        </div>
-        <div class="form-group"><label>${t('ref_specialty')}</label><input type="text" id="ref-specialty" maxlength="60"></div>
-        <div class="form-group"><label>${t('ref_reason')} *</label><textarea id="ref-reason" rows="2" required></textarea></div>
-        <button type="submit" class="btn btn-primary">${t('ref_submit')}</button>
-      </form>
-    </div>
-    <div class="card"><h3>${t('ref_inbox')}</h3>
-      <table class="table"><thead><tr><th>${t('ref_patient')}</th><th>${t('ref_from')}</th><th>${t('ref_urgency')}</th><th>${t('ref_reason')}</th><th>${t('status')}</th><th></th></tr></thead><tbody>${inboxRows}</tbody></table></div>
-    <div class="card"><h3>${t('ref_outbox')}</h3>
-      <table class="table"><thead><tr><th>${t('ref_patient')}</th><th>${t('ref_to_dept')}</th><th>${t('status')}</th><th>${t('ref_reason')}</th><th>${t('ref_response')}</th></tr></thead><tbody>${sentRows}</tbody></table></div>`;
-}
-
-async function createReferral(e) {
-  e.preventDefault();
-  const lang = currentLanguage();
-  if (!requireRole(REFERRAL_ROLES, 'creating a referral')) return;
-  const user = getCurrentUser();
-  const pid = parseInt(document.getElementById('ref-patient').value, 10);
-  const dept = parseInt(document.getElementById('ref-dept').value, 10) || null;
-  const urgency = document.getElementById('ref-urgency').value || 'routine';
-  const specialty = document.getElementById('ref-specialty').value.trim() || null;
-  const reason = document.getElementById('ref-reason').value.trim();
-  if (!pid || !reason) { showError(lang === 'ar' ? 'المريض والسبب مطلوبان' : 'Patient and reason are required'); return; }
-  const adm = dbGet("SELECT admission_id FROM admissions WHERE patient_id = ? AND status='active' ORDER BY admission_id DESC LIMIT 1", [pid]);
-  const patient = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
-  dbRun('INSERT INTO referrals (patient_id, admission_id, from_user, to_dept, to_specialty, reason, urgency, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    [pid, adm ? adm.admission_id : null, user ? user.user_id : null, dept, specialty, reason, urgency, 'open', nowISO()]);
-  await logAction('REFERRAL_CREATED', `Referred patient to dept ${dept} (${urgency}): ${reason}`, `إحالة المريض للقسم ${dept}`, pid, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
-  showSuccess(t('ref_sent'));
-  saveDBToIndexedDB();
-  renderView('referrals');
-}
-
-async function respondReferral(id, action) {
-  if (!requireRole(REFERRAL_ROLES, 'responding to a referral')) return;
-  const user = getCurrentUser();
-  const noteEl = document.getElementById('ref-note-' + id);
-  const note = noteEl ? noteEl.value.trim() : '';
-  const status = action === 'accept' ? 'accepted' : (action === 'complete' ? 'completed' : 'declined');
-  const ref = dbGet('SELECT patient_id FROM referrals WHERE referral_id = ?', [id]);
-  dbRun('UPDATE referrals SET status = ?, responded_by = ?, response_note = COALESCE(NULLIF(?, \'\'), response_note), responded_at = ? WHERE referral_id = ?',
-    [status, user ? user.user_id : null, note, nowISO(), id]);
-  await logAction('REFERRAL_UPDATED', `Referral #${id} -> ${status}${note ? ': ' + note : ''}`, `تحديث الإحالة #${id}`, ref ? ref.patient_id : null);
-  showSuccess(t('ref_updated'));
-  saveDBToIndexedDB();
-  renderView('referrals');
-}
-
-// ============================================================
-// CARE-GAP / PREVENTIVE REMINDERS (decision-rules in the safety-nudge style)
-// ============================================================
-const CAREGAP_ROLES = ['doctor', 'consultant', 'emergency_doctor', 'triage_nurse', 'senior_nurse', 'nurse'];
-const CARE_GAP_LABELS = { code_status: 'cg_code_status', vte: 'cg_vte', vitals: 'cg_vitals', allergy: 'cg_allergy', vaccine: 'cg_vaccine' };
-
-function computeCareGaps(a) {
-  const dismissed = new Set(dbAll('SELECT gap_key FROM care_gap_overrides WHERE admission_id = ?', [a.admission_id]).map(r => r.gap_key));
-  const gaps = [];
-  const add = k => { if (!dismissed.has(k)) gaps.push(k); };
-  if (!a.code_status || a.code_status === 'unknown') add('code_status');
-  const cutoff24 = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-  if (a.admitted_at && a.admitted_at < cutoff24) {
-    const anticoag = dbGet(`SELECT 1 AS x FROM prescriptions WHERE admission_id = ? AND status='active' AND (
-      lower(drug_name) LIKE '%heparin%' OR lower(drug_name) LIKE '%enoxaparin%' OR lower(drug_name) LIKE '%warfarin%' OR
-      lower(drug_name) LIKE '%apixaban%' OR lower(drug_name) LIKE '%rivaroxaban%' OR lower(drug_name) LIKE '%dabigatran%' OR
-      lower(drug_name) LIKE '%dalteparin%' OR lower(drug_name) LIKE '%fondaparinux%')`, [a.admission_id]);
-    if (!anticoag) add('vte');
-  }
-  const cutoff12 = new Date(Date.now() - 12 * 3600 * 1000).toISOString();
-  const lastV = dbGet('SELECT MAX(recorded_at) AS m FROM vitals_log WHERE admission_id = ?', [a.admission_id]);
-  if (!lastV || !lastV.m || lastV.m < cutoff12) add('vitals');
-  if (!dbGet('SELECT 1 AS x FROM patient_allergies WHERE patient_id = ?', [a.patient_id])) add('allergy');
-  if (dbGet('SELECT 1 AS x FROM vaccinations WHERE patient_id = ? AND next_due_date IS NOT NULL AND next_due_date <= ?', [a.patient_id, todayISO()])) add('vaccine');
-  return gaps;
-}
-
-function renderCareGaps(main, lang) {
-  const session = getCurrentSession();
-  const uid = session ? session.user_id : 0;
-  let adms = dbAll(`SELECT a.admission_id, a.patient_id, a.code_status, a.admitted_at, p.mrn, p.full_name_ar, p.full_name_en
-    FROM case_assignments ca JOIN admissions a ON ca.admission_id = a.admission_id JOIN patients p ON a.patient_id = p.patient_id
-    WHERE ca.doctor_id = ? AND a.status='active' ORDER BY a.admission_id DESC`, [uid]);
-  if (!adms.length) adms = dbAll(`SELECT a.admission_id, a.patient_id, a.code_status, a.admitted_at, p.mrn, p.full_name_ar, p.full_name_en
-    FROM admissions a JOIN patients p ON a.patient_id = p.patient_id WHERE a.status='active' ORDER BY a.admission_id DESC LIMIT 100`);
-  let blocks = '';
-  for (const a of adms) {
-    const gaps = computeCareGaps(a);
-    if (!gaps.length) continue;
-    const name = lang === 'ar' ? a.full_name_ar : (a.full_name_en || a.full_name_ar);
-    const chips = gaps.map(k => `<div style="margin:4px 0;">
-      <span class="spb-badge" style="background:#d97706;color:#fff;">&#9889; ${t(CARE_GAP_LABELS[k])}</span>
-      <button class="btn btn-sm btn-secondary" onclick="dismissCareGap(${a.admission_id}, '${k}', ${a.patient_id})">${t('cg_dismiss')}</button>
-    </div>`).join('');
-    blocks += `<div class="card"><strong>${escapeHtml(a.mrn)} — ${escapeHtml(name)}</strong>${chips}</div>`;
-  }
-  main.innerHTML = `
-    <div class="page-header"><h1>${t('care_gaps_title')}</h1></div>
-    ${blocks || `<div class="card"><p class="muted">${t('cg_none')}</p></div>`}`;
-}
-
-async function dismissCareGap(admissionId, gapKey, pid) {
-  const lang = currentLanguage();
-  if (!requireRole(CAREGAP_ROLES, 'dismissing a care gap')) return;
-  const reason = (typeof prompt === 'function') ? prompt(t('cg_dismiss_reason')) : '';
-  if (reason === null) return;   // cancelled
-  const user = getCurrentUser();
-  const patient = pid ? dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]) : null;
-  dbRun('INSERT INTO care_gap_overrides (admission_id, gap_key, reason, dismissed_by, dismissed_at) VALUES (?,?,?,?,?)',
-    [admissionId, gapKey, reason || null, user ? user.user_id : null, nowISO()]);
-  await logAction('CARE_GAP_DISMISSED', `Dismissed care gap '${gapKey}' for admission ${admissionId}${reason ? ': ' + reason : ''}`,
-    `تم تجاهل تذكير الرعاية`, pid || null, patient ? (patient.full_name_en || patient.full_name_ar) : null, patient ? patient.mrn : null);
-  showSuccess(t('cg_dismissed'));
-  saveDBToIndexedDB();
-  renderView('care-gaps');
-}
-
 // ============================================================
 // CHART DOCUMENTS / ATTACHMENTS (LAN-only: bytes live in the one server DB)
 // ============================================================
@@ -2200,347 +1583,6 @@ function _summaryAge(dob, lang) {
   if (!dob) return '';
   const y = Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 3600 * 1000));
   return y >= 0 ? (y + (lang === 'ar' ? ' سنة' : 'y')) : '';
-}
-
-// The inner sections — shared by the on-screen view and the downloaded file.
-function buildSummaryInner(pid, lang) {
-  const p = dbGet('SELECT * FROM patients WHERE patient_id = ?', [pid]);
-  if (!p) return emptyState();
-  const adm = dbGet("SELECT * FROM admissions WHERE patient_id = ? AND status='active' ORDER BY admission_id DESC LIMIT 1", [pid])
-    || dbGet('SELECT * FROM admissions WHERE patient_id = ? ORDER BY admission_id DESC LIMIT 1', [pid]);
-  const allergies = dbAll('SELECT * FROM patient_allergies WHERE patient_id = ?', [pid]);
-  const problems = dbAll("SELECT * FROM patient_conditions WHERE patient_id = ? AND COALESCE(status,'active') <> 'resolved' ORDER BY id DESC", [pid]);
-  const meds = dbAll("SELECT rx.* FROM prescriptions rx JOIN admissions a ON a.admission_id = rx.admission_id WHERE a.patient_id = ? AND rx.status='active' ORDER BY rx.rx_id DESC", [pid]);
-  const vitals = adm ? dbGet('SELECT * FROM vitals_log WHERE admission_id = ? ORDER BY vitals_id DESC LIMIT 1', [adm.admission_id]) : null;
-  const labs = dbAll(`SELECT d.component_en, d.component_ar, d.value, d.unit, d.flag, lo.resulted_at
-    FROM lab_result_details d JOIN lab_orders lo ON lo.order_id = d.order_id JOIN admissions a ON a.admission_id = lo.admission_id
-    WHERE a.patient_id = ? ORDER BY d.detail_id DESC LIMIT 12`, [pid]);
-  const encounters = dbAll('SELECT * FROM admissions WHERE patient_id = ? ORDER BY admission_id DESC LIMIT 10', [pid]);
-  const name = lang === 'ar' ? p.full_name_ar : (p.full_name_en || p.full_name_ar);
-  const li = arr => arr.length ? '<ul>' + arr.join('') + '</ul>' : `<p class="muted">—</p>`;
-
-  const allergyList = li(allergies.map(a => `<li>${escapeHtml(a.allergen)}${a.reaction ? ' — ' + escapeHtml(a.reaction) : ''}${a.severity ? ' (' + escapeHtml(a.severity) + ')' : ''}</li>`));
-  const problemList = li(problems.map(c => { const coded = /^[A-Za-z]\d/.test(c.condition_code || ''); return `<li>${coded ? '[' + escapeHtml(c.condition_code) + '] ' : ''}${escapeHtml(_conditionLabel(c, lang))}</li>`; }));
-  const medList = li(meds.map(m => `<li>${escapeHtml(m.drug_name)} ${escapeHtml(m.dose || '')} ${escapeHtml(m.route || '')} ${escapeHtml(m.frequency || '')}</li>`));
-  const vitalsHtml = vitals
-    ? `<p>${vitals.bp_systolic ? `BP ${escapeHtml(String(vitals.bp_systolic))}/${escapeHtml(String(vitals.bp_diastolic || ''))} · ` : ''}${vitals.heart_rate ? `HR ${escapeHtml(String(vitals.heart_rate))} · ` : ''}${vitals.temperature ? `T ${escapeHtml(String(vitals.temperature))}°C · ` : ''}${vitals.o2_sat ? `SpO₂ ${escapeHtml(String(vitals.o2_sat))}%` : ''}<br><span class="muted">${escapeHtml(String(vitals.recorded_at || '').slice(0, 16).replace('T', ' '))}</span></p>`
-    : `<p class="muted">—</p>`;
-  const labsHtml = li(labs.map(l => `<li>${escapeHtml(lang === 'ar' ? (l.component_ar || l.component_en) : l.component_en)}: ${escapeHtml(String(l.value ?? ''))} ${escapeHtml(l.unit || '')}${l.flag && l.flag !== 'normal' ? ' (' + escapeHtml(l.flag) + ')' : ''}</li>`));
-  const encList = li(encounters.map(e => `<li>${escapeHtml(String(e.admitted_at || '').slice(0, 10))}${e.discharged_at ? ' → ' + escapeHtml(String(e.discharged_at).slice(0, 10)) : ' (' + t('inc_status_open') + ')'} — ${escapeHtml(e.chief_complaint || e.initial_diagnosis || '')}</li>`));
-
-  return `
-    <div class="summary-head">
-      <h2>${escapeHtml(name)}</h2>
-      <p>${t('mrn') || 'MRN'}: ${escapeHtml(p.mrn)} · ${escapeHtml(p.date_of_birth || '')} ${_summaryAge(p.date_of_birth, lang) ? '(' + _summaryAge(p.date_of_birth, lang) + ')' : ''} · ${escapeHtml(p.gender || '')}${p.blood_type && p.blood_type !== 'unknown' ? ' · ' + escapeHtml(p.blood_type) : ''}</p>
-    </div>
-    <h3>${t('sum_allergies')}</h3>${allergyList}
-    <h3>${t('sum_problems')}</h3>${problemList}
-    <h3>${t('sum_meds')}</h3>${medList}
-    <h3>${t('sum_vitals')}</h3>${vitalsHtml}
-    <h3>${t('sum_labs')}</h3>${labsHtml}
-    <h3>${t('sum_encounters')}</h3>${encList}`;
-}
-
-// Wrap the inner sections in a fully self-contained HTML file for offline carry
-// (USB, attach to an email by hand) — the no-internet stand-in for a CCDA/HIE feed.
-function buildSummaryDoc(pid, lang) {
-  const p = dbGet('SELECT mrn FROM patients WHERE patient_id = ?', [pid]);
-  const dir = lang === 'ar' ? 'rtl' : 'ltr';
-  const css = `body{font-family:system-ui,Arial,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color:#1e293b}h1{font-size:1.3em}h2{margin:.2em 0}h3{margin-top:1.2em;border-bottom:1px solid #cbd5e1;padding-bottom:2px;color:#0f172a}.muted{color:#64748b}ul{margin:.3em 0}.summary-head{border-bottom:2px solid #1e3a8a;padding-bottom:8px}.disclaimer{margin-top:24px;font-size:.85em;color:#64748b;border-top:1px solid #e2e8f0;padding-top:8px}`;
-  return `<!doctype html><html lang="${lang}" dir="${dir}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${t('summary_title')} — ${escapeHtml(p ? p.mrn : '')}</title><style>${css}</style></head><body>
-    <h1>OpenWard — ${t('summary_title')}</h1>
-    ${buildSummaryInner(pid, lang)}
-    <p class="disclaimer">${t('sum_generated')} ${escapeHtml(new Date().toISOString().slice(0, 16).replace('T', ' '))} · ${t('sum_disclaimer')}</p>
-  </body></html>`;
-}
-
-function renderPatientSummary(main, lang) {
-  const session = getCurrentSession();
-  const patients = _problemListPatients(session);
-  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('summary_title')}</h1></div>${emptyState()}`; return; }
-  const pid = patients[0].patient_id;
-  const patOptions = patients.map(p => `<option value="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
-  main.innerHTML = `
-    <div class="page-header"><h1>${t('summary_title')}</h1></div>
-    <div class="card no-print">
-      <div class="form-row" style="align-items:flex-end;">
-        <div class="form-group" style="flex:2;"><label>${t('patient_col')}</label><select id="summary-patient" onchange="navigateSummary(this.value)">${patOptions}</select></div>
-        <div class="form-group"><button class="btn btn-secondary" onclick="printSummary()">${t('sum_print')}</button></div>
-        <div class="form-group"><button class="btn btn-primary" onclick="downloadSummary()">${t('sum_download')}</button></div>
-      </div>
-      <p class="muted">${t('sum_intro')}</p>
-    </div>
-    <div class="card" id="summary-body">${buildSummaryInner(pid, lang)}</div>`;
-}
-
-function navigateSummary(pid) {
-  const body = document.getElementById('summary-body');
-  if (body) body.innerHTML = buildSummaryInner(parseInt(pid, 10), currentLanguage());
-}
-
-function _summarySelectedPid() {
-  const sel = document.getElementById('summary-patient');
-  return sel ? parseInt(sel.value, 10) : null;
-}
-
-function printSummary() { if (typeof window !== 'undefined' && window.print) window.print(); }
-
-async function downloadSummary() {
-  const lang = currentLanguage();
-  const pid = _summarySelectedPid();
-  if (!pid) return;
-  const p = dbGet('SELECT mrn, full_name_en, full_name_ar FROM patients WHERE patient_id = ?', [pid]);
-  const doc = buildSummaryDoc(pid, lang);
-  try {
-    const blob = new Blob([doc], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'summary-' + (p ? p.mrn : pid) + '.html';
-    document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-  } catch (e) { showError(lang === 'ar' ? 'تعذّر التنزيل' : 'Could not generate the file'); return; }
-  await logAction('SUMMARY_EXPORTED', `Exported clinical summary document`, `تصدير ملخص سريري`, pid, p ? (p.full_name_en || p.full_name_ar) : null, p ? p.mrn : null);
-  showSuccess(t('sum_exported'));
-}
-
-function renderDocLabs(main, lang) {
-  const session = getCurrentSession();
-  const patients = dbAll(`SELECT a.*, p.full_name_ar, p.full_name_en, p.mrn, p.patient_id
-    FROM case_assignments ca JOIN admissions a ON ca.admission_id = a.admission_id
-    JOIN patients p ON a.patient_id = p.patient_id
-    WHERE ca.doctor_id = ? AND a.status = 'active'`, [session.user_id]);
-
-  if (!patients.length) { main.innerHTML = `<div class="page-header"><h1>${t('order_labs')}</h1></div>${emptyState()}`; return; }
-
-  const patientOptions = patients.map(p => `<option value="${p.admission_id}" data-pid="${p.patient_id}">${escapeHtml(p.mrn)} — ${lang === 'ar' ? escapeHtml(p.full_name_ar) : escapeHtml(p.full_name_en || p.full_name_ar)}</option>`).join('');
-
-  // Get unique categories from catalog
-  const categories = [...new Set(LAB_TEST_CATALOG.map(t => t.cat))];
-  const catOptions = categories.map(c => `<option value="${c}">${t('cat_' + c) || c}</option>`).join('');
-
-  // Smart suggestions for selected patient
-  const firstP = patients[0];
-  const condRows = dbAll('SELECT condition_code FROM patient_conditions WHERE patient_id = ?', [firstP.patient_id]);
-  const conditions = condRows.map(r => r.condition_code);
-  const allergies = dbAll('SELECT * FROM patient_allergies WHERE patient_id = ?', [firstP.patient_id]);
-  const pieSuggestions = runPIE({date_of_birth: firstP.date_of_birth}, conditions, allergies, [], firstP);
-  const labSugs = pieSuggestions.find(s => s.type === 'lab_suggestions');
-
-  let suggestionsHtml = '';
-  if (labSugs && labSugs.labs.length > 0) {
-    suggestionsHtml = `<div class="card mb-3"><h3>${t('smart_suggested_labs')}</h3>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
-      ${labSugs.labs.map(l => {
-        const test = LAB_TEST_CATALOG.find(t => t.code === l.code);
-        const testName = test ? (lang === 'ar' ? test.name_ar : test.name_en) : l.code;
-        const reason = lang === 'ar' ? l.reason_ar : l.reason_en;
-        return `<button type="button" class="btn btn-sm btn-outline" onclick="addSuggestedLab('${l.code}')" title="${escapeHtml(reason)}">${escapeHtml(testName)}</button>`;
-      }).join('')}
-      </div></div>`;
-  }
-
-  // Recent lab results
-  const recentLabs = dbAll(`SELECT lo.*, p.full_name_ar, p.full_name_en, p.mrn FROM lab_orders lo
-    JOIN admissions a ON lo.admission_id = a.admission_id JOIN patients p ON a.patient_id = p.patient_id
-    WHERE lo.doctor_id = ? AND lo.status = 'resulted' ORDER BY lo.resulted_at DESC LIMIT 10`, [session.user_id]);
-
-  let resultsHtml = '';
-  if (recentLabs.length > 0) {
-    resultsHtml = `<div class="card mt-3"><h3>${t('lab_view_results')}</h3>
-      <div class="table-container"><table><thead><tr><th>${t('patient_col')}</th><th>${t('lab_test_name')}</th><th>${t('lab_result_value')}</th><th>${t('lab_result_flag')}</th><th>${t('date')}</th></tr></thead>
-      <tbody>${recentLabs.map(l => {
-        const flag = l.result_flag || 'normal';
-        return `<tr class="lab-result-row"><td>${lang === 'ar' ? escapeHtml(l.full_name_ar) : escapeHtml(l.full_name_en || l.full_name_ar)}</td>
-          <td>${escapeHtml(l.test_name)}</td>
-          <td>${l.result_value === 'See details' ? `<button class="btn btn-sm btn-info" onclick="showLabDetails(${l.order_id})">${t('details')}</button>` : escapeHtml(l.result_value || '—')}</td>
-          <td><span class="flag-${flag}">${t('lab_flag_' + flag.replace('critical_','')) || flag}</span></td>
-          <td>${formatDateTime(l.resulted_at)}</td></tr>`;
-      }).join('')}</tbody></table></div></div>`;
-  }
-
-  main.innerHTML = `
-    <div class="page-header"><h1>${t('order_labs')}</h1></div>
-    ${suggestionsHtml}
-    <div class="card mb-3">
-      <form onsubmit="handleOrderLab(event)">
-        <div class="form-row">
-          <div class="form-group"><label>${t('patient_col')} *</label>
-            <select id="lab-patient" required onchange="updateLabSuggestions()">${patientOptions}</select></div>
-        </div>
-        <h4 style="margin-bottom:12px">${lang === 'ar' ? 'اختر التحاليل' : 'Select Tests'}</h4>
-        <div class="cascading-select">
-          <div class="form-group"><label>${t('lab_category')}</label>
-            <select id="lab-cat" onchange="updateLabSubcategories()">
-              <option value="">${t('lab_select_category')}</option>${catOptions}
-            </select>
-          </div>
-          <div class="form-group"><label>${t('lab_subcategory')}</label>
-            <select id="lab-subcat" onchange="updateLabTests()" disabled>
-              <option value="">${t('lab_select_subcategory')}</option>
-            </select>
-          </div>
-          <div class="form-group"><label>${t('lab_test_name')}</label>
-            <select id="lab-test-select" onchange="onLabTestSelected()" disabled>
-              <option value="">${t('lab_select_test')}</option>
-            </select>
-          </div>
-        </div>
-        <div id="lab-prep-box"></div>
-        <div id="lab-selected-tests" style="margin-bottom:12px"></div>
-        <div class="form-row">
-          <div class="form-group"><label>${t('lab_priority')}</label>
-            <select id="lab-priority"><option value="routine">${t('lab_routine')}</option><option value="urgent">${t('lab_urgent')}</option><option value="stat">${t('lab_stat')}</option></select>
-          </div>
-        </div>
-        <div class="form-group"><label>${t('notes')}</label><textarea id="lab-notes" rows="2"></textarea></div>
-        <button type="submit" class="btn btn-primary">${t('order_lab_btn')}</button>
-      </form>
-    </div>
-    ${resultsHtml}
-  `;
-}
-
-// Selected lab tests queue
-let _selectedLabTests = [];
-
-function updateLabSubcategories() {
-  const cat = document.getElementById('lab-cat').value;
-  const lang = currentLanguage();
-  const subSelect = document.getElementById('lab-subcat');
-  const testSelect = document.getElementById('lab-test-select');
-  document.getElementById('lab-prep-box').innerHTML = '';
-
-  if (!cat) { subSelect.innerHTML = `<option value="">${t('lab_select_subcategory')}</option>`; subSelect.disabled = true; testSelect.innerHTML = `<option value="">${t('lab_select_test')}</option>`; testSelect.disabled = true; return; }
-
-  const subs = [...new Set(LAB_TEST_CATALOG.filter(t => t.cat === cat).map(t => t.sub))];
-  subSelect.innerHTML = `<option value="">${t('lab_select_subcategory')}</option>` +
-    subs.map(s => `<option value="${s}">${t('subcat_' + s) || s}</option>`).join('');
-  subSelect.disabled = false;
-  testSelect.innerHTML = `<option value="">${t('lab_select_test')}</option>`;
-  testSelect.disabled = true;
-}
-
-function updateLabTests() {
-  const cat = document.getElementById('lab-cat').value;
-  const sub = document.getElementById('lab-subcat').value;
-  const lang = currentLanguage();
-  const testSelect = document.getElementById('lab-test-select');
-  document.getElementById('lab-prep-box').innerHTML = '';
-
-  if (!sub) { testSelect.innerHTML = `<option value="">${t('lab_select_test')}</option>`; testSelect.disabled = true; return; }
-
-  const tests = LAB_TEST_CATALOG.filter(t => t.cat === cat && t.sub === sub);
-  testSelect.innerHTML = `<option value="">${t('lab_select_test')}</option>` +
-    tests.map(t => `<option value="${t.code}">${lang === 'ar' ? t.name_ar : t.name_en}</option>`).join('');
-  testSelect.disabled = false;
-}
-
-function onLabTestSelected() {
-  const code = document.getElementById('lab-test-select').value;
-  const lang = currentLanguage();
-  if (!code) { document.getElementById('lab-prep-box').innerHTML = ''; return; }
-
-  const test = LAB_TEST_CATALOG.find(t => t.code === code);
-  if (!test) return;
-
-  // Show prep notes
-  const prep = lang === 'ar' ? test.prep_ar : test.prep_en;
-  if (prep) {
-    document.getElementById('lab-prep-box').innerHTML = `<div class="prep-notes-box"><span class="prep-icon">&#9888;</span> <strong>${t('lab_prep_notes')}:</strong> ${escapeHtml(prep)}${test.container ? `<br><strong>${t('lab_container')}:</strong> ${escapeHtml(test.container)}` : ''}</div>`;
-  } else {
-    document.getElementById('lab-prep-box').innerHTML = '';
-  }
-
-  // Add to selected list
-  if (!_selectedLabTests.find(t => t.code === code)) {
-    _selectedLabTests.push(test);
-    renderSelectedLabTests();
-  }
-
-  // Reset selects
-  document.getElementById('lab-test-select').value = '';
-}
-
-function addSuggestedLab(code) {
-  if (_selectedLabTests.find(t => t.code === code)) return;
-  const test = LAB_TEST_CATALOG.find(t => t.code === code);
-  if (test) {
-    _selectedLabTests.push(test);
-    renderSelectedLabTests();
-  }
-}
-
-function removeSelectedLab(code) {
-  _selectedLabTests = _selectedLabTests.filter(t => t.code !== code);
-  renderSelectedLabTests();
-}
-
-function renderSelectedLabTests() {
-  const lang = currentLanguage();
-  const container = document.getElementById('lab-selected-tests');
-  if (!_selectedLabTests.length) { container.innerHTML = ''; return; }
-  container.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px">${_selectedLabTests.map(t =>
-    `<span class="badge badge-info" style="font-size:0.85rem;padding:6px 12px;cursor:pointer" onclick="removeSelectedLab('${t.code}')" title="${lang === 'ar' ? 'اضغط للإزالة' : 'Click to remove'}">
-      ${lang === 'ar' ? t.name_ar : t.name_en} &times;</span>`
-  ).join('')}</div>`;
-}
-
-function updateLabSuggestions() {
-  // Could dynamically update suggestions when patient changes
-}
-
-async function handleOrderLab(e) {
-  e.preventDefault();
-  const user = getCurrentUser();
-  if (!requireRole(DOCTOR_ROLES, 'lab ordering')) return;
-  const admissionId = document.getElementById('lab-patient').value;
-  const priority = document.getElementById('lab-priority').value;
-  const notes = document.getElementById('lab-notes').value.trim();
-
-  if (!_selectedLabTests.length) { showError(t('error_required')); return; }
-
-  const admission = dbGet('SELECT a.*, p.* FROM admissions a JOIN patients p ON a.patient_id = p.patient_id WHERE a.admission_id = ?', [admissionId]);
-  const lang = currentLanguage();
-
-  for (const test of _selectedLabTests) {
-    const testName = lang === 'ar' ? test.name_ar : test.name_en;
-    const prepNotes = lang === 'ar' ? test.prep_ar : test.prep_en;
-
-    // Cardiology procedures skip specimen collection — go directly to 'received' for result entry
-    const initStatus = test.cat === 'cardiology' ? 'received' : 'ordered';
-    dbRun('INSERT INTO lab_orders (admission_id, doctor_id, test_name, test_code, category, subcategory, specimen_type, priority, status, ordered_at, received_at, prep_notes, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [admissionId, user.user_id, testName, test.code, test.cat, test.sub, test.specimen, priority, initStatus, nowISO(), test.cat === 'cardiology' ? nowISO() : null, prepNotes || null, notes || null]);
-
-    await logAction('LAB_ORDERED',
-      `Doctor ${user.full_name_en} ordered ${test.name_en} (${priority}) for patient ${admission.full_name_en || admission.full_name_ar}`,
-      null, admission.patient_id, admission.full_name_en || admission.full_name_ar, admission.mrn);
-  }
-
-  _selectedLabTests = [];
-  showSuccess(t('lab_ordered_success'));
-  saveDBToIndexedDB();
-  navigateTo('doc-labs');
-}
-
-function showLabDetails(orderId) {
-  const lang = currentLanguage();
-  const details = dbAll('SELECT * FROM lab_result_details WHERE order_id = ?', [orderId]);
-  if (!details.length) { showInfo(lang === 'ar' ? 'لا توجد تفاصيل' : 'No detailed results'); return; }
-
-  const overlay = document.createElement('div');
-  overlay.className = 'alert-overlay';
-  overlay.innerHTML = `<div class="alert-modal" style="max-width:600px">
-    <h2>${t('lab_view_results')}</h2>
-    <div class="table-container"><table><thead><tr><th>${t('lab_component')}</th><th>${t('lab_result_value')}</th><th>${t('lab_unit')}</th><th>${t('lab_ref_range')}</th><th>${t('lab_result_flag')}</th></tr></thead>
-    <tbody>${details.map(d => `<tr class="lab-result-row">
-      <td>${lang === 'ar' ? escapeHtml(d.component_ar || d.component_en) : escapeHtml(d.component_en)}</td>
-      <td><strong>${escapeHtml(d.value || '—')}</strong></td><td>${escapeHtml(d.unit || '')}</td>
-      <td>${escapeHtml(d.ref_range || '')}</td>
-      <td><span class="flag-${d.flag || 'normal'}">${escapeHtml(d.flag || 'normal')}</span></td>
-    </tr>`).join('')}</tbody></table></div>
-    <div class="alert-buttons"><button class="btn btn-secondary" onclick="this.closest('.alert-overlay').remove()">${t('close_btn')}</button></div>
-  </div>`;
-  document.body.appendChild(overlay);
 }
 
 // ============================================================
@@ -3134,6 +2176,8 @@ function renderRCPBilling(main, lang) {
 
   const statusBadge = s => s === 'paid'
     ? `<span class="badge badge-success">${lang==='ar'?'مدفوع':'Paid'}</span>`
+    : s === 'partial'
+    ? `<span class="badge badge-warning">${lang==='ar'?'جزئي':'Partial'}</span>`
     : `<span class="badge badge-danger">${lang==='ar'?'غير مدفوع':'Unpaid'}</span>`;
 
   main.innerHTML = `
@@ -3162,7 +2206,7 @@ function renderRCPBilling(main, lang) {
         <td><strong>${inv.total.toFixed(2)} ${lang==='ar'?'ر.س':'SAR'}</strong></td>
         <td>${escapeHtml(inv.insurance_company||inv.payment_type)}</td>
         <td>${statusBadge(inv.status)}</td>
-        <td>${inv.status==='unpaid'?`<button class="btn btn-sm btn-success" onclick="handleMarkPaid(${inv.invoice_id})">${lang==='ar'?'تحصيل':'Collect'}</button>`:'—'}</td>
+        <td style="white-space:nowrap">${inv.status==='unpaid'?`<button class="btn btn-sm btn-success" onclick="handleMarkPaid(${inv.invoice_id})">${lang==='ar'?'تحصيل':'Collect'}</button> `:''}${inv.status!=='paid'?`<button class="btn btn-sm btn-secondary" onclick="openInstallmentPlan(${inv.invoice_id})">${lang==='ar'?'تقسيط':'Installments'}</button>`:'—'}</td>
       </tr>`).join('')}
       </tbody>
     </table></div>`}
@@ -3369,7 +2413,16 @@ async function handleCreateInvoice(e) {
   dlog('billing.invoiceCreated', { invoiceId, patientId, total, payment, items: items.length });
   await saveDBToIndexedDB();
   showSuccess(lang==='ar'?'تم إنشاء الفاتورة':'Invoice created');
-  navigateTo('rcp-billing');
+  // Book-the-next-recall-at-checkout: offered immediately so the front desk
+  // schedules the return visit while the patient is still here (far higher
+  // return rate than "we'll call you"). Only when the invoice resolved to a
+  // known patient record. Skipped during the automated tour (it drives its own
+  // steps) to avoid a surprise modal.
+  if (patientId && typeof offerBookRecall === 'function' && !(window.DEMO_TOUR_ACTIVE)) {
+    offerBookRecall(patientId);
+  } else {
+    navigateTo('rcp-billing');
+  }
 }
 
 async function handleMarkPaid(invoiceId) {

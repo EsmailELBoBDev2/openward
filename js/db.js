@@ -181,6 +181,14 @@ function applySchemaMigrations() {
     // Dental: patient gets a clinic branch + a free-text clinical notes field.
     try { db.run('ALTER TABLE patients ADD COLUMN branch TEXT'); } catch(e) {}
     try { db.run('ALTER TABLE patients ADD COLUMN notes TEXT'); } catch(e) {}
+    // Family ledger: members of one household share a guarantor (the patient_id
+    // of the account holder who pays). NULL = bills to self.
+    try { db.run('ALTER TABLE patients ADD COLUMN guarantor_id INTEGER'); } catch(e) {}
+    // Referral due-back: when a referred patient is expected back in our chair.
+    // (referrals is created in createAllTables, so it exists by now.) The
+    // treatment_plans acceptance/signature columns live in createDentalTables —
+    // that table is created below, so its upgrades are applied there.
+    try { db.run('ALTER TABLE referrals ADD COLUMN due_back_date TEXT'); } catch(e) {}
     // OpenSmile dental tables (settings, odontogram, perio, procedures, plans, chairs, recalls).
     createDentalTables();
     // MAR + critical ack migrations
@@ -443,8 +451,15 @@ function createDentalTables() {
     status      TEXT DEFAULT 'proposed',
     dentist_id  INTEGER,
     created_at  TEXT NOT NULL,
-    notes       TEXT
+    notes       TEXT,
+    accepted_at TEXT,
+    accepted_by INTEGER,
+    signature_attach_id INTEGER
   )`); } catch(e) {}
+  // Upgrade restored DBs created before treatment-acceptance existed (idempotent).
+  try { db.run('ALTER TABLE treatment_plans ADD COLUMN accepted_at TEXT'); } catch(e) {}
+  try { db.run('ALTER TABLE treatment_plans ADD COLUMN accepted_by INTEGER'); } catch(e) {}
+  try { db.run('ALTER TABLE treatment_plans ADD COLUMN signature_attach_id INTEGER'); } catch(e) {}
 
   try { db.run(`CREATE TABLE IF NOT EXISTS treatment_plan_items (
     item_id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -488,8 +503,78 @@ function createDentalTables() {
     created_at    TEXT NOT NULL
   )`); } catch(e) {}
 
+  // Waitlist — patients who want an earlier slot; reception calls them when a
+  // cancellation frees a chair. status: waiting | contacted | booked | removed.
+  try { db.run(`CREATE TABLE IF NOT EXISTS waitlist (
+    wait_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id  INTEGER NOT NULL REFERENCES patients(patient_id),
+    reason      TEXT,
+    preferred   TEXT,
+    priority    TEXT DEFAULT 'normal',
+    branch      TEXT,
+    status      TEXT DEFAULT 'waiting',
+    created_by  INTEGER,
+    created_at  TEXT NOT NULL,
+    notes       TEXT
+  )`); } catch(e) {}
+
+  // Lab cases — crowns/dentures/aligners sent to an external lab; tracks the
+  // round-trip. status: sent | at_lab | received | fitted | remake.
+  try { db.run(`CREATE TABLE IF NOT EXISTS lab_cases (
+    case_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id   INTEGER NOT NULL REFERENCES patients(patient_id),
+    lab_name     TEXT,
+    case_type    TEXT,
+    tooth_refs   TEXT,
+    shade        TEXT,
+    sent_date    TEXT,
+    due_date     TEXT,
+    received_date TEXT,
+    status       TEXT DEFAULT 'sent',
+    dentist_id   INTEGER,
+    created_by   INTEGER,
+    created_at   TEXT NOT NULL,
+    notes        TEXT
+  )`); } catch(e) {}
+
+  // Inventory — chairside dental supplies with a reorder level for low-stock
+  // flagging. Separate from the `drugs` formulary (which is Rx-safety reference).
+  try { db.run(`CREATE TABLE IF NOT EXISTS inventory (
+    item_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name_en       TEXT NOT NULL,
+    name_ar       TEXT,
+    category      TEXT,
+    unit          TEXT DEFAULT 'pcs',
+    qty           REAL DEFAULT 0,
+    reorder_level REAL DEFAULT 0,
+    branch        TEXT,
+    updated_by    INTEGER,
+    updated_at    TEXT,
+    notes         TEXT
+  )`); } catch(e) {}
+
+  // Installments — a big-ticket plan paid over time. One row per scheduled
+  // payment, linked to an invoice. status: due | paid.
+  try { db.run(`CREATE TABLE IF NOT EXISTS installments (
+    inst_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id  INTEGER NOT NULL REFERENCES invoices(invoice_id),
+    patient_id  INTEGER,
+    seq         INTEGER DEFAULT 1,
+    due_date    TEXT NOT NULL,
+    amount      REAL DEFAULT 0,
+    status      TEXT DEFAULT 'due',
+    paid_at     TEXT,
+    created_by  INTEGER,
+    created_at  TEXT NOT NULL
+  )`); } catch(e) {}
+
   // Indexes
   try { db.run('CREATE INDEX IF NOT EXISTS idx_odontogram_patient ON odontogram(patient_id, tooth_fdi)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_waitlist_status ON waitlist(status, created_at)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_labcases_status ON lab_cases(status, sent_date)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_labcases_patient ON lab_cases(patient_id)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_inventory_branch ON inventory(branch)'); } catch(e) {}
+  try { db.run('CREATE INDEX IF NOT EXISTS idx_installments_invoice ON installments(invoice_id, seq)'); } catch(e) {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_perio_patient ON perio_chart(patient_id, tooth_fdi)'); } catch(e) {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_tplans_patient ON treatment_plans(patient_id, status)'); } catch(e) {}
   try { db.run('CREATE INDEX IF NOT EXISTS idx_tpitems_plan ON treatment_plan_items(plan_id)'); } catch(e) {}
@@ -1313,6 +1398,35 @@ async function seedDentalDemo() {
   crec(0, ['exam', 'radiograph', 'cleaning', 'ohi'], '', 'Comprehensive exam + scaling. Reviewed warfarin before any extraction.', 7, monaId);
   crec(3, ['exam', 'srp', 'ohi'], '16,26', 'Periodontal maintenance, both upper molars.', 3, monaId);
   crec(9, ['exam', 'cleaning', 'fluoride'], '', 'Routine checkup, all clear.', 1, omarId);
+
+  // ── Chairside inventory (one item under its reorder level to show the flag) ──
+  const inv = (en, ar, cat, unit, qty, reorder, branch) => db.run('INSERT INTO inventory (name_en, name_ar, category, unit, qty, reorder_level, branch, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?)', [en, ar, cat, unit, qty, reorder, branch || 'tagamo3', recepId, now]);
+  inv('Latex Gloves (M)',     'قفازات لاتكس (وسط)',  'ppe',         'box',     24, 10, 'tagamo3');
+  inv('Composite Resin A2',   'كمبوزيت A2',          'restorative', 'syringe',  6,  8, 'tagamo3'); // low
+  inv('Lidocaine Carpules',   'كبسولات ليدوكايين',   'anesthetic',  'box',     12,  5, 'tagamo3');
+  inv('Disposable Bibs',      'مرايل المريض',        'consumable',  'pack',     3,  5, 'roxy');    // low
+  inv('Impression Material',  'مادة الطبعة',         'prosthetic',  'pack',     9,  4, 'tagamo3');
+
+  // ── Waitlist (patients wanting an earlier slot if one frees up) ──
+  db.run("INSERT INTO waitlist (patient_id, reason, preferred, priority, branch, status, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)", [pid[2], 'Severe toothache — wants the earliest slot', 'Any morning', 'high', 'tagamo3', 'waiting', recepId, now]);
+  db.run("INSERT INTO waitlist (patient_id, reason, preferred, priority, branch, status, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)", [pid[5], 'Crown fitting', 'Afternoons', 'normal', 'roxy', 'waiting', recepId, now]);
+
+  // ── Lab cases (crown / bridge / denture round-trip to an external lab) ──
+  const labcase = (i, lab, type, teeth, shade, sentD, dueD, status, recvD) => db.run("INSERT INTO lab_cases (patient_id, lab_name, case_type, tooth_refs, shade, sent_date, due_date, received_date, status, dentist_id, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", [pid[i], lab, type, teeth, shade, day(sentD), day(dueD), recvD != null ? day(recvD) : null, status, omarId, recepId, now]);
+  labcase(5, 'Cairo Dental Lab', 'PFM Crown',       '14',    'A2', -3,  4, 'at_lab',   null);
+  labcase(8, 'Cairo Dental Lab', 'Implant Crown',   '46',    'A3', -10, -2, 'received', -1);
+  labcase(3, 'Smile Lab',        'Partial Denture', '37,47', 'A2', -6,  2, 'sent',     null);
+
+  // ── Treatment acceptance — Noura signed off on her orthodontics plan ──
+  db.run("UPDATE treatment_plans SET accepted_at=?, accepted_by=? WHERE patient_id=? AND status='accepted'", [at(day(-14), '10:00'), pid[1], pid[1]]);
+
+  // ── Installment plan — Yousef's implant paid over three months ──
+  const implInvoice = invoice(8, -1, ['D6010'], 'instapay', 'partial');
+  [[-1, 1334, 'paid'], [29, 1333, 'due'], [59, 1333, 'due']].forEach((r, idx) =>
+    db.run("INSERT INTO installments (invoice_id, patient_id, seq, due_date, amount, status, paid_at, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)", [implInvoice, pid[8], idx + 1, day(r[0]), r[1], r[2], r[2] === 'paid' ? now : null, recepId, now]));
+
+  // ── Family ledger — child Abdullah's bills route to guarantor Yousef ──
+  db.run("UPDATE patients SET guarantor_id=? WHERE patient_id=?", [pid[8], pid[4]]);
 
   console.log('[DB] OpenSmile dental demo seeded — ' + pid.length + ' patients, ' + PROC.length + ' procedures');
 }

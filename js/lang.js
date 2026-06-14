@@ -291,6 +291,10 @@ const LANG = {
   // ---- Care-gap / preventive reminders ----
   care_gaps_nav:    { ar: 'فجوات الرعاية', en: 'Care Gaps' },
   recalls_nav:      { ar: 'الاستدعاءات', en: 'Recalls' },
+  reports_nav:      { ar: 'التقارير', en: 'Reports' },
+  inventory_nav:    { ar: 'المخزون', en: 'Inventory' },
+  waitlist_nav:     { ar: 'قائمة الانتظار', en: 'Waitlist' },
+  lab_cases_nav:    { ar: 'حالات المعمل', en: 'Lab Cases' },
   care_gaps_title:  { ar: 'تذكيرات الرعاية الوقائية', en: 'Preventive Care Reminders' },
   cg_none:          { ar: 'لا توجد فجوات رعاية مفتوحة 🎉', en: 'No open care gaps 🎉' },
   cg_dismiss:       { ar: 'تجاهل', en: 'Dismiss' },
