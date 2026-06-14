@@ -1133,7 +1133,7 @@ async function seedDemoAccounts() {
   };
   await mk('admin', 'HIS@2024', 'مدير النظام', 'IT Admin', 'it_admin', null);
   await mk('manager', 'manager123', 'مدير العيادة', 'Clinic Manager', 'clinic_manager', 4);
-  await mk('dr.omar', 'doctor123', 'طبيب أسنان', 'Dr. Omar', 'dentist', 1);
+  await mk('dr.saeed', 'doctor123', 'طبيب أسنان', 'Dr. Saeed', 'dentist', 1);
   await mk('dr.sara', 'doctor123', 'أخصائية تقويم', 'Dr. Sara', 'specialist', 2);
   await mk('hyg.mona', 'nurse123', 'أخصائية صحة أسنان', 'Mona', 'hygienist', 1);
   await mk('reception', 'recept123', 'استقبال', 'Reception', 'receptionist', 4);

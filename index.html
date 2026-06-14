@@ -68,19 +68,8 @@
            installs never render credentials or quick-logins). -->
       <div id="demo-login-picker"></div>
 
-      <!-- Login Mode Toggle -->
-      <div class="login-mode-toggle" id="login-mode-toggle">
-        <button type="button" class="login-mode-btn active" id="login-staff-btn" onclick="setLoginMode('staff')">
-          <span>👨‍⚕️</span> <span id="lbl-staff-mode">Staff Login</span>
-        </button>
-        <button type="button" class="login-mode-btn" id="login-patient-btn" onclick="setLoginMode('patient')">
-          <span>👤</span> <span id="lbl-patient-mode">Patient Portal</span>
-        </button>
-      </div>
-
-      <!-- Login Form -->
+      <!-- Login Form (staff only — OpenSmile is LAN/clinic-only, no patient portal) -->
       <form id="login-form" onsubmit="handleLogin(event)">
-        <!-- Staff Login Fields -->
         <div id="staff-login-fields">
           <div class="form-group">
             <label id="lbl-username" for="login-username">Username — اسم المستخدم</label>
@@ -92,31 +81,6 @@
               <input type="password" id="login-password" autocomplete="current-password" aria-label="Password">
               <button type="button" class="password-toggle" id="pw-toggle" onclick="togglePassword()">Show</button>
             </div>
-          </div>
-        </div>
-
-        <!-- Patient Portal Fields -->
-        <div id="patient-login-fields" style="display:none">
-          <div class="form-group">
-            <label id="lbl-mrn" for="patient-mrn">MRN — رقم الملف الطبي</label>
-            <input type="text" id="patient-mrn" autocomplete="off" placeholder="OS-XXXXXXXX-XXXXX" aria-label="Medical Record Number">
-            <small class="form-hint" id="lbl-mrn-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
-              You can find this on your appointment card or visit summary.
-            </small>
-          </div>
-          <div class="form-group">
-            <label id="lbl-dob" for="patient-dob">Date of Birth — تاريخ الميلاد</label>
-            <input type="date" id="patient-dob" autocomplete="off" aria-label="Date of Birth">
-            <small class="form-hint" id="lbl-dob-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
-              Format: YYYY-MM-DD
-            </small>
-          </div>
-          <div class="form-group">
-            <label id="lbl-pt-pw" for="patient-password">Password — كلمة المرور</label>
-            <input type="password" id="patient-password" autocomplete="current-password" aria-label="Patient portal password">
-            <small class="form-hint" style="display:block;margin-top:4px;color:#6b7280;font-size:0.75rem">
-              Only if you've set one. MRN + Date of Birth are identity, not a password.
-            </small>
           </div>
         </div>
 
@@ -344,21 +308,6 @@
       document.getElementById('login-btn').textContent = t('login_btn');
       document.getElementById('pw-toggle').textContent = lang === 'ar' ? 'إظهار' : 'Show';
       document.getElementById('logout-btn').textContent = t('logout_btn');
-      // Patient portal labels
-      const lblStaff = document.getElementById('lbl-staff-mode');
-      const lblPatient = document.getElementById('lbl-patient-mode');
-      const lblMrn = document.getElementById('lbl-mrn');
-      const lblDob = document.getElementById('lbl-dob');
-      const lblMrnHint = document.getElementById('lbl-mrn-hint');
-      const lblDobHint = document.getElementById('lbl-dob-hint');
-      if (lblStaff)   lblStaff.textContent = lang === 'ar' ? 'دخول الموظفين' : 'Staff Login';
-      if (lblPatient) lblPatient.textContent = lang === 'ar' ? 'بوابة المرضى' : 'Patient Portal';
-      if (lblMrn)     lblMrn.textContent = lang === 'ar' ? 'رقم الملف الطبي' : 'Medical Record Number';
-      if (lblDob)     lblDob.textContent = lang === 'ar' ? 'تاريخ الميلاد' : 'Date of Birth';
-      if (lblMrnHint) lblMrnHint.textContent = lang === 'ar'
-        ? 'تجده على بطاقة الموعد أو ملخص الزيارة'
-        : 'You can find this on your appointment card or visit summary.';
-      if (lblDobHint) lblDobHint.textContent = lang === 'ar' ? 'الصيغة: السنة-الشهر-اليوم' : 'Format: YYYY-MM-DD';
     }
 
     function updateLangButtons() {
@@ -371,31 +320,12 @@
     // Login Handler
     // ============================================================
 
-    // Track current login mode
-    window.loginMode = 'staff'; // or 'patient'
-
-    function setLoginMode(mode) {
-      window.loginMode = mode;
-      const isPatient = mode === 'patient';
-
-      // Toggle button active states
-      document.getElementById('login-staff-btn').classList.toggle('active', !isPatient);
-      document.getElementById('login-patient-btn').classList.toggle('active', isPatient);
-
-      // Toggle field visibility
-      document.getElementById('staff-login-fields').style.display = isPatient ? 'none' : '';
-      document.getElementById('patient-login-fields').style.display = isPatient ? '' : 'none';
-
-      // Focus first input
-      setTimeout(() => {
-        const firstInput = isPatient
-          ? document.getElementById('patient-mrn')
-          : document.getElementById('login-username');
-        firstInput?.focus();
-      }, 50);
-
-      // Clear errors
-      document.getElementById('login-error').classList.remove('show');
+    // Staff-only login (the patient portal was removed — OpenSmile is LAN/clinic-only).
+    window.loginMode = 'staff';
+    function setLoginMode() {
+      const f = document.getElementById('staff-login-fields'); if (f) f.style.display = '';
+      const u = document.getElementById('login-username'); if (u) setTimeout(() => u.focus(), 50);
+      const e = document.getElementById('login-error'); if (e) e.classList.remove('show');
     }
 
     async function handleLogin(e) {
@@ -409,80 +339,43 @@
       btn.textContent = t('logging_in');
 
       try {
-        if (window.loginMode === 'patient') {
-          // Patient portal login
-          const mrn = document.getElementById('patient-mrn').value.trim();
-          const dob = document.getElementById('patient-dob').value;
-          const ptPassword = (document.getElementById('patient-password') || {}).value || '';
+        // Staff login (the patient portal was removed — OpenSmile is LAN/clinic-only)
+        const username = document.getElementById('login-username').value.trim();
+        const password = document.getElementById('login-password').value;
 
-          if (!mrn || !dob) {
-            errorEl.textContent = t('error_required');
-            errorEl.classList.add('show');
-            btn.disabled = false;
-            btn.textContent = t('login_btn');
-            return;
-          }
+        if (!username || !password) {
+          errorEl.textContent = t('error_required');
+          errorEl.classList.add('show');
+          btn.disabled = false;
+          btn.textContent = t('login_btn');
+          return;
+        }
 
-          const result = await loginPatient(mrn, dob, ptPassword);
-          if (result.success) {
-            showSuccess(t('success_login'));
-            routeToDashboard();
-            if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
-            if (result.mustSetPassword && typeof showSetPatientPasswordModal === 'function') {
-              setTimeout(() => showSetPatientPasswordModal(false), 800);
-            }
-          } else {
-            let msg = t(result.errorKey || 'patient_login_error');
-            if (result.errorKey === 'login_locked' && result.lockedSec) {
-              const mins = Math.ceil(result.lockedSec / 60);
-              msg += ' (' + mins + (lang === 'ar' ? ' دقيقة' : ' min') + ')';
-            }
-            if (result.errorKey === 'patient_password_required') {
-              msg = lang === 'ar' ? 'هذا الحساب محمي بكلمة مرور. أدخل كلمة المرور.' : 'This account is password-protected — enter your password.';
-              const pf = document.getElementById('patient-password'); if (pf) pf.focus();
-            }
-            errorEl.textContent = msg;
-            errorEl.classList.add('show');
+        const result = await login(username, password);
+        if (result.success) {
+          showSuccess(t('success_login'));
+          // G7 fix: warn if other concurrent sessions exist
+          if (result.concurrentSessions && result.concurrentSessions > 0) {
+            setTimeout(() => {
+              const langNow = currentLanguage();
+              showYellowAlert(
+                langNow === 'ar'
+                  ? `&#9888; لديك ${result.concurrentSessions} جلسة أخرى نشطة في مكان آخر. إذا لم تكن أنت، غيّر كلمة المرور الآن.`
+                  : `&#9888; You have ${result.concurrentSessions} other active session(s) elsewhere. If this isn't you, change your password immediately.`,
+                () => {}
+              );
+            }, 1200);
           }
+          routeToDashboard();
+          if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
         } else {
-          // Staff login
-          const username = document.getElementById('login-username').value.trim();
-          const password = document.getElementById('login-password').value;
-
-          if (!username || !password) {
-            errorEl.textContent = t('error_required');
-            errorEl.classList.add('show');
-            btn.disabled = false;
-            btn.textContent = t('login_btn');
-            return;
+          let msg = t(result.errorKey || 'login_error_cred');
+          if (result.errorKey === 'login_locked' && result.lockedSec) {
+            const mins = Math.ceil(result.lockedSec / 60);
+            msg += ' (' + mins + (lang==='ar'?' دقيقة':' min') + ')';
           }
-
-          const result = await login(username, password);
-          if (result.success) {
-            showSuccess(t('success_login'));
-            // G7 fix: warn if other concurrent sessions exist
-            if (result.concurrentSessions && result.concurrentSessions > 0) {
-              setTimeout(() => {
-                const langNow = currentLanguage();
-                showYellowAlert(
-                  langNow === 'ar'
-                    ? `&#9888; لديك ${result.concurrentSessions} جلسة أخرى نشطة في مكان آخر. إذا لم تكن أنت، غيّر كلمة المرور الآن.`
-                    : `&#9888; You have ${result.concurrentSessions} other active session(s) elsewhere. If this isn't you, change your password immediately.`,
-                  () => {}
-                );
-              }, 1200);
-            }
-            routeToDashboard();
-            if (typeof window.resetIdleTimer === 'function') window.resetIdleTimer();
-          } else {
-            let msg = t(result.errorKey || 'login_error_cred');
-            if (result.errorKey === 'login_locked' && result.lockedSec) {
-              const mins = Math.ceil(result.lockedSec / 60);
-              msg += ' (' + mins + (lang==='ar'?' دقيقة':' min') + ')';
-            }
-            errorEl.textContent = msg;
-            errorEl.classList.add('show');
-          }
+          errorEl.textContent = msg;
+          errorEl.classList.add('show');
         }
       } catch (err) {
         console.error('[HIS] Login error:', err);
@@ -505,13 +398,7 @@
         // Clear all forms
         document.getElementById('login-username').value = '';
         document.getElementById('login-password').value = '';
-        const mrnInput = document.getElementById('patient-mrn');
-        const dobInput = document.getElementById('patient-dob');
-        if (mrnInput) mrnInput.value = '';
-        if (dobInput) dobInput.value = '';
         document.getElementById('login-error').classList.remove('show');
-        // Reset to staff mode
-        if (typeof setLoginMode === 'function') setLoginMode('staff');
       });
     }
 
@@ -701,7 +588,7 @@
     const DEMO_PERSONAS = [
       ['🛠️', 'IT Admin', 'مدير النظام', 'admin', 'HIS@2024'],
       ['📊', 'Clinic Manager', 'مدير العيادة', 'manager', 'manager123'],
-      ['🦷', 'Dentist', 'طبيب أسنان', 'dr.omar', 'doctor123'],
+      ['🦷', 'Dentist', 'طبيب أسنان', 'dr.saeed', 'doctor123'],
       ['🦷', 'Specialist (Ortho)', 'أخصائي تقويم', 'dr.sara', 'doctor123'],
       ['🦷', 'Specialist (Oral Surgery)', 'أخصائي جراحة', 'dr.khalid', 'doctor123'],
       ['🪥', 'Hygienist', 'أخصائي صحة الأسنان', 'hyg.mona', 'nurse123'],
@@ -721,7 +608,7 @@
         return;
       }
       let demo = false;
-      try { demo = typeof dbGet === 'function' && !!dbGet("SELECT user_id FROM users WHERE username = 'dr.omar'"); } catch (e) {}
+      try { demo = typeof dbGet === 'function' && !!dbGet("SELECT user_id FROM users WHERE username = 'dr.saeed'"); } catch (e) {}
       if (!demo) return;   // production browser install: keep the local-only warning, no quick-logins
 
       if (notice) notice.outerHTML = `
@@ -729,14 +616,6 @@
           🧪 <strong>Demo showcase</strong> — a full fictional dental clinic, stored locally in this browser. Pick a role below and look around; nothing here is real.<br>
           <span dir="rtl">عرض تجريبي — عيادة أسنان وهمية كاملة مخزّنة محلياً في هذا المتصفح. اختر دوراً وجرّب؛ لا شيء هنا حقيقي.</span>
         </div>`;
-
-      // Patient-portal demo identity comes from the DB (MRNs embed the seed date,
-      // so a hardcoded one would rot).
-      let portalOpt = '';
-      try {
-        const pp = dbGet('SELECT mrn, date_of_birth FROM patients WHERE portal_enabled = 1 LIMIT 1');
-        if (pp) portalOpt = `<option value="patient|${pp.mrn}|${pp.date_of_birth}">👤 Patient Portal — بوابة المريض</option>`;
-      } catch (e) {}
 
       const picker = document.getElementById('demo-login-picker');
       if (!picker) return;
@@ -746,7 +625,6 @@
           <select id="demo-persona" aria-label="Quick demo login">
             <option value="">— ${currentLanguage() === 'ar' ? 'اختر دوراً' : 'pick a role'} —</option>
             ${DEMO_PERSONAS.map((p, i) => `<option value="${i}">${p[0]} ${p[1]} — ${p[2]}</option>`).join('')}
-            ${portalOpt}
           </select>
         </div>
         <div style="text-align:center;margin-bottom:6px">
@@ -757,18 +635,9 @@
         </div>`;
       document.getElementById('demo-persona').addEventListener('change', function () {
         if (this.value === '') return;
-        if (this.value.startsWith('patient|')) {
-          const [, mrn, dob] = this.value.split('|');
-          setLoginMode('patient');
-          document.getElementById('patient-mrn').value = mrn;
-          document.getElementById('patient-dob').value = dob || '';
-          document.getElementById('patient-password').value = '';
-        } else {
-          const p = DEMO_PERSONAS[parseInt(this.value, 10)];
-          setLoginMode('staff');
-          document.getElementById('login-username').value = p[3];
-          document.getElementById('login-password').value = p[4];
-        }
+        const p = DEMO_PERSONAS[parseInt(this.value, 10)];
+        document.getElementById('login-username').value = p[3];
+        document.getElementById('login-password').value = p[4];
         // Showcase smoothness: picking a persona just logs you in.
         document.getElementById('login-form').requestSubmit();
       });
@@ -889,14 +758,14 @@
       try {
         demoInstall = !(typeof SERVER_MODE !== 'undefined' && SERVER_MODE)
           && typeof dbGet === 'function'
-          && !!dbGet("SELECT user_id FROM users WHERE username = 'dr.omar'");
+          && !!dbGet("SELECT user_id FROM users WHERE username = 'dr.saeed'");
       } catch (e) { demoInstall = false; }
       const accountsSection = demoInstall ? `
           <h3 style="margin:16px 0 8px;font-size:0.9rem">${lang==='ar'?'حسابات تجريبية':'Demo Accounts'}</h3>
           <table class="shortcuts-table" style="font-size:0.8rem">
             <tr><td><strong>admin</strong></td><td>HIS@2024</td><td>${lang==='ar'?'مدير النظام':'IT Admin'}</td></tr>
             <tr><td><strong>manager</strong></td><td>manager123</td><td>${lang==='ar'?'مدير العيادة':'Clinic Manager'}</td></tr>
-            <tr><td><strong>dr.omar</strong></td><td>doctor123</td><td>${lang==='ar'?'طبيب أسنان':'Dentist'}</td></tr>
+            <tr><td><strong>dr.saeed</strong></td><td>doctor123</td><td>${lang==='ar'?'طبيب أسنان':'Dentist'}</td></tr>
             <tr><td><strong>dr.sara</strong></td><td>doctor123</td><td>${lang==='ar'?'أخصائية تقويم':'Specialist (Ortho)'}</td></tr>
             <tr><td><strong>dr.khalid</strong></td><td>doctor123</td><td>${lang==='ar'?'أخصائي جراحة فم':'Specialist (Oral Surgery)'}</td></tr>
             <tr><td><strong>hyg.mona</strong></td><td>nurse123</td><td>${lang==='ar'?'أخصائية صحة أسنان':'Hygienist'}</td></tr>

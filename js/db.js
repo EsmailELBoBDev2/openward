@@ -1040,7 +1040,7 @@ async function seedData(opts) {
 // OpenSmile demo seed — a full fictional dental clinic so every screen and the
 // guided tour have realistic data. All names/records are invented (no real PHI).
 async function seedDentalDemo() {
-  if (dbGet("SELECT user_id FROM users WHERE username = 'dr.omar'")) return;
+  if (dbGet("SELECT user_id FROM users WHERE username = 'dr.saeed'")) return;
   const now = nowISO();
   const day = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10); // n days from today
   const at = (d, t) => `${d}T${t}:00.000Z`;
@@ -1055,7 +1055,7 @@ async function seedDentalDemo() {
 
   // ── 1. Staff (admin / HIS@2024 already created in seedData) ──
   const managerId = await mkUser('manager',   'manager123', 'عبدالرحمن الفيصل', 'Abdulrahman Al-Faisal', 'clinic_manager', 10, null);
-  const omarId    = await mkUser('dr.omar',   'doctor123',  'د. عمر الراشد',    'Dr. Omar Al-Rashed',    'dentist',        1,  'General Dentistry');
+  const omarId    = await mkUser('dr.saeed',   'doctor123',  'د. سعيد الراشد',    'Dr. Saeed Al-Rashed',    'dentist',        1,  'General Dentistry');
   const saraId    = await mkUser('dr.sara',   'doctor123',  'د. سارة الحمدان',  'Dr. Sara Al-Hamdan',    'specialist',     2,  'Orthodontics');
   const khalidId  = await mkUser('dr.khalid', 'doctor123',  'د. خالد العمري',   'Dr. Khalid Al-Omari',   'specialist',     4,  'Oral & Maxillofacial Surgery');
   const monaId    = await mkUser('hyg.mona',  'nurse123',   'منى الحربي',       'Mona Al-Harbi',         'hygienist',      1,  'Dental Hygiene');
@@ -1293,7 +1293,7 @@ async function seedDentalDemo() {
 
 async function seedHospitalData() {
   // check if seed data already loaded
-  const seedCheck = dbGet("SELECT user_id FROM users WHERE username = 'dr.omar'");
+  const seedCheck = dbGet("SELECT user_id FROM users WHERE username = 'dr.saeed'");
   if (seedCheck) return;
 
   console.log('[DB] Loading hospital seed data...');
@@ -1321,7 +1321,7 @@ async function seedHospitalData() {
   const consultSurgId = await mkUser('dr.khalid',   'doctor123',   'د. خالد العمري',        'Dr. Khalid Al-Omari',     'consultant',        3, 'General Surgery');
   const doctorId    = await mkUser('dr.sarah',      'doctor123',   'د. سارة الحمدان',       'Dr. Sarah Al-Hamdan',     'doctor',            2, 'Internal Medicine');
   const doctorId2   = await mkUser('dr.majed',      'doctor123',   'د. ماجد التميمي',       'Dr. Majed Al-Tamimi',     'doctor',            3, 'General Surgery');
-  const erDocId     = await mkUser('dr.omar',       'doctor123',   'د. عمر الراشد',         'Dr. Omar Al-Rashed',      'emergency_doctor',  1, 'Emergency Medicine');
+  const erDocId     = await mkUser('dr.saeed',       'doctor123',   'د. سعيد الراشد',         'Dr. Saeed Al-Rashed',      'emergency_doctor',  1, 'Emergency Medicine');
   const erDocId2    = await mkUser('dr.layla',      'doctor123',   'د. ليلى القاسم',        'Dr. Layla Al-Qasim',      'emergency_doctor',  1, 'Emergency Medicine');
   const tnurseId    = await mkUser('nurse.noura',   'nurse123',    'نورة المطيري',          'Noura Al-Mutairi',        'triage_nurse',      1, null);
   const snurseId    = await mkUser('nurse.fatima',  'nurse123',    'فاطمة الزهراني',        'Fatima Al-Zahrani',       'senior_nurse',      2, null);

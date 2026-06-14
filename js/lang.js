@@ -1063,7 +1063,6 @@ const ROLES = {
   specialist:       { ar: 'أخصائي أسنان',                 en: 'Dental Specialist' },
   hygienist:        { ar: 'مساعد / أخصائي صحة الأسنان',    en: 'Dental Assistant / Hygienist' },
   receptionist:     { ar: 'موظف استقبال',                 en: 'Receptionist' },
-  patient:          { ar: 'بوابة المرضى',                 en: 'Patient Portal' },
 };
 
 // Common condition labels

@@ -60,7 +60,7 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   assert(count('SELECT COUNT(*) FROM users') === 1, 'production install has exactly ONE account (the created admin)');
   const row = d.exec("SELECT username, role, password_hash, salt FROM users")[0].values[0];
   assert(row[0] === 'ward.admin' && row[1] === 'it_admin', 'created admin is it_admin with normalized username');
-  assert(count("SELECT COUNT(*) FROM users WHERE username IN ('admin','dr.omar','nurse.fatima')") === 0, 'no demo accounts (admin/HIS@2024 etc.) exist in production');
+  assert(count("SELECT COUNT(*) FROM users WHERE username IN ('admin','dr.saeed','nurse.fatima')") === 0, 'no demo accounts (admin/HIS@2024 etc.) exist in production');
   assert(count('SELECT COUNT(*) FROM patients') === 0, 'no fake patients in production');
   const okPw = await api.verify('S3cure-Ward-2026', row[3], row[2]);
   const badPw = await api.verify('HIS@2024', row[3], row[2]);
@@ -80,19 +80,19 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   assert(/loginBtn\.disabled = \(typeof DB_NEEDS_FIRST_RUN/.test(idx), 'login stays gated while first-run is pending');
   assert(/\.alert-overlay:not\(#first-run-overlay\)/.test(idx), 'Escape key cannot dismiss the first-run chooser (would strand a disabled login)');
   // Help modal must not print demo credentials unconditionally
-  assert(/demoInstall \? `/.test(idx) && /dr\.omar/.test(idx), 'Help modal gates demo credentials on a demo install');
+  assert(/demoInstall \? `/.test(idx) && /dr\.saeed/.test(idx), 'Help modal gates demo credentials on a demo install');
 
   // Showcase login: the persona picker renders ONLY on demo installs, and
   // production browser installs keep the (true) local-only storage warning.
   const showcase = idx.slice(idx.indexOf('function setupShowcaseLogin'), idx.indexOf('function switchToProduction'));
-  assert(/dr\.omar/.test(showcase) && /if \(!demo\) return;/.test(showcase), 'persona picker is gated on the demo install check (production gets NO quick-logins)');
+  assert(/dr\.saeed/.test(showcase) && /if \(!demo\) return;/.test(showcase), 'persona picker is gated on the demo install check (production gets NO quick-logins)');
   assert(/SERVER_MODE/.test(showcase) && /central clinic server/.test(showcase), 'server mode replaces the (false-there) local-only notice with the central-server notice');
   assert(/ow_first_run/.test(idx.slice(idx.indexOf('function switchToProduction'))) && /localStorage\.getItem\('ow_first_run'\) === 'production'/.test(idx), 'one-click production switch wipes demo data and lands directly on the admin-creation form');
 
   // Guided demo tour: gated on demo installs, follows a REAL patient through
   // real handlers, and is wired into boot + the demo picker.
   const tour = fs.readFileSync(require('path').resolve(__dirname, '../js/demo-tour.js'), 'utf8');
-  assert(/tourIsDemoInstall/.test(tour) && /dr\.omar/.test(tour) && /SERVER_MODE/.test(tour), 'tour refuses to run outside demo installs (dr.omar + SERVER_MODE gates)');
+  assert(/tourIsDemoInstall/.test(tour) && /dr\.saeed/.test(tour) && /SERVER_MODE/.test(tour), 'tour refuses to run outside demo installs (dr.saeed + SERVER_MODE gates)');
   assert(/saveToothStatus/.test(tour) && /doDentalPrescribe/.test(tour) && /requestSubmit/.test(tour), 'tour drives the REAL dental handlers (register form, odontogram, prescribe), not mocks');
   assert(/amoxicillin/i.test(tour) && /clindamycin/i.test(tour), 'tour includes the blocked-unsafe-Rx beat (amoxicillin) and the safe alternative (clindamycin)');
   assert(/demo-tour\.js/.test(idx) && /demoTourMaybeResume/.test(idx) && /demoTourOffer\(true\)/.test(idx), 'index.html loads the tour, resumes it at boot, and the picker button opens the autoplay/manual choice');
@@ -106,11 +106,11 @@ function assert(c, m) { if (c) { pass++; console.log('  ok  - ' + m); } else { f
   assert(/demoTourContinue/.test(tour) && /tour-continue-btn/.test(tour) && /s\.armed/.test(tour), "default pace: the tour acts, the visitor just reads + presses Continue (armed/fire loop)");
   assert(/_tourReadMs/.test(tour) && /tour-cursor/.test(tour), 'autoplay paces by text length and drives a simulated cursor');
   assert(/demoTourToggleAuto/.test(tour) && /pointerdown/.test(tour) && /isTrusted/.test(tour) && /visibilitychange/.test(tour), 'autoplay is pausable, yields to real user clicks, and pauses in hidden tabs');
-  // ALL-ROLES story: every dental persona appears, from the login page to the patient portal
-  for (const u of ['reception', 'hyg.mona', 'dr.omar', 'manager']) {
+  // ALL-ROLES story: every staff dental persona appears (no patient portal — LAN-only)
+  for (const u of ['reception', 'hyg.mona', 'dr.saeed', 'manager']) {
     assert(tour.includes(u), `tour includes persona ${u}`);
   }
-  assert(/loginPatient\(s\.mrn/.test(tour) && /role === 'patient'/.test(tour), 'tour closes with the patient logging into his own portal');
+  assert(/mgr-audit/.test(tour) && /'final'/.test(tour), 'tour closes on the manager audit + wrap-up (no patient portal)');
   assert(/role: null, view: null, mode: 'info'/.test(tour) && /_tourPositionPanel/.test(tour), 'tour starts ON the login page and the guide window anchors itself near its targets');
   assert(/demoTourOffer/.test(tour) && /ow_tour_offered/.test(tour) && (idx.match(/demoTourOffer/g) || []).length >= 2, 'tour auto-OFFERS itself once: right after Demo first-run AND at the login screen of an un-toured demo install');
   assert(/setupShowcaseLogin\(\);\s*\/\/ picker \+ demo notice appear without a reload/.test(idx), 'persona picker appears immediately after choosing Demo (no reload needed)');
